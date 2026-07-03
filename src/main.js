@@ -45,7 +45,7 @@ scene.add(sun);
 scene.add(buildGround(path));
 scene.add(buildRoad(path, route));
 const exclusions = [...buildLandmarks(scene, path), ...buildNature(scene, path)];
-buildBuildings(scene, path, exclusions);
+buildBuildings(scene, path, exclusions, route.buildings);
 
 // ---------------------------------------------------------------- bus / game objects
 const bus = new BusPhysics();

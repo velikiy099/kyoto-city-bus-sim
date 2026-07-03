@@ -16,6 +16,7 @@ export const route = {
   roadSections: raw.roadSections ?? [], // [{from, to, lanes}]
   intersections: raw.intersections ?? [], // [{s, heading, width, lanes}]
   signals: raw.signals ?? [], // [{s, name}]
+  buildings: raw.buildings ?? [], // [{footprint:[[x,z]], height, color}]
 };
 
 /** s 位置の制限速度 [m/s] */

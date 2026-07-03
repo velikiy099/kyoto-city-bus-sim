@@ -31,6 +31,10 @@ const RESAMPLE_STEP = 2;      // 最終ポリラインの点間隔 [m]
 const FILLET_RADIUS = 18;     // 交差点コーナーの円弧半径 [m]
 const FILLET_MIN_ANGLE = 25;  // この角度[deg]を超える折れをフィレット化
 const ROAD_AROUND_RADIUS = 90; // route node 周辺から接続道路を拾う距離 [m]
+const BUILDING_AROUND_RADIUS = 95; // route node 周辺から沿道建物を拾う距離 [m]
+const BUILDING_BIN_SIZE = 120;
+const BUILDINGS_PER_BIN = 15;
+const MAX_BUILDINGS = 1400;
 const ROAD_TYPES = ['primary', 'secondary', 'tertiary', 'unclassified', 'residential', 'service'];
 
 // 南行きの公式停留所順(京都市交通局 時刻表より、城南宮道経由・全区間便)
@@ -146,6 +150,12 @@ const roadWidth = (tags = {}) => parsePositive(tags.width) ?? laneCount(tags) * 
 const isMajorRoad = (tags = {}) => {
   if (!ROAD_TYPES.includes(tags.highway ?? '')) return false;
   return !['driveway', 'parking_aisle', 'drive-through', 'alley'].includes(tags.service ?? '');
+};
+const rand01 = (seed) => {
+  let x = Math.imul((Number(seed) || 1) ^ 0x9e3779b9, 0x85ebca6b) >>> 0;
+  x ^= x >>> 13;
+  x = Math.imul(x, 0xc2b2ae35) >>> 0;
+  return ((x ^ (x >>> 16)) >>> 0) / 4294967296;
 };
 
 // way群(端点共有)を1本のポリラインに連結する
@@ -302,6 +312,29 @@ function pointSegDistance(pt, a, b) {
   return { d: Math.hypot(pt[0] - q[0], pt[1] - q[1]), q, t };
 }
 
+function polygonArea(poly) {
+  let a = 0;
+  for (let i = 0; i < poly.length; i++) {
+    const p = poly[i], q = poly[(i + 1) % poly.length];
+    a += p[0] * q[1] - q[0] * p[1];
+  }
+  return a / 2;
+}
+
+function polygonCentroid(poly) {
+  let x = 0, z = 0;
+  for (const p of poly) { x += p[0]; z += p[1]; }
+  return [x / poly.length, z / poly.length];
+}
+
+function simplifyClosed(poly, eps = 0.6) {
+  if (poly.length <= 8) return poly;
+  const simplified = rdp([...poly, poly[0]], eps).slice(0, -1);
+  if (simplified.length >= 3 && simplified.length <= 20) return simplified;
+  if (simplified.length >= 3) return simplified.slice(0, 20);
+  return poly.slice(0, 20);
+}
+
 function angleDiff(a, b) {
   let d = Math.abs(a - b) % (Math.PI * 2);
   if (d > Math.PI) d = Math.PI * 2 - d;
@@ -449,6 +482,63 @@ function roadMetadata(path, cumLen, origin, roads, signalNodes) {
   return { roadSections, intersections, signals };
 }
 
+function buildingHeight(tags = {}, s, routeLength, id) {
+  const taggedHeight = parsePositive(tags.height);
+  if (taggedHeight) return clamp(taggedHeight, 2.8, 42);
+  const levels = parsePositive(tags['building:levels']);
+  if (levels) return clamp(levels * 3.1, 2.8, 42);
+  const t = s / routeLength;
+  const r = rand01(id);
+  if (t < 0.45) return +(6 + r * 16).toFixed(1);
+  if (t < 0.65) return +(5 + r * 10).toFixed(1);
+  return +(3.8 + r * 6.5).toFixed(1);
+}
+
+function buildingColor(tags = {}, id) {
+  if (tags.amenity === 'parking') return 0xaab1b7;
+  const palette = [0xd9d2c4, 0xcfc8ba, 0xbfb7a8, 0xa89f90, 0x8f8a80, 0xe2ddd2, 0xaeb4b8, 0x9aa0a8];
+  return palette[Math.floor(rand01(id) * palette.length)];
+}
+
+function buildingMetadata(path, cumLen, origin, buildingWays) {
+  const candidates = [];
+  for (const way of buildingWays) {
+    if (!way.geometry?.length || !way.tags?.building) continue;
+    let footprint = project(way.geometry.map((p) => [p.lat, p.lon]), origin)
+      .map(([x, z]) => [+((x * SCALE).toFixed(2)), +((z * SCALE).toFixed(2))]);
+    if (footprint.length > 2 && dist2(footprint[0], footprint.at(-1)) < 0.05) footprint = footprint.slice(0, -1);
+    if (footprint.length < 3) continue;
+    const area = Math.abs(polygonArea(footprint));
+    if (area < 12 || area > 6500) continue;
+    const center = polygonCentroid(footprint);
+    const hit = projectToPath(path, cumLen, center, 0);
+    if (hit.dist > BUILDING_AROUND_RADIUS || hit.dist < 6) continue;
+    footprint = simplifyClosed(footprint);
+    if (polygonArea(footprint) < 0) footprint.reverse();
+    candidates.push({
+      id: way.id,
+      s: +hit.s.toFixed(1),
+      dist: +hit.dist.toFixed(1),
+      height: +buildingHeight(way.tags, hit.s, cumLen.at(-1), way.id).toFixed(1),
+      color: buildingColor(way.tags, way.id),
+      footprint,
+    });
+  }
+  const buckets = new Map();
+  for (const item of candidates) {
+    const key = Math.floor(item.s / BUILDING_BIN_SIZE);
+    if (!buckets.has(key)) buckets.set(key, []);
+    buckets.get(key).push(item);
+  }
+  const selected = [];
+  for (const [key, bucket] of [...buckets.entries()].sort((a, b) => a[0] - b[0])) {
+    bucket.sort((a, b) => a.dist - b.dist);
+    selected.push(...bucket.slice(0, BUILDINGS_PER_BIN));
+  }
+  selected.sort((a, b) => a.s - b.s || a.dist - b.dist);
+  return selected.slice(0, MAX_BUILDINGS).map(({ id, dist, ...b }) => b);
+}
+
 function pointAtPath(path, cumLen, s) {
   const ss = clamp(s, 0, cumLen.at(-1));
   let i = 0;
@@ -483,6 +573,17 @@ node(w.routeWays)->.routeNodes;
   .routeWays;
   ${ROAD_TYPES.map((type) => `way(around.routeNodes:${ROAD_AROUND_RADIUS})["highway"="${type}"];`).join('\n  ')}
   node(around.routeNodes:${ROAD_AROUND_RADIUS})["highway"="traffic_signals"];
+);
+out body geom;`
+  );
+  const buildingData = await loadCachedOrFetch(
+    'route18_buildings.json',
+    `[out:json][timeout:120];
+rel(${RELATION_ID})->.routeRel;
+way(r.routeRel)->.routeWays;
+node(w.routeWays)->.routeNodes;
+(
+  way(around.routeNodes:${BUILDING_AROUND_RADIUS})["building"];
 );
 out body geom;`
   );
@@ -521,8 +622,9 @@ out body geom;`
 
   const roads = roadData.elements.filter((e) => e.type === 'way' && isMajorRoad(e.tags) && e.geometry?.length > 1);
   const signalNodes = roadData.elements.filter((e) => e.type === 'node' && e.tags?.highway === 'traffic_signals');
+  const buildings = buildingData.elements.filter((e) => e.type === 'way' && e.tags?.building && e.geometry?.length > 2);
 
-  return { line, stopsLL, roads, signalNodes, source: `OpenStreetMap relation ${RELATION_ID} © OpenStreetMap contributors (ODbL)` };
+  return { line, stopsLL, roads, signalNodes, buildings, source: `OpenStreetMap relation ${RELATION_ID} © OpenStreetMap contributors (ODbL)` };
 }
 
 function buildFallback() {
@@ -547,12 +649,12 @@ function buildFallback() {
   };
   const line = STOP_ORDER.map((n) => coords[n]);
   const stopsLL = STOP_ORDER.map((n) => ({ name: n, latlon: coords[n] }));
-  return { line, stopsLL, roads: [], signalNodes: [], source: 'fallback: OSM実測停留所座標の直結近似' };
+  return { line, stopsLL, roads: [], signalNodes: [], buildings: [], source: 'fallback: OSM実測停留所座標の直結近似' };
 }
 
 async function main() {
   const fallback = process.argv.includes('--fallback');
-  const { line, stopsLL, roads, signalNodes, source } = fallback ? buildFallback() : await buildFromOSM();
+  const { line, stopsLL, roads, signalNodes, buildings: buildingWays, source } = fallback ? buildFallback() : await buildFromOSM();
 
   console.log('[4/5] 座標変換: 投影 → スケール → フィレット → 平滑化 → リサンプル');
   const origin = [
@@ -601,6 +703,7 @@ async function main() {
     limit: z.limit,
   }));
   const { roadSections, intersections, signals } = roadMetadata(path, cumLen, origin, roads, signalNodes);
+  const buildings = buildingMetadata(path, cumLen, origin, buildingWays);
 
   const out = {
     routeName: '18号系統',
@@ -618,6 +721,7 @@ async function main() {
     roadSections,
     intersections: intersections.map(({ dist, ...ix }) => ix),
     signals,
+    buildings,
   };
   writeFileSync(OUT, JSON.stringify(out));
 
@@ -629,7 +733,7 @@ async function main() {
   for (const st of stops) console.log(`  ${String(st.s).padStart(7)}  ${st.name}  (±${st.projDist}m)`);
   console.log('橋:', bridges.map((b) => `${b.name}@${b.s}`).join('  '));
   console.log('速度ゾーン:', speedZones.map((z) => `${z.from}-${z.to}:${z.limit}km/h`).join('  '));
-  console.log(`道路区間: ${roadSections.length}  交差点: ${intersections.length}  OSM信号: ${signals.length}`);
+  console.log(`道路区間: ${roadSections.length}  交差点: ${intersections.length}  OSM信号: ${signals.length}  OSM建物: ${buildings.length}`);
   const bad = stops.filter((st, i) => i > 0 && st.s <= stops[i - 1].s);
   if (bad.length) throw new Error(`s値が単調増加でない停留所: ${bad.map((b) => b.name).join(',')}`);
   if (stops.length !== 30) throw new Error(`停留所数が30でない: ${stops.length}`);

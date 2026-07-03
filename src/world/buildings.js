@@ -11,12 +11,52 @@ function mulberry32(seed) {
   };
 }
 
+function footprintGeometry(footprint, height) {
+  const verts2 = footprint.map(([x, z]) => new THREE.Vector2(x, z));
+  const faces = THREE.ShapeUtils.triangulateShape(verts2, []);
+  const positions = [];
+  const indices = [];
+  for (const [x, z] of footprint) positions.push(x, 0, z);
+  for (const [x, z] of footprint) positions.push(x, height, z);
+  const n = footprint.length;
+  for (const face of faces) indices.push(face[2] + n, face[1] + n, face[0] + n);
+  for (const face of faces) indices.push(face[0], face[1], face[2]);
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    indices.push(i, j, j + n, i, j + n, i + n);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+function buildOsmBuildings(scene, buildings, exclusions) {
+  const isExcluded = (x, z) => exclusions.some((e) => (x - e.x) ** 2 + (z - e.z) ** 2 < e.r * e.r);
+  const materials = new Map();
+  let count = 0;
+  for (const b of buildings ?? []) {
+    if (!b.footprint?.length || b.footprint.length < 3) continue;
+    const center = b.footprint.reduce((acc, p) => [acc[0] + p[0], acc[1] + p[1]], [0, 0]).map((v) => v / b.footprint.length);
+    if (isExcluded(center[0], center[1])) continue;
+    const color = b.color ?? 0xcfc8ba;
+    if (!materials.has(color)) materials.set(color, new THREE.MeshLambertMaterial({ color }));
+    const mesh = new THREE.Mesh(footprintGeometry(b.footprint, Math.max(2.8, b.height ?? 6)), materials.get(color));
+    scene.add(mesh);
+    count++;
+  }
+  return { count };
+}
+
 /**
  * 沿道の建物群(InstancedMesh)。
  * 京都の景観: 市街地(二条〜九条)は中低層で高密、上鳥羽以南は低層+田畑。
  * ランドマーク周辺(landmarks.js の除外域)には置かない。
  */
-export function buildBuildings(scene, path, exclusions = []) {
+export function buildBuildings(scene, path, exclusions = [], osmBuildings = []) {
+  if (osmBuildings.length) return buildOsmBuildings(scene, osmBuildings, exclusions);
+
   const rand = mulberry32(20260703);
   const boxGeo = new THREE.BoxGeometry(1, 1, 1);
   boxGeo.translate(0, 0.5, 0); // 底面基準
