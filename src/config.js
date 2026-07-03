@@ -37,7 +37,7 @@ export const CFG = {
     perfectWindow: 1.0, // 正着判定 [m]
     curbWindow: 0.8, // 縁石からの許容ギャップ [m]
     departEarlyGrace: 5, // 早発猶予 [s]
-    schedSpeed: 7.6, // ダイヤ想定表定速度 [m/s]
+    schedSpeed: 11.0, // ダイヤ想定表定速度 [m/s]
     dwellPerStop: 12, // ダイヤ上の停車時分 [s]
     startClock: 10 * 3600, // ゲーム開始時刻 10:00:00 [s]
     approachDist: 120, // 「まもなく」アナウンス距離 [m]

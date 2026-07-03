@@ -25,12 +25,13 @@ const OUT = join(ROOT, 'src', 'data', 'route18.json');
 const RELATION_ID = 13027168;
 const OVERPASS = 'https://overpass-api.de/api/interpreter';
 
-// 距離スケール: 実距離に乗算(バス・道路幅は1:1のまま、路線距離だけ圧縮)
-const SCALE = 0.4;
+// 距離スケール: 実距離に乗算。1.0 で OSM 実距離どおり。
+const SCALE = 1.0;
 const RESAMPLE_STEP = 2;      // 最終ポリラインの点間隔 [m]
-const FILLET_RADIUS = 15;     // 交差点コーナーの円弧半径 [m](スケール後の値)
+const FILLET_RADIUS = 18;     // 交差点コーナーの円弧半径 [m]
 const FILLET_MIN_ANGLE = 25;  // この角度[deg]を超える折れをフィレット化
-const ROAD_TYPES = ['primary', 'secondary', 'tertiary', 'unclassified', 'residential'];
+const ROAD_AROUND_RADIUS = 90; // route node 周辺から接続道路を拾う距離 [m]
+const ROAD_TYPES = ['primary', 'secondary', 'tertiary', 'unclassified', 'residential', 'service'];
 
 // 南行きの公式停留所順(京都市交通局 時刻表より、城南宮道経由・全区間便)
 const STOP_ORDER = [
@@ -142,7 +143,10 @@ const laneCount = (tags = {}) => {
   return 2;
 };
 const roadWidth = (tags = {}) => parsePositive(tags.width) ?? laneCount(tags) * 3.2 + 1.6;
-const isMajorRoad = (tags = {}) => ROAD_TYPES.includes(tags.highway ?? '') && tags.service !== 'driveway';
+const isMajorRoad = (tags = {}) => {
+  if (!ROAD_TYPES.includes(tags.highway ?? '')) return false;
+  return !['driveway', 'parking_aisle', 'drive-through', 'alley'].includes(tags.service ?? '');
+};
 
 // way群(端点共有)を1本のポリラインに連結する
 function connectWays(ways) {
@@ -170,15 +174,6 @@ function connectWays(ways) {
     throw new Error(`way連結失敗: ${used.size}/${segs.length} 本のみ連結`);
   }
   return line;
-}
-
-function expandedBounds(bounds, margin = 0.0025) {
-  return [
-    bounds.minlat - margin,
-    bounds.minlon - margin,
-    bounds.maxlat + margin,
-    bounds.maxlon + margin,
-  ];
 }
 
 const nearestIndex = (line, pt) => {
@@ -328,6 +323,21 @@ function closestRoadSample(path, cumLen, roadPts, fromS = 0) {
   return best;
 }
 
+function closestRoadNearS(path, cumLen, road, s) {
+  const [px, pz] = pointAtPath(path, cumLen, s);
+  let best = null;
+  for (let i = 0; i < road.pts.length - 1; i++) {
+    const a = road.pts[i], b = road.pts[i + 1];
+    const segH = Math.atan2(b[0] - a[0], b[1] - a[1]);
+    const hit = pointSegDistance([px, pz], a, b);
+    const qHit = projectToPath(path, cumLen, hit.q, Math.max(0, s - 140));
+    const ds = Math.abs(qHit.s - s);
+    const score = hit.d + ds * 0.45;
+    if (!best || score < best.score) best = { ...qHit, heading: segH, distToRoad: hit.d, ds, score };
+  }
+  return best;
+}
+
 function routeHeadingAt(path, cumLen, s) {
   let i = 0;
   while (i < cumLen.length - 2 && cumLen[i + 1] < s) i++;
@@ -372,7 +382,7 @@ function roadMetadata(path, cumLen, origin, roads, signalNodes) {
   const intersectionCandidates = [];
   for (const road of projectedRoads) {
     const hit = closestRoadSample(path, cumLen, road.pts, 0);
-    if (!hit || hit.dist > 9) continue;
+    if (!hit || hit.dist > 14) continue;
     const routeH = routeHeadingAt(path, cumLen, hit.s);
     const crossing = Math.min(angleDiff(routeH, hit.heading), angleDiff(routeH, hit.heading + Math.PI));
     if (crossing < 0.42) continue;
@@ -402,12 +412,50 @@ function roadMetadata(path, cumLen, origin, roads, signalNodes) {
     const pt = project([[node.lat, node.lon]], origin)[0].map((v) => v * SCALE);
     const { s, dist } = projectToPath(path, cumLen, pt, 0);
     return { s: +s.toFixed(1), name: node.tags?.name ?? 'traffic_signal', dist };
-  }).filter((sig) => sig.dist < 22)
+  }).filter((sig) => sig.dist < 35)
     .sort((a, b) => a.s - b.s)
     .reduce((acc, sig) => {
-      if (!acc.length || Math.abs(sig.s - acc.at(-1).s) > 35) acc.push({ s: sig.s, name: sig.name });
+      if (!acc.length || Math.abs(sig.s - acc.at(-1).s) > 42) acc.push({ s: sig.s, name: sig.name });
       return acc;
     }, []);
+
+  for (const sig of signals) {
+    if (intersections.some((ix) => Math.abs(ix.s - sig.s) < 28)) continue;
+    const routeH = routeHeadingAt(path, cumLen, sig.s);
+    let best = null;
+    for (const road of projectedRoads) {
+      const hit = closestRoadNearS(path, cumLen, road, sig.s);
+      if (!hit || hit.dist > 45 || hit.ds > 55) continue;
+      const crossing = Math.min(angleDiff(routeH, hit.heading), angleDiff(routeH, hit.heading + Math.PI));
+      if (crossing < 0.35) continue;
+      if (!best || hit.score < best.hit.score) best = { road, hit };
+    }
+    if (best) {
+      const tags = best.road.tags;
+      intersections.push({
+        s: sig.s,
+        heading: +best.hit.heading.toFixed(4),
+        width: +roadWidth(tags).toFixed(1),
+        length: +Math.max(38, roadWidth(tags) * 7).toFixed(1),
+        lanes: laneCount(tags),
+        highway: tags.highway,
+        name: tags.name ?? sig.name,
+        dist: best.hit.dist,
+      });
+    } else {
+      intersections.push({
+        s: sig.s,
+        heading: +(routeH + Math.PI / 2).toFixed(4),
+        width: 8,
+        length: 56,
+        lanes: 2,
+        highway: 'signal-connector',
+        name: sig.name,
+        dist: 0,
+      });
+    }
+  }
+  intersections.sort((a, b) => a.s - b.s || a.dist - b.dist);
 
   return { roadSections, intersections, signals };
 }
@@ -436,17 +484,16 @@ async function buildFromOSM() {
   );
 
   const rel = relData.elements.find((e) => e.type === 'relation');
-  const [minLat, minLon, maxLat, maxLon] = expandedBounds(rel.bounds);
   const roadData = await loadCachedOrFetch(
-    'route18_roads.json',
+    'route18_roads_wide.json',
     `[out:json][timeout:90];
 rel(${RELATION_ID})->.routeRel;
 way(r.routeRel)->.routeWays;
 node(w.routeWays)->.routeNodes;
 (
   .routeWays;
-  ${ROAD_TYPES.map((type) => `way(around.routeNodes:35)["highway"="${type}"];`).join('\n  ')}
-  node(around.routeNodes:35)["highway"="traffic_signals"];
+  ${ROAD_TYPES.map((type) => `way(around.routeNodes:${ROAD_AROUND_RADIUS})["highway"="${type}"];`).join('\n  ')}
+  node(around.routeNodes:${ROAD_AROUND_RADIUS})["highway"="traffic_signals"];
 );
 out body geom;`
   );
