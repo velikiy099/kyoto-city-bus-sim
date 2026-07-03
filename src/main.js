@@ -18,6 +18,7 @@ import { schedule, delayInfo, scheduledClockAt } from './game/timetable.js';
 import { buildLandmarks } from './world/landmarks.js';
 import { buildNature } from './world/nature.js';
 import { buildBuildings } from './world/buildings.js';
+import { buildRailways } from './world/railways.js';
 import { buildTraffic } from './world/traffic.js';
 import * as sfx from './audio/sfx.js';
 import { initAnnouncements, announceNext, announceApproach, announceTerminal, announceStart } from './audio/announcements.js';
@@ -44,6 +45,7 @@ scene.add(sun);
 
 scene.add(buildGround(path));
 scene.add(buildRoad(path, route));
+buildRailways(scene, path, route.railStructures);
 const exclusions = [...buildLandmarks(scene, path), ...buildNature(scene, path)];
 buildBuildings(scene, path, exclusions, route.buildings);
 

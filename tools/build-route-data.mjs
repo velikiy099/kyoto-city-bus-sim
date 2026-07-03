@@ -35,6 +35,7 @@ const BUILDING_AROUND_RADIUS = 95; // route node 周辺から沿道建物を拾�
 const BUILDING_BIN_SIZE = 120;
 const BUILDINGS_PER_BIN = 15;
 const MAX_BUILDINGS = 1400;
+const RAILWAY_BBOX = [34.982, 135.744, 34.9895, 135.752]; // 七条大宮〜東寺東門前のJR線群
 const ROAD_TYPES = ['primary', 'secondary', 'tertiary', 'unclassified', 'residential', 'service'];
 
 // 南行きの公式停留所順(京都市交通局 時刻表より、城南宮道経由・全区間便)
@@ -539,6 +540,73 @@ function buildingMetadata(path, cumLen, origin, buildingWays) {
   return selected.slice(0, MAX_BUILDINGS).map(({ id, dist, ...b }) => b);
 }
 
+function railwayMetadata(path, cumLen, origin, railWays, sFrom, sTo) {
+  const groups = { conventional: [], shinkansen: [] };
+  for (const way of railWays) {
+    const tags = way.tags ?? {};
+    if (tags.railway !== 'rail' || tags.railway === 'platform') continue;
+    if (tags.railway === 'platform' || tags.usage === 'tourism' || tags['railway:preserved']) continue;
+    const pts = project(way.geometry.map((p) => [p.lat, p.lon]), origin).map(([x, z]) => [x * SCALE, z * SCALE]);
+    if (pts.length < 2) continue;
+    const hit = closestRoadSample(path, cumLen, pts, Math.max(0, sFrom - 80));
+    if (!hit || hit.dist > 45 || hit.s < sFrom || hit.s > sTo) continue;
+    const routeH = routeHeadingAt(path, cumLen, hit.s);
+    const crossing = Math.min(angleDiff(routeH, hit.heading), angleDiff(routeH, hit.heading + Math.PI));
+    if (crossing < 0.75) continue;
+    const name = tags['name:ja'] ?? tags.name ?? '';
+    const isShinkansen = tags.highspeed === 'yes' || tags.gauge === '1435' || name.includes('新幹線');
+    const isConventional = tags.gauge === '1067' || name.includes('東海道本線') || name.includes('山陰本線');
+    if (!isShinkansen && !isConventional) continue;
+    groups[isShinkansen ? 'shinkansen' : 'conventional'].push({
+      s: hit.s,
+      heading: hit.heading,
+      service: tags.service ?? '',
+      name,
+    });
+  }
+
+  const buildGroup = (kind, list) => {
+    if (!list.length) return null;
+    const sorted = [...list].sort((a, b) => a.s - b.s);
+    const sMin = sorted[0].s;
+    const sMax = sorted.at(-1).s;
+    const mainTracks = sorted.filter((r) => !['crossover', 'yard'].includes(r.service)).length;
+    const s = sorted.reduce((a, r) => a + r.s, 0) / sorted.length;
+    const heading = sorted.reduce((a, r) => a + r.heading, 0) / sorted.length;
+    if (kind === 'shinkansen') {
+      return {
+        kind: 'shinkansen-viaduct',
+        name: '東海道新幹線',
+        s: +s.toFixed(1),
+        heading: +heading.toFixed(4),
+        length: 190,
+        width: 16,
+        trackCount: 2,
+        layer: 3,
+      };
+    }
+    const trackCount = clamp(Math.round(mainTracks || sorted.length), 4, 8);
+    return {
+      kind: 'conventional-underpass',
+      name: 'JR在来線(東海道本線・山陰本線)',
+      s: +s.toFixed(1),
+      fromS: +Math.max(sFrom, sMin - 18).toFixed(1),
+      toS: +Math.min(sTo, sMax + 18).toFixed(1),
+      heading: +heading.toFixed(4),
+      length: 185,
+      width: +(trackCount * 3.2 + 8).toFixed(1),
+      trackCount,
+      layer: 0,
+      roadLayer: 1,
+    };
+  };
+
+  return [
+    buildGroup('conventional', groups.conventional),
+    buildGroup('shinkansen', groups.shinkansen),
+  ].filter(Boolean).sort((a, b) => a.s - b.s);
+}
+
 function pointAtPath(path, cumLen, s) {
   const ss = clamp(s, 0, cumLen.at(-1));
   let i = 0;
@@ -587,6 +655,15 @@ node(w.routeWays)->.routeNodes;
 );
 out body geom;`
   );
+  const [railSouth, railWest, railNorth, railEast] = RAILWAY_BBOX;
+  const railwayData = await loadCachedOrFetch(
+    'route18_railways_sevenjo_toji.json',
+    `[out:json][timeout:90];
+(
+  way[railway](${railSouth},${railWest},${railNorth},${railEast});
+);
+out body geom;`
+  );
   const ways = rel.members.filter((m) => m.type === 'way' && m.role === '');
   const platformRefs = rel.members
     .filter((m) => m.role.startsWith('platform') || m.role.startsWith('stop'))
@@ -623,8 +700,9 @@ out body geom;`
   const roads = roadData.elements.filter((e) => e.type === 'way' && isMajorRoad(e.tags) && e.geometry?.length > 1);
   const signalNodes = roadData.elements.filter((e) => e.type === 'node' && e.tags?.highway === 'traffic_signals');
   const buildings = buildingData.elements.filter((e) => e.type === 'way' && e.tags?.building && e.geometry?.length > 2);
+  const railways = railwayData.elements.filter((e) => e.type === 'way' && e.tags?.railway && e.geometry?.length > 1);
 
-  return { line, stopsLL, roads, signalNodes, buildings, source: `OpenStreetMap relation ${RELATION_ID} © OpenStreetMap contributors (ODbL)` };
+  return { line, stopsLL, roads, signalNodes, buildings, railways, source: `OpenStreetMap relation ${RELATION_ID} © OpenStreetMap contributors (ODbL)` };
 }
 
 function buildFallback() {
@@ -649,12 +727,12 @@ function buildFallback() {
   };
   const line = STOP_ORDER.map((n) => coords[n]);
   const stopsLL = STOP_ORDER.map((n) => ({ name: n, latlon: coords[n] }));
-  return { line, stopsLL, roads: [], signalNodes: [], buildings: [], source: 'fallback: OSM実測停留所座標の直結近似' };
+  return { line, stopsLL, roads: [], signalNodes: [], buildings: [], railways: [], source: 'fallback: OSM実測停留所座標の直結近似' };
 }
 
 async function main() {
   const fallback = process.argv.includes('--fallback');
-  const { line, stopsLL, roads, signalNodes, buildings: buildingWays, source } = fallback ? buildFallback() : await buildFromOSM();
+  const { line, stopsLL, roads, signalNodes, buildings: buildingWays, railways, source } = fallback ? buildFallback() : await buildFromOSM();
 
   console.log('[4/5] 座標変換: 投影 → スケール → フィレット → 平滑化 → リサンプル');
   const origin = [
@@ -704,6 +782,14 @@ async function main() {
   }));
   const { roadSections, intersections, signals } = roadMetadata(path, cumLen, origin, roads, signalNodes);
   const buildings = buildingMetadata(path, cumLen, origin, buildingWays);
+  const railStructures = railwayMetadata(
+    path,
+    cumLen,
+    origin,
+    railways,
+    stopS('七条大宮・京都水族館前'),
+    stopS('東寺東門前')
+  );
 
   const out = {
     routeName: '18号系統',
@@ -722,6 +808,7 @@ async function main() {
     intersections: intersections.map(({ dist, ...ix }) => ix),
     signals,
     buildings,
+    railStructures,
   };
   writeFileSync(OUT, JSON.stringify(out));
 
@@ -733,7 +820,7 @@ async function main() {
   for (const st of stops) console.log(`  ${String(st.s).padStart(7)}  ${st.name}  (±${st.projDist}m)`);
   console.log('橋:', bridges.map((b) => `${b.name}@${b.s}`).join('  '));
   console.log('速度ゾーン:', speedZones.map((z) => `${z.from}-${z.to}:${z.limit}km/h`).join('  '));
-  console.log(`道路区間: ${roadSections.length}  交差点: ${intersections.length}  OSM信号: ${signals.length}  OSM建物: ${buildings.length}`);
+  console.log(`道路区間: ${roadSections.length}  交差点: ${intersections.length}  OSM信号: ${signals.length}  OSM建物: ${buildings.length}  鉄道構造: ${railStructures.length}`);
   const bad = stops.filter((st, i) => i > 0 && st.s <= stops[i - 1].s);
   if (bad.length) throw new Error(`s値が単調増加でない停留所: ${bad.map((b) => b.name).join(',')}`);
   if (stops.length !== 30) throw new Error(`停留所数が30でない: ${stops.length}`);
