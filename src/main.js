@@ -20,7 +20,7 @@ import { buildNature } from './world/nature.js';
 import { buildBuildings } from './world/buildings.js';
 import { buildTraffic } from './world/traffic.js';
 import * as sfx from './audio/sfx.js';
-import { initAnnouncements, announceNext, announceApproach, announceTerminal } from './audio/announcements.js';
+import { initAnnouncements, announceNext, announceApproach, announceTerminal, announceStart } from './audio/announcements.js';
 
 const STEP = 1 / 60;
 const DOOR_OFFSET = CFG.bus.wheelbase + 1.2; // 後軸→前扉
@@ -348,6 +348,7 @@ setupDebug({
 showTitle(() => {
   sfx.initAudio();
   initAnnouncements();
+  announceStart();
   state.phase = 'RUNNING';
   state.clock = CFG.ops.startClock - 45;
 });

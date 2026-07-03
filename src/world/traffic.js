@@ -90,9 +90,9 @@ export function buildTraffic(scene, path, events = {}) {
     g.add(housing);
     const lampGeo = new THREE.SphereGeometry(0.28, 16, 10);
     const lampList = [
-      ['green', -0.72],
+      ['red', -0.72],
       ['yellow', 0],
-      ['red', 0.72],
+      ['green', 0.72],
     ].map(([key, x]) => {
       const lamp = new THREE.Mesh(lampGeo, signalMat(0x223322));
       lamp.position.set(x, 0, -0.24);
