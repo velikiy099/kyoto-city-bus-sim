@@ -442,17 +442,6 @@ function roadMetadata(path, cumLen, origin, roads, signalNodes) {
         name: tags.name ?? sig.name,
         dist: best.hit.dist,
       });
-    } else {
-      intersections.push({
-        s: sig.s,
-        heading: +(routeH + Math.PI / 2).toFixed(4),
-        width: 8,
-        length: 56,
-        lanes: 2,
-        highway: 'signal-connector',
-        name: sig.name,
-        dist: 0,
-      });
     }
   }
   intersections.sort((a, b) => a.s - b.s || a.dist - b.dist);
