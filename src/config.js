@@ -22,9 +22,7 @@ export const CFG = {
   },
   // --- 道路 ---
   road: {
-    halfWidth: 4.0, // 片側幅(センターまで)
-    laneCenter: -1.7, // 車線中心の横偏差(左側通行: 左=負)
-    curbStop: -3.3, // 縁石側の理想停車位置
+    halfWidth: 4.0, // 最小の片側幅(センターまで)。実効値は routeData の halfWidthAt(s)
     offroadMargin: 1.0, // 道路端からこれ以上で場外
   },
   // --- 運行 ---
@@ -37,9 +35,7 @@ export const CFG = {
     perfectWindow: 1.0, // 正着判定 [m]
     curbWindow: 0.8, // 縁石からの許容ギャップ [m]
     departEarlyGrace: 5, // 早発猶予 [s]
-    schedSpeed: 11.0, // ダイヤ想定表定速度 [m/s]
-    dwellPerStop: 12, // ダイヤ上の停車時分 [s]
-    startClock: 10 * 3600, // ゲーム開始時刻 10:00:00 [s]
+    // ダイヤは timetable.js の固定時刻表(9:56 発〜10:44 着)を使用
     approachDist: 120, // 「まもなく」アナウンス距離 [m]
   },
   // --- スコア ---

@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import './style.css';
 import { CFG } from './config.js';
-import { route, speedLimitKmhAt, speedLimitAt } from './route/routeData.js';
+import { route, speedLimitKmhAt, speedLimitAt, elevationAt, gradeAt, halfWidthAt, laneCenterAt, curbStopLat } from './route/routeData.js';
 import { input } from './input.js';
 import { BusPhysics } from './bus/busPhysics.js';
 import { createBusModel } from './bus/busModel.js';
@@ -14,11 +14,12 @@ import { buildStops } from './game/stops.js';
 import { createPassengers } from './game/passengers.js';
 import { createScoring } from './game/scoring.js';
 import { createOps } from './game/gameState.js';
-import { schedule, delayInfo, scheduledClockAt } from './game/timetable.js';
+import { schedule, delayInfo, scheduledClockAt, firstDepartTime } from './game/timetable.js';
 import { buildLandmarks } from './world/landmarks.js';
 import { buildNature } from './world/nature.js';
 import { buildBuildings } from './world/buildings.js';
 import { buildRailways } from './world/railways.js';
+import { buildExtraRoads } from './world/extraRoads.js';
 import { buildTraffic } from './world/traffic.js';
 import * as sfx from './audio/sfx.js';
 import { initAnnouncements, announceNext, announceApproach, announceTerminal, announceStart } from './audio/announcements.js';
@@ -45,6 +46,7 @@ scene.add(sun);
 
 scene.add(buildGround(path));
 scene.add(buildRoad(path, route));
+buildExtraRoads(scene); // 千本通北側(二条駅前交差点)などルート外の道路
 buildRailways(scene, path, route.railStructures);
 const exclusions = [...buildLandmarks(scene, path), ...buildNature(scene, path)];
 buildBuildings(scene, path, exclusions, route.buildings);
@@ -59,7 +61,7 @@ const state = {
   s: 0,
   lateral: 0,
   offRoute: false,
-  clock: CFG.ops.startClock - 45, // 9:59:15 発車準備
+  clock: firstDepartTime - 45, // 始発 9:56 発の 45 秒前から乗車扱い
   score: 0,
   fareTotal: 0,
   nextStopIndex: 0,
@@ -76,6 +78,7 @@ const scoring = createScoring(state);
 const traffic = buildTraffic(scene, path, {
   onCollision() {
     scoring.add(CFG.score.collision, '対向車と接触!');
+    (state.collisionLog ??= []).push(Math.round(state.s)); // 発生位置(デバッグ用)
   },
   onRedLight() {
     scoring.add(CFG.score.redLight, '信号無視!');
@@ -120,7 +123,8 @@ const ops = createOps({
   },
 });
 
-function placeBusAtS(s, lat = CFG.road.laneCenter) {
+function placeBusAtS(s, lat = null) {
+  lat = lat ?? laneCenterAt(s);
   const [px, pz] = path.getPoint(s);
   const [tx, tz] = path.getTangent(s);
   bus.x = px + -tz * lat;
@@ -147,8 +151,11 @@ function updateCamera(dt) {
   }
   camera.matrixAutoUpdate = true;
   const [fx, fz] = bus.forward;
-  const targetPos = new THREE.Vector3(bus.x - fx * 13, 5.2, bus.z - fz * 13);
-  const targetLook = new THREE.Vector3(bus.x + fx * 8, 2.2, bus.z + fz * 8);
+  // 追従カメラも路面標高(跨線橋)に追従させる
+  const camElev = elevationAt(Math.max(0, state.s - 13));
+  const lookElev = elevationAt(state.s + 8);
+  const targetPos = new THREE.Vector3(bus.x - fx * 13, 5.2 + camElev, bus.z - fz * 13);
+  const targetLook = new THREE.Vector3(bus.x + fx * 8, 2.2 + lookElev, bus.z + fz * 8);
   if (!camInit || camPos.distanceTo(targetPos) > 60) {
     camPos.copy(targetPos);
     camLook.copy(targetLook);
@@ -162,14 +169,19 @@ function updateCamera(dt) {
 }
 
 // ---------------------------------------------------------------- autoDrive helpers
+/** 停車義務: 乗降需要あり、または時刻表対象(時間調整)停留所 */
+const mustStopAt = (i) => pax.mustStopAt(i) || !!schedule[i]?.checkpoint;
+
 function autoStopTargetS() {
   // 発車ブロック(定刻待ち)中はその場停止を維持
   if (state.promptText?.startsWith('発車時刻')) return state.s;
   // 発車待ち解除直後: いま停まっている停留所は済んでいるので次から探す
   const from = state.waitingDepart ? state.nextStopIndex + 1 : state.nextStopIndex;
   for (let i = from; i < route.stops.length; i++) {
-    if (pax.mustStopAt(i) || i === route.stops.length - 1) {
-      return route.stops[i].s - DOOR_OFFSET;
+    if (mustStopAt(i) || i === route.stops.length - 1) {
+      const target = route.stops[i].s - DOOR_OFFSET;
+      if (target < state.s - 10) continue; // 通り過ぎた停留所は諦めて先へ(スタック防止)
+      return target;
     }
   }
   return null;
@@ -188,15 +200,22 @@ function tick(dt, ePressed) {
     if (target != null) {
       const d = target - state.s;
       // 停止目標に近いのに寄せが足りない → 目標を少し先送りし微速で寄せ直す
-      if (d < 26 && d > -6 && state.lateral > -1.8 && state.doorState === 'CLOSED' && !state.waitingDepart) {
+      const needLat = curbStopLat(target) + 0.7; // これより中央寄りなら寄せ不足
+      if (d < 30 && d > -6 && state.lateral > needLat && state.doorState === 'CLOSED' && !state.waitingDepart) {
         effTarget = state.s + Math.max(d, 4);
-        vCap = 1.4;
+        vCap = 1.6;
       }
     }
     // 赤信号の停止線が停留所より手前ならそちらを優先
     const redS = traffic.redStopTarget(state.s, bus.v);
     if (redS != null && (effTarget == null || redS < effTarget)) effTarget = redS;
-    axes = autoDriveInput(bus, path, state.s, effTarget, near ? -2.35 : CFG.road.laneCenter, vCap);
+    // 前方の同行車との車間を保つ(信号待ち行列への追突防止)
+    const lead = traffic.leadGapAhead(state.s, state.lateral);
+    if (lead != null) {
+      const followS = state.s + lead - 11;
+      if (effTarget == null || followS < effTarget) effTarget = followS;
+    }
+    axes = autoDriveInput(bus, path, state.s, effTarget, near ? curbStopLat(target ?? state.s) : null, vCap);
     // ドア操作の自動化: プロンプトが出たら即 E
     if (state.promptText?.startsWith('E :')) ePressed = true;
   } else {
@@ -208,20 +227,22 @@ function tick(dt, ePressed) {
   const proj = path.closestS([bus.x, bus.z], state.s, 150);
   state.s = proj.s;
   state.lateral = proj.lateral;
-  state.offRoute = proj.dist > CFG.road.halfWidth + CFG.road.offroadMargin + 2.5;
+  state.offRoute = proj.dist > halfWidthAt(state.s) + CFG.road.offroadMargin + 2.5;
 
   if (state.offRoute && bus.v > 15 / 3.6) bus.v = 15 / 3.6;
 
   state.clock += dt;
   ops.update(dt, ePressed);
   scoring.tick(dt, bus, speedLimitAt(state.s));
-  traffic.update(dt, state.s, [bus.x, bus.z], bus.v);
+  // 衝突判定は後軸でなく車体中心基準
+  const [bfx, bfz] = bus.forward;
+  traffic.update(dt, state.s, [bus.x + bfx * 3.15, bus.z + bfz * 3.15], bus.v);
 
   // 「まもなく」アナウンス(次停留所の 120m 手前)
   const ns = route.stops[state.nextStopIndex];
   if (ns && !approachAnnounced && !state.waitingDepart && ns.s - state.s < CFG.ops.approachDist) {
     approachAnnounced = true;
-    if (pax.mustStopAt(state.nextStopIndex)) announceApproach(ns.name);
+    if (mustStopAt(state.nextStopIndex)) announceApproach(ns.name);
   }
 }
 
@@ -263,7 +284,7 @@ function frame(now) {
     if (steps === maxSteps) acc = 0;
   }
 
-  busModel.update(bus, dt);
+  busModel.update(bus, dt, elevationAt(state.s), gradeAt(state.s));
   updateCamera(dt);
   sfx.updateEngine(bus.speedKmh, bus.throttleState);
 
@@ -277,7 +298,7 @@ function frame(now) {
     if (state.completed) sub = '終点 おつかれさまでした';
     else if (state.doorState !== 'CLOSED') sub = '乗降中';
     else if (state.buzzer) sub = `🔔 つぎ とまります ・ あと${distTo.toFixed(0)}m`;
-    else if (pax.mustStopAt(i)) sub = `停車 ・ あと${distTo.toFixed(0)}m`;
+    else if (mustStopAt(i)) sub = `停車 ・ あと${distTo.toFixed(0)}m`;
     else sub = `通過可 ・ あと${distTo.toFixed(0)}m`;
     const started = state.nextStopIndex > 0 || state.doorState !== 'CLOSED';
     const d = started ? delayInfo(state.clock, state.s) : null;
@@ -303,7 +324,7 @@ function frame(now) {
 // ---------------------------------------------------------------- boot
 initHud();
 minimap = createMinimap(path, route.stops);
-placeBusAtS(Math.max(0.5, route.stops[0].s - DOOR_OFFSET), -2.4); // 始発: 前扉を二条駅西口の停止線に合わせて待機
+placeBusAtS(Math.max(0.5, route.stops[0].s - DOOR_OFFSET), curbStopLat(route.stops[0].s)); // 始発: 前扉を二条駅西口の停止線に合わせて待機
 setupDebug({
   bus,
   path,
@@ -333,6 +354,7 @@ setupDebug({
     fare: state.fareTotal,
     buzzer: state.buzzer,
     offRoute: state.offRoute,
+    collisionLog: state.collisionLog ?? [],
     autoDrive: dbg.autoDrive,
     timeScale: dbg.timeScale,
     paxSeed: pax.seed,
@@ -352,7 +374,7 @@ showTitle(() => {
   initAnnouncements();
   announceStart();
   state.phase = 'RUNNING';
-  state.clock = CFG.ops.startClock - 45;
+  state.clock = firstDepartTime - 45;
 });
 
 window.addEventListener('resize', () => {

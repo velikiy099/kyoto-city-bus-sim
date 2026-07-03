@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { CFG } from '../config.js';
-import { route } from '../route/routeData.js';
+import { route, halfWidthAt } from '../route/routeData.js';
 
 const mat = (color, opts = {}) => new THREE.MeshLambertMaterial({ color, ...opts });
 
@@ -92,7 +92,7 @@ export function buildNature(scene, path) {
       if (((s / 42) | 0) % 2 === (side === -1 ? 0 : 1)) continue; // 互い違い
       const [px, pz] = path.getPoint(s);
       const [tx, tz] = path.getTangent(s);
-      const lat = side * (CFG.road.halfWidth + 2.4);
+      const lat = side * (halfWidthAt(s) + 2.4); // 複数車線区間は広い道路幅に合わせて外側へ
       items.push([px + -tz * lat, pz + tx * lat]);
     }
   }

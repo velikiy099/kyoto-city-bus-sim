@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { makeRibbon } from './road.js';
+import { elevationAt, gradeAt } from '../route/routeData.js';
 
 const mat = (color, opts = {}) => new THREE.MeshLambertMaterial({ color, ...opts });
 
@@ -56,9 +57,41 @@ function buildConventionalUnderpass(scene, path, spec) {
   const deckMat = mat(0x5f646a);
   const sFrom = spec.fromS ?? spec.s - 30;
   const sTo = spec.toS ?? spec.s + 30;
+  // デッキ・欄干(makeRibbon が標高追従するので路面と一緒に持ち上がる)
   scene.add(new THREE.Mesh(makeRibbon(path, -8.8, 8.8, 0.22, sFrom, sTo, 2), deckMat));
-  scene.add(new THREE.Mesh(makeRibbon(path, -9.25, -8.75, 0.92, sFrom, sTo, 2), mat(0xc8ced2)));
-  scene.add(new THREE.Mesh(makeRibbon(path, 8.75, 9.25, 0.92, sFrom, sTo, 2), mat(0xc8ced2)));
+  scene.add(new THREE.Mesh(makeRibbon(path, -9.25, -8.75, 0.92, sFrom - 52, sTo + 52, 2), mat(0xc8ced2)));
+  scene.add(new THREE.Mesh(makeRibbon(path, 8.75, 9.25, 0.92, sFrom - 52, sTo + 52, 2), mat(0xc8ced2)));
+
+  // 道路が持ち上がる場合(跨線橋): 桁とアプローチ擁壁で下部を埋める
+  if ((spec.roadLayer ?? 0) > 0) {
+    const concrete = mat(0x9aa0a4);
+    const alongPitchBox = (sMid, boxLen, height) => {
+      const [px, pz] = path.getPoint(sMid);
+      const [tx, tz] = path.getTangent(sMid);
+      const grp = new THREE.Group();
+      grp.position.set(px, 0, pz);
+      grp.rotation.y = Math.atan2(tx, tz);
+      const box = new THREE.Mesh(new THREE.BoxGeometry(17.4, height, boxLen), concrete);
+      box.rotation.x = -Math.atan(gradeAt(sMid));
+      box.position.y = elevationAt(sMid) - height / 2 + 0.1;
+      grp.add(box);
+      scene.add(grp);
+    };
+    // 桁(デッキ直下)
+    alongPitchBox((sFrom + sTo) / 2, sTo - sFrom + 2, 1.1);
+    // アプローチ擁壁(前後 50m: routeData の APPROACH_LEN と一致)
+    alongPitchBox(sFrom - 25, 51, 0.9);
+    alongPitchBox(sTo + 25, 51, 0.9);
+    // 橋脚(掘割の線路の間は避け、桁端の2本)
+    for (const sPier of [sFrom + 2, sTo - 2]) {
+      const [px, pz] = path.getPoint(sPier);
+      const [tx, tz] = path.getTangent(sPier);
+      const pier = new THREE.Mesh(new THREE.BoxGeometry(15, elevationAt(sPier), 1.4), concrete);
+      pier.position.set(px, elevationAt(sPier) / 2 - 0.8, pz);
+      pier.rotation.y = Math.atan2(tx, tz);
+      scene.add(pier);
+    }
+  }
 }
 
 function buildShinkansenViaduct(scene, path, spec) {

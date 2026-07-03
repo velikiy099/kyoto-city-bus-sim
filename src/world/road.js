@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { CFG } from '../config.js';
+import { elevationAt } from '../route/routeData.js';
 
 /**
  * 経路に沿った帯(リボン)ジオメトリを生成
@@ -16,8 +17,9 @@ export function makeRibbon(path, latFrom, latTo, y, sFrom = 0, sTo = null, sStep
     const [tx, tz] = path.getTangent(ss);
     // 左法線 = (tz, -tx) が lateral 負方向(path.closestS の符号系と整合)
     const nx = -tz, nz = tx; // lateral 正(右)方向
-    positions.push(px + nx * latFrom, y, pz + nz * latFrom);
-    positions.push(px + nx * latTo, y, pz + nz * latTo);
+    const ye = y + elevationAt(ss); // 跨線橋区間は路面ごと持ち上げる
+    positions.push(px + nx * latFrom, ye, pz + nz * latFrom);
+    positions.push(px + nx * latTo, ye, pz + nz * latTo);
     if (row > 0) {
       const b = row * 2;
       indices.push(b - 2, b - 1, b, b - 1, b + 1, b);
@@ -54,17 +56,18 @@ function addIntersections(g, path, intersections) {
     const [px, pz] = path.getPoint(s);
     const width = Math.max(5.5, ix.width ?? 7);
     const length = Math.max(28, ix.length ?? 54);
+    const elev = elevationAt(s);
     const stub = new THREE.Mesh(new THREE.PlaneGeometry(length, width), roadMat);
     stub.rotation.x = -Math.PI / 2;
     stub.rotation.z = -(ix.heading ?? 0);
-    stub.position.set(px, 0.006, pz);
+    stub.position.set(px, 0.006 + elev, pz);
     g.add(stub);
 
     const [tx, tz] = path.getTangent(s);
     const cw = new THREE.Mesh(new THREE.PlaneGeometry(Math.max(9, roadHalfWidth(ix.lanes ?? 2) * 2), 2.8), lineMat);
     cw.rotation.x = -Math.PI / 2;
     cw.rotation.z = -Math.atan2(tx, tz);
-    cw.position.set(px, 0.034, pz);
+    cw.position.set(px, 0.034 + elev, pz);
     g.add(cw);
   }
 }

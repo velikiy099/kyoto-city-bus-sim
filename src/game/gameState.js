@@ -1,4 +1,5 @@
 import { CFG } from '../config.js';
+import { halfWidthAt } from '../route/routeData.js';
 import { schedule, fmtTime, delayInfo } from './timetable.js';
 import { setPrompt, setDoorStatus, showToast } from '../ui/hud.js';
 
@@ -29,8 +30,8 @@ export function createOps(ctx) {
 
   /** 前扉の弧長位置(後軸 s + 前扉オフセット) */
   const doorS = () => state.s + CFG.bus.wheelbase + 1.2;
-  /** 縁石ギャップ [m](車体左側面と縁石の距離) */
-  const curbGap = () => state.lateral - CFG.bus.width / 2 + CFG.road.halfWidth;
+  /** 縁石ギャップ [m](車体左側面とその地点の実効縁石の距離。複数車線区間は路肩基準) */
+  const curbGap = () => state.lateral - CFG.bus.width / 2 + halfWidthAt(state.s);
 
   function openDoor() {
     const stop = route.stops[state.nextStopIndex];
@@ -165,7 +166,8 @@ export function createOps(ctx) {
             promptWarn = true;
           } else if (dS > stop.s + 18 && bus.v > 1) {
             // 通過
-            advancePassed(pax.mustStopAt(i));
+            // 時刻表対象(checkpoint)停留所は乗降がなくても停車義務(時間調整)
+            advancePassed(pax.mustStopAt(i) || schedule[i].checkpoint);
           }
           break;
         }

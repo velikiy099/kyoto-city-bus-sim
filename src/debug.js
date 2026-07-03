@@ -1,6 +1,6 @@
 import { CFG } from './config.js';
 import { input } from './input.js';
-import { speedLimitAt } from './route/routeData.js';
+import { speedLimitAt, laneCenterAt } from './route/routeData.js';
 
 /**
  * デバッグ/自動運転。window.game に API を公開する。
@@ -13,11 +13,12 @@ export const dbg = {
 };
 
 /** 経路追従オートパイロット(pure pursuit + 速度制御)。対向車AIにも流用 */
-export function autoDriveInput(bus, path, s, stopTargetS = null, targetLat = CFG.road.laneCenter, vCap = Infinity) {
+export function autoDriveInput(bus, path, s, stopTargetS = null, targetLat = null, vCap = Infinity) {
   const B = CFG.bus;
   // --- 操舵: 目標横位置を狙う pure pursuit ---
   const Ld = Math.max(8, Math.min(30, 6 + bus.v * 1.8));
-  const target = laneCenterPoint(path, Math.min(s + Ld, path.length - 0.1), targetLat);
+  const sAhead = Math.min(s + Ld, path.length - 0.1);
+  const target = laneCenterPoint(path, sAhead, targetLat ?? laneCenterAt(sAhead));
   const dx = target[0] - bus.x, dz = target[1] - bus.z;
   const distT = Math.hypot(dx, dz) || 1e-6;
   const targetH = Math.atan2(dx, dz);
@@ -56,10 +57,11 @@ export function autoDriveInput(bus, path, s, stopTargetS = null, targetLat = CFG
   return { throttle, brake, steer };
 }
 
-function laneCenterPoint(path, s, lat = CFG.road.laneCenter) {
+function laneCenterPoint(path, s, lat = null) {
   const [px, pz] = path.getPoint(s);
   const [tx, tz] = path.getTangent(s);
-  return [px + -tz * lat, pz + tx * lat];
+  const l = lat ?? laneCenterAt(s);
+  return [px + -tz * l, pz + tx * l];
 }
 
 export function setupDebug(ctx) {

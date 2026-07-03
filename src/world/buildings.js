@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { CFG } from '../config.js';
+import { halfWidthAt } from '../route/routeData.js';
 
 function mulberry32(seed) {
   let a = seed >>> 0;
@@ -87,7 +88,7 @@ export function buildBuildings(scene, path, exclusions = [], osmBuildings = []) 
       if (urban > 0.9) h = r < 0.5 ? 6 + rand() * 6 : r < 0.85 ? 12 + rand() * 10 : 24 + rand() * 14;
       else if (urban > 0.6) h = r < 0.6 ? 5 + rand() * 5 : 9 + rand() * 8;
       else h = r < 0.75 ? 4 + rand() * 3 : 7 + rand() * 4;
-      const lat = side * (CFG.road.halfWidth + setback + w / 2);
+      const lat = side * (halfWidthAt(s) + setback + w / 2);
       const x = px + nx * lat + tx * (rand() - 0.5) * 4;
       const z = pz + nz * lat + tz * (rand() - 0.5) * 4;
       if (isExcluded(x, z)) continue;
@@ -110,7 +111,7 @@ export function buildBuildings(scene, path, exclusions = [], osmBuildings = []) 
     const nx = -tz, nz = tx;
     for (const side of [-1, 1]) {
       if (rand() < 0.45) continue;
-      const lat = side * (CFG.road.halfWidth + 14 + rand() * 26);
+      const lat = side * (halfWidthAt(s) + 14 + rand() * 26);
       const x = px + nx * lat, z = pz + nz * lat;
       if (isExcluded(x, z)) continue;
       fields.push({ x, z, w: 18 + rand() * 22, d: 14 + rand() * 16, ry: Math.atan2(tx, tz), color: fieldColors[(rand() * 4) | 0] });

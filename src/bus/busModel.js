@@ -145,12 +145,12 @@ export function createBusModel() {
     root,
     body,
     cockpitAnchor,
-    update(bus, dt) {
-      root.position.set(bus.x, 0, bus.z);
+    update(bus, dt, elev = 0, grade = 0) {
+      root.position.set(bus.x, elev, bus.z);
       root.rotation.y = bus.heading;
-      // 視覚ロール(横G)・ピッチ(加減速) — 演出のみ
+      // 視覚ロール(横G)・ピッチ(加減速+路面勾配)
       const rollT = THREE.MathUtils.clamp(bus.latAccel * 0.018, -0.052, 0.052);
-      const pitchT = THREE.MathUtils.clamp(-bus.accel * 0.009, -0.026, 0.026);
+      const pitchT = THREE.MathUtils.clamp(-bus.accel * 0.009, -0.026, 0.026) - Math.atan(grade);
       body.rotation.z += (rollT - body.rotation.z) * Math.min(1, dt * 5);
       body.rotation.x += (pitchT - body.rotation.x) * Math.min(1, dt * 5);
       // タイヤ
