@@ -2,6 +2,12 @@
 let jaVoice = null;
 let available = false;
 let currentUtterance = null;
+let pendingTimer = null;
+let lastCancelAt = -Infinity;
+
+// Chrome では cancel() の処理が非同期で、直後(同一タスク内)に speak() すると
+// その発話ごと破棄される。cancel 後はこの時間だけ speak を遅延させる。
+const CANCEL_SETTLE_MS = 80;
 
 export function initAnnouncements() {
   if (!('speechSynthesis' in window)) {
@@ -11,6 +17,7 @@ export function initAnnouncements() {
   available = true;
   speechSynthesis.resume?.();
   speechSynthesis.cancel();
+  lastCancelAt = performance.now();
   const pick = () => {
     const voices = speechSynthesis.getVoices();
     jaVoice = voices.find((v) => v.lang?.startsWith('ja')) ?? null;
@@ -22,8 +29,7 @@ export function initAnnouncements() {
   setTimeout(pick, 1000);
 }
 
-function speak(text) {
-  if (!available) return;
+function utter(text, retried = false) {
   try {
     speechSynthesis.resume?.();
     const u = new SpeechSynthesisUtterance(text);
@@ -32,11 +38,40 @@ function speak(text) {
     u.rate = 1.02;
     u.pitch = 1.05;
     u.volume = 0.9;
-    u.onend = () => { currentUtterance = null; };
-    u.onerror = () => { currentUtterance = null; };
-    currentUtterance = u;
-    speechSynthesis.cancel();
+    u.onend = () => { if (currentUtterance === u) currentUtterance = null; };
+    u.onerror = () => { if (currentUtterance === u) currentUtterance = null; };
+    currentUtterance = u; // GC で発話が途切れないよう参照を保持
     speechSynthesis.speak(u);
+    if (!retried) {
+      // それでも発話が始まらなかった場合の保険(一度だけ再試行)
+      setTimeout(() => {
+        if (currentUtterance !== u) return;
+        if (!speechSynthesis.speaking && !speechSynthesis.pending) utter(text, true);
+      }, 600);
+    }
+  } catch {
+    currentUtterance = null;
+  }
+}
+
+function speak(text) {
+  if (!available) return;
+  try {
+    clearTimeout(pendingTimer);
+    pendingTimer = null;
+    if (speechSynthesis.speaking || speechSynthesis.pending) {
+      speechSynthesis.cancel(); // 新しい案内を優先(読み上げ中のものは打ち切り)
+      lastCancelAt = performance.now();
+    }
+    const wait = CANCEL_SETTLE_MS - (performance.now() - lastCancelAt);
+    if (wait > 0) {
+      pendingTimer = setTimeout(() => {
+        pendingTimer = null;
+        utter(text);
+      }, wait);
+    } else {
+      utter(text);
+    }
   } catch {
     currentUtterance = null;
   }
