@@ -84,7 +84,8 @@ const traffic = buildTraffic(scene, path, {
     scoring.add(CFG.score.redLight, '信号無視!');
   },
 });
-let approachAnnounced = false;
+// 始発は停止線に着けた状態で開始するため接近アナウンスは済扱い(「乗務開始」を打ち消さない)
+let approachAnnounced = true;
 const ops = createOps({
   bus,
   route,
