@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import { CFG } from '../config.js';
 import { route, halfWidthAt } from '../route/routeData.js';
+import { loadProps } from '../util/propsLib.js';
 
 const mat = (color, opts = {}) => new THREE.MeshLambertMaterial({ color, ...opts });
 
@@ -81,11 +81,7 @@ export function buildNature(scene, path) {
   // 西山(右手)
   for (let i = 0; i < 6; i++) mk(minX - 980 - (i % 2) * 240, minZ + 500 + i * 700, 560 + (i % 3) * 140, 280 + (i % 2) * 100);
 
-  // ---- 街路樹(市街地区間の歩道、InstancedMesh) ----
-  const trunkGeo = new THREE.CylinderGeometry(0.14, 0.2, 2.6, 5);
-  trunkGeo.translate(0, 1.3, 0);
-  const crownGeo = new THREE.SphereGeometry(1.5, 6, 5);
-  crownGeo.translate(0, 3.6, 0);
+  // ---- 街路樹(Blender製2種を InstancedMesh で量産) ----
   const items = [];
   for (let s = 40; s < path.length * 0.62; s += 42) {
     for (const side of [-1, 1]) {
@@ -96,18 +92,31 @@ export function buildNature(scene, path) {
       items.push([px + -tz * lat, pz + tx * lat]);
     }
   }
-  const place = (geo, color) => {
-    const mesh = new THREE.InstancedMesh(geo, mat(color), items.length);
-    const m = new THREE.Matrix4();
-    items.forEach(([x, z], i) => {
-      m.makeTranslation(x, 0, z);
-      mesh.setMatrixAt(i, m);
-    });
-    mesh.instanceMatrix.needsUpdate = true;
-    g.add(mesh);
+  // 座標由来の決定的な擬似乱数(向き・大きさのばらつき)
+  const rnd = (x, z, k) => {
+    const v = Math.sin(x * 127.1 + z * 311.7 + k * 74.7) * 43758.5453;
+    return v - Math.floor(v);
   };
-  place(trunkGeo, 0x6b4f3a);
-  place(crownGeo, 0x4e7a3d);
+  loadProps().then((lib) => {
+    const dummy = new THREE.Object3D();
+    ['TreeA', 'TreeB'].forEach((name, vi) => {
+      const own = items.filter((_, i) => i % 2 === vi); // 2種を交互に
+      if (!own.length) return;
+      lib.getObjectByName(name).traverse((part) => {
+        if (!part.isMesh) return;
+        const inst = new THREE.InstancedMesh(part.geometry, part.material, own.length);
+        own.forEach(([x, z], i) => {
+          dummy.position.set(x, 0, z);
+          dummy.rotation.set(0, rnd(x, z, 1) * Math.PI * 2, 0);
+          dummy.scale.setScalar(0.85 + rnd(x, z, 2) * 0.35);
+          dummy.updateMatrix();
+          inst.setMatrixAt(i, dummy.matrix);
+        });
+        inst.instanceMatrix.needsUpdate = true;
+        g.add(inst);
+      });
+    });
+  });
 
   return exclusions;
 }
