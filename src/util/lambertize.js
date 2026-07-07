@@ -22,6 +22,7 @@ function convert(m) {
         emissiveIntensity: m.emissiveIntensity ?? 1,
       });
   out.name = m.name;
+  out.side = m.side; // glTFの両面フラグ(単面ディテールの裏抜け防止)を引き継ぐ
   cache.set(m.uuid, out);
   return out;
 }
