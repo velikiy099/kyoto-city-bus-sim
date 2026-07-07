@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { halfWidthAt } from '../route/routeData.js';
+import { loadProps } from '../util/propsLib.js';
 
 /** 停留所名の看板テクスチャ */
 function makeSignTexture(name) {
@@ -34,9 +35,24 @@ const paxColors = [0x546a7b, 0x7b5a4e, 0x4e6a52, 0x6a5a7b, 0x3d5a80, 0x8a6d3b];
 export function buildStops(scene, path, stops) {
   const group = new THREE.Group();
   scene.add(group);
-  const paxGeo = new THREE.CapsuleGeometry(0.26, 0.95, 3, 8);
-  const paxMats = paxColors.map((c) => new THREE.MeshLambertMaterial({ color: c }));
   const waiting = []; // i -> [mesh...]
+
+  // 待ち客(Blender製の人物モデル。服の色は PaxBody マテリアル差し替え)
+  const paxMats = paxColors.map((c) => new THREE.MeshLambertMaterial({ color: c }));
+  function makeWaitingPax(colorIdx, heading, k) {
+    const holder = new THREE.Group();
+    loadProps().then((lib) => {
+      const fig = lib.getObjectByName('Passenger').clone(true);
+      fig.position.set(0, 0, 0);
+      fig.traverse((o) => {
+        if (o.isMesh && o.material.name === 'PaxBody') o.material = paxMats[colorIdx];
+      });
+      holder.add(fig);
+    });
+    holder.rotation.y = heading + (((k * 53) % 7) - 3) * 0.14; // 道路向き+ばらつき
+    holder.scale.setScalar(0.92 + ((k * 37) % 5) * 0.035); // 身長ばらつき
+    return holder;
+  }
 
   stops.forEach((stop, i) => {
     const HW = halfWidthAt(stop.s); // 片道2車線以上の区間ではその路肩(縁石)基準で配置
@@ -94,7 +110,7 @@ export function buildStops(scene, path, stops) {
     zone.position.set(zx, 0.025, zz);
     group.add(zone);
 
-    waiting.push({ at, HW, meshes: [] });
+    waiting.push({ at, HW, meshes: [], face: Math.atan2(nx, nz) }); // face: 車道向き
   });
 
   return {
@@ -104,9 +120,9 @@ export function buildStops(scene, path, stops) {
       while (w.meshes.length > n) group.remove(w.meshes.pop());
       while (w.meshes.length < n) {
         const k = w.meshes.length;
-        const m = new THREE.Mesh(paxGeo, paxMats[(i * 3 + k) % paxMats.length]);
+        const m = makeWaitingPax((i * 3 + k) % paxMats.length, w.face, i * 7 + k);
         const [x, z] = w.at(-(w.HW + 0.9) + (k % 2) * 0.55, -1.1 - Math.floor(k / 2) * 0.75);
-        m.position.set(x, 0.75, z);
+        m.position.set(x, 0, z);
         group.add(m);
         w.meshes.push(m);
       }
