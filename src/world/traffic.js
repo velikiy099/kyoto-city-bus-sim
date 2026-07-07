@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import { CFG } from '../config.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { lambertize } from '../util/lambertize.js';
 import { route, elevationAt, gradeAt, lanesAt, halfWidthAt, laneCenterAt, speedLimitAt } from '../route/routeData.js';
 
 const mat = (color) => new THREE.MeshLambertMaterial({ color });
@@ -15,52 +16,81 @@ function makeCylinderBetween(a, b, radius, color) {
   return mesh;
 }
 
-/** 対向車のモデル(セダン風の2箱、前方=+z) */
-function makeCar(color) {
-  const g = new THREE.Group();
-  const lower = new THREE.Mesh(new THREE.BoxGeometry(1.75, 0.65, 4.4), mat(color));
-  lower.position.y = 0.65;
-  const upper = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.55, 2.2), mat(0x2c3844));
-  upper.position.set(0, 1.25, -0.2);
-  g.add(lower, upper);
-  return g;
+// ===== 交通車両(Blender製 glb)を共有ロードし、クローンで量産 =====
+const loader = new GLTFLoader();
+let vehicleLib = null; // vehicles.glb: 'Sedan' / 'Truck'
+let busLib = null; // bus.glb: 対向バス(自車と同型)
+const pendingVehicle = [];
+const pendingBus = [];
+loader.load('models/vehicles.glb', (gltf) => {
+  lambertize(gltf.scene);
+  vehicleLib = gltf.scene;
+  for (const fill of pendingVehicle.splice(0)) fill();
+});
+loader.load('models/bus.glb', (gltf) => {
+  lambertize(gltf.scene);
+  busLib = gltf.scene;
+  for (const fill of pendingBus.splice(0)) fill();
+});
+
+/** glbノードをクローンし、塗装マテリアル(paintName)だけ色替えして返す(非同期充填) */
+function makeVehicle(nodeName, paintName, color) {
+  const holder = new THREE.Group();
+  const fill = () => {
+    const node = vehicleLib.getObjectByName(nodeName).clone(true);
+    node.position.set(0, 0, 0);
+    const paint = new THREE.MeshLambertMaterial({ color });
+    node.traverse((o) => {
+      if (o.isMesh && o.material.name === paintName) o.material = paint;
+    });
+    holder.add(node);
+  };
+  if (vehicleLib) fill();
+  else pendingVehicle.push(fill);
+  return holder;
 }
 
+/** 対向車のモデル(セダン、前方=+z) */
+const makeCar = (color) => makeVehicle('Sedan', 'CarPaint', color);
+
 /** トラック(キャブオーバー+箱荷台、前方=+z) */
-function makeTruck(cabColor) {
-  const g = new THREE.Group();
-  const chassis = new THREE.Mesh(new THREE.BoxGeometry(2.05, 0.5, 7.0), mat(0x3a3f45));
-  chassis.position.set(0, 0.55, 0.1);
-  const cab = new THREE.Mesh(new THREE.BoxGeometry(2.15, 1.75, 1.9), mat(cabColor));
-  cab.position.set(0, 1.65, 2.55);
-  const cabWin = new THREE.Mesh(new THREE.BoxGeometry(1.95, 0.6, 0.08), mat(0x2c3844));
-  cabWin.position.set(0, 1.95, 3.52);
-  const cargo = new THREE.Mesh(new THREE.BoxGeometry(2.3, 2.3, 4.9), mat(0xe2e6e8));
-  cargo.position.set(0, 1.95, -0.95);
-  g.add(chassis, cab, cabWin, cargo);
-  return g;
-}
+const makeTruck = (cabColor) => makeVehicle('Truck', 'TruckCab', cabColor);
 
 /** 対向の路線バス(京都市バス18号系統の北行き便の想定、前方=+z) */
 function makeOncomingBus() {
-  const g = new THREE.Group();
-  const C = CFG.colors;
-  const hull = new THREE.Mesh(new THREE.BoxGeometry(2.5, 1.15, 10.9), mat(C.busCream));
-  hull.position.y = 1.02;
-  const winBand = new THREE.Mesh(new THREE.BoxGeometry(2.44, 0.85, 10.4), mat(0x2c3844));
-  winBand.position.y = 2.0;
-  const roof = new THREE.Mesh(new THREE.BoxGeometry(2.5, 0.45, 10.9), mat(C.busCream));
-  roof.position.y = 2.72;
-  const belt = new THREE.Mesh(new THREE.BoxGeometry(2.54, 0.3, 10.9), mat(C.busGreen));
-  belt.position.y = 1.38;
-  const skirt = new THREE.Mesh(new THREE.BoxGeometry(2.52, 0.32, 10.9), mat(C.busGreen));
-  skirt.position.y = 0.52;
-  const windshield = new THREE.Mesh(new THREE.BoxGeometry(2.3, 0.9, 0.08), mat(0x2c3844));
-  windshield.position.set(0, 1.95, 5.44);
-  const headsign = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.36, 0.06), mat(0x101820));
-  headsign.position.set(0, 2.62, 5.46);
-  g.add(hull, winBand, roof, belt, skirt, windshield, headsign);
-  return g;
+  const holder = new THREE.Group();
+  const fill = () => {
+    const node = busLib.clone(true);
+    // bus.glb は原点=後軸中心(車体 z -2.6..8.9)なので車体中心を holder 原点へ
+    node.position.set(0, 0, -3.15);
+    holder.add(node);
+    // 方向幕: 北行き「18 二条駅西口」
+    const cv = document.createElement('canvas');
+    cv.width = 512;
+    cv.height = 128;
+    const c2 = cv.getContext('2d');
+    c2.fillStyle = '#0d1116';
+    c2.fillRect(0, 0, 512, 128);
+    c2.fillStyle = '#ffffff';
+    c2.font = 'bold 92px sans-serif';
+    c2.textBaseline = 'middle';
+    c2.fillText('18', 28, 70);
+    c2.fillStyle = '#ffb43c';
+    c2.font = 'bold 52px sans-serif';
+    c2.textAlign = 'center';
+    c2.fillText('二条駅西口', 330, 64);
+    const tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    const sign = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.7, 0.36),
+      new THREE.MeshBasicMaterial({ map: tex })
+    );
+    sign.position.set(0, 2.79, 8.94);
+    node.add(sign);
+  };
+  if (busLib) fill();
+  else pendingBus.push(fill);
+  return holder;
 }
 
 const stopS = (name) => route.stops.find((st) => st.name === name)?.s ?? null;
