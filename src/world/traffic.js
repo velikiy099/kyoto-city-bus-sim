@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { lambertize } from '../util/lambertize.js';
-import { route, elevationAt, gradeAt, lanesAt, halfWidthAt, laneCenterAt, speedLimitAt } from '../route/routeData.js';
+import { route, elevationAt, gradeAt, lanesAt, halfWidthAt, laneCenterAt, speedLimitAt, fwdLanesAt, backLanesAt, leftWidthAt, rightWidthAt } from '../route/routeData.js';
 
 const mat = (color) => new THREE.MeshLambertMaterial({ color });
 const signalMat = (color) => new THREE.MeshBasicMaterial({ color });
@@ -213,13 +213,20 @@ export function buildTraffic(scene, path, events = {}) {
   // ================= 車両 =================
   /** dir: +1=同方向(道路左側) / -1=対向(右側)。laneIdx: 0=センター寄り, 1=外側 */
   function laneLat(s, dir, laneIdx = 0) {
-    const lanes = lanesAt(s);
-    const HW = halfWidthAt(s);
-    const half = Math.max(1, Math.floor(lanes / 2));
-    const usable = HW - 0.55;
-    const li = Math.min(laneIdx, half - 1);
-    const mag = (usable * (li + 0.5)) / half;
-    if (dir === 1) return -mag;
+    if (dir === 1) {
+      const n = fwdLanesAt(s);
+      const li = Math.min(laneIdx, n - 1);
+      if (backLanesAt(s) === 0) {
+        // 一方通行: 道路全幅を n 車線で使う(1車線なら中央)
+        const wL = leftWidthAt(s), wR = rightWidthAt(s);
+        return -wL + 0.55 + ((wL + wR - 1.1) * (li + 0.5)) / n;
+      }
+      return -(((leftWidthAt(s) - 0.55) * (li + 0.5)) / n);
+    }
+    const nB = backLanesAt(s);
+    if (nB === 0) return null; // 一方通行区間に対向車は入れない
+    const li = Math.min(laneIdx, nB - 1);
+    const mag = ((rightWidthAt(s) - 0.55) * (li + 0.5)) / nB;
     // 対向車はやや外側に寄せる(狭い2車線での自車とのすれ違い余裕)。急カーブではさらに外へ
     const curveOut = Math.min(0.9, Math.abs(path.curvatureAt(s)) * 22);
     return mag + 0.4 + curveOut;
@@ -336,6 +343,8 @@ export function buildTraffic(scene, path, events = {}) {
 
         // 同行車: 自車(プレイヤーのバス)との車間・追い越し
         let latT = laneLat(c.s, c.dir, c.laneIdx);
+        const inOneway = latT == null; // 対向車が一方通行区間に入った → 実在しないのでリスポーン
+        if (inOneway) latT = c.latCur ?? 2.5;
         // 対向車: 狭い2車線でバスと接近したら減速して外側に待避(狭隘路の譲り合い)
         if (c.dir === -1 && lanesAt(c.s) <= 2) {
           const ahead = c.s - busS; // すれ違い前は正
@@ -377,17 +386,24 @@ export function buildTraffic(scene, path, events = {}) {
         c.v += (vT - c.v) * Math.min(1, dt * rate);
         c.s += c.v * dt * c.dir;
 
-        // リスポーン: 経路端・駅前ロータリー・自車から離れすぎ → 自車の周辺へ(同行車は前後に混ぜる)
+        // リスポーン: 経路端・駅前ロータリー・自車から離れすぎ・一方通行進入 → 自車の周辺へ
         const rel = (c.s - busS) * 1;
-        if (c.s < TRAFFIC_MIN_S || c.s > path.length - 15 || Math.abs(rel) > 1800) {
+        if (c.s < TRAFFIC_MIN_S || c.s > path.length - 15 || Math.abs(rel) > 1800 || inOneway) {
           if (c.dir === 1) {
             const behind = Math.random() < 0.4;
             const off = behind ? -(160 + Math.random() * 380) : 250 + Math.random() * 900;
             c.s = Math.max(TRAFFIC_MIN_S, Math.min(path.length - 15, busS + off));
-          } else c.s = Math.max(TRAFFIC_MIN_S, Math.min(path.length - 15, busS + 400 + Math.random() * 1200));
+          } else {
+            // 対向車は一方通行(対向車線なし)の区間を避けて配置
+            let s2 = Math.max(TRAFFIC_MIN_S, Math.min(path.length - 15, busS + 400 + Math.random() * 1200));
+            for (let k = 0; k < 40 && backLanesAt(s2) === 0; k++) s2 = Math.min(path.length - 15, s2 + 60);
+            if (backLanesAt(s2) === 0) s2 = Math.max(TRAFFIC_MIN_S, busS - 300); // 前方に空きがなければ後方
+            c.s = s2;
+          }
           c.v = 6;
           c.passTimer = 0;
           c.latCur = null;
+          latT = laneLat(c.s, c.dir, c.laneIdx) ?? 0;
         }
 
         // 横位置(レーンチェンジは滑らかに)

@@ -132,6 +132,49 @@ const SPEED_ZONES = [
   { fromStop: '久我', toStop: null, limit: 40 },             // 久我地区
 ];
 
+// ---------------- 車線プラン(実走調査による手動定義) ----------------
+// 南行き=F(バス進行方向)、北行き=B。B=0 は一方通行。center:'none' はセンターラインなし。
+// to: 区間終端の実座標アンカー。null は路線終端まで。区間はルート順。
+const LANE_PLAN = [
+  { to: '三条通', F: 2, B: 2, name: '千本通(三条以北)' },
+  { to: '四条通', F: 1, B: 1, name: '千本通・後院通(三条〜四条大宮)' },
+  { to: '七条通', F: 2, B: 2, name: '大宮通(四条〜七条)' },
+  { to: [34.97938, 135.74931], F: 3, B: 3, name: '大宮通(七条〜九条・跨線橋)' },
+  { to: [34.97880, 135.74145], F: 2, B: 2, name: '九条通' },
+  { to: [34.97340, 135.74140], F: 1, B: 1, name: '新千本通' },
+  { to: [34.97335, 135.74254], F: 2, B: 2, name: '十条通' },
+  { to: [34.96477, 135.74247], F: 1, B: 0, name: '旧千本通(十条旧千本〜府道201・一方通行)' },
+  { to: [34.95866, 135.74266], F: 1, B: 1, center: 'none', name: '旧千本通(府道201〜地蔵前手前)' },
+  { to: [34.95540, 135.74218], F: 1, B: 0, name: '旧千本通(地蔵前手前〜合流・一方通行)' },
+  { to: [34.95066, 135.74276], F: 1, B: 1, center: 'none', name: '鳥羽街道(〜羽束師墨染線)' },
+  { to: [34.95055, 135.74315], F: 2, B: 2, name: '羽束師墨染線(ジョグ)' },
+  { to: [34.94645, 135.74301], F: 1, B: 1, name: '城南宮道通り(〜赤池)' },
+  { to: null, F: 1, B: 1, name: '府道202(赤池〜久我石原町)' },
+];
+const LANE_W = 3.2; // 1車線幅 [m]
+
+// 右折車線ゾーン: 範囲内の信号交差点の進入方向に+1車線(千本通北部=計5、府道202=計3 等)
+const APPROACH_ZONES = [
+  { from: [35.01170, 135.74250], to: '三条通', len: 65, name: '千本三条以北' },
+  { from: [34.97938, 135.74931], to: [34.97880, 135.74145], len: 65, name: '九条通' },
+  { from: [34.94645, 135.74301], to: [34.94570, 135.73270], len: 55, name: '府道202(久我以東)' },
+];
+
+// 交差道路の実勢オーバーライド(交差点スタブの幅・車線数を交通量調査どおりに)
+const INTERSECTION_OVERRIDES = [
+  { name: '四条通', lanes: 5, width: 17.6 },                                // 片道2+右折で計5
+  { name: '五条大宮', label: '五条通', lanes: 9, width: 30.8, median: 1 },   // 片道4+中央分離帯、交差点付近計9
+  { name: '七条通', lanes: 4, width: 14.4 },                                // 片道2
+  { name: '壬生通', label: '京阪国道口(国道1号)', lanes: 5, width: 17.6 },  // 北行1+南行2+右折で計5
+];
+
+// 右左折交差点の脚オーバーライド(vertex 近傍の実座標でマッチ)
+const TURN_OVERRIDES = [
+  { anchor: [34.97938, 135.74931], stubInHw: 4.0, crossWidth: 8.0, crossLanes: 2 }, // 九条大宮: 大宮通(九条以南)は片道1
+  { anchor: [34.95066, 135.74276], crossWidth: 17.6, crossLanes: 5 }, // 羽束師墨染線(西側)片道2+右折
+  { anchor: [34.95055, 135.74315], crossWidth: 17.6, crossLanes: 5 }, // 羽束師墨染線(南側)
+];
+
 // ---------------------------------------------------------------- utilities
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -462,39 +505,86 @@ function routeHeadingAt(path, cumLen, s) {
   return Math.atan2(b[0] - a[0], b[1] - a[1]);
 }
 
+// 区間の左右幅(センター〜路端)。一方通行は経路=道路中心なので左右等分
+function sectionWidths(sec) {
+  if (!sec.lanesB) {
+    const w = (sec.lanesF * LANE_W + 2.8) / 2;
+    return { wL: +w.toFixed(2), wR: +w.toFixed(2) };
+  }
+  return {
+    wL: +(sec.lanesF * LANE_W + 0.8).toFixed(2),
+    wR: +(sec.lanesB * LANE_W + 0.8).toFixed(2),
+  };
+}
+
+/** sections の [from,to] 部分だけ mut を適用(必要に応じて区間分割) */
+function overlayLanes(sections, from, to, mut) {
+  if (to - from < 4) return sections;
+  const out = [];
+  for (const sec of sections) {
+    const a = Math.max(sec.from, from), b = Math.min(sec.to, to);
+    if (b - a < 0.5) { out.push(sec); continue; }
+    if (sec.from < a - 0.01) out.push({ ...sec, to: a });
+    out.push(mut({ ...sec, from: a, to: b }));
+    if (b < sec.to - 0.01) out.push({ ...sec, from: b, to: sec.to });
+  }
+  return out;
+}
+
+/** LANE_PLAN と右折車線ゾーンから roadSections を生成 */
+function buildLaneSections(path, cumLen, origin, signals, turnSpans, intersections) {
+  const toS = (anchor, fromS = 0) => {
+    if (typeof anchor === 'string') {
+      const ix = intersections.find((i) => i.name === anchor && i.s >= fromS - 5);
+      if (!ix) throw new Error(`車線プラン境界の交差点が見つからない: ${anchor}`);
+      return ix.s;
+    }
+    const pt = project([anchor], origin)[0].map((v) => v * SCALE);
+    const hit = projectToPath(path, cumLen, pt, fromS);
+    if (hit.dist > 60) console.warn(`  警告: 車線プラン境界の射影誤差 ${hit.dist.toFixed(0)}m @ [${anchor}]`);
+    return hit.s;
+  };
+  let sections = [];
+  let from = 0, cursor = 0;
+  for (const seg of LANE_PLAN) {
+    const end = seg.to ? toS(seg.to, cursor) : cumLen.at(-1);
+    sections.push({ from, to: end, lanesF: seg.F, lanesB: seg.B, center: seg.center ?? (seg.B ? 'line' : 'none') });
+    cursor = end;
+    from = end;
+  }
+  // 右折車線: 信号交差点の進入方向に+1車線(右左折交差点の円弧内はクランプ)
+  for (const zone of APPROACH_ZONES) {
+    const z0 = toS(zone.from), z1 = toS(zone.to, z0);
+    for (const sig of signals) {
+      if (sig.s < z0 - 2 || sig.s > z1 + 2) continue;
+      const t = turnSpans.find((tt) => sig.s > tt.sIn - 30 && sig.s < tt.sOut + 30);
+      const f0 = Math.max(sig.s - zone.len, z0);
+      const f1 = Math.min(sig.s, t ? t.sIn - 2 : Infinity, z1);
+      if (f1 > f0) sections = overlayLanes(sections, f0, f1, (sec) => ({ ...sec, lanesF: sec.lanesF + 1 }));
+      const b0 = Math.max(sig.s, t ? t.sOut + 2 : -Infinity, z0);
+      const b1 = Math.min(sig.s + zone.len, z1);
+      if (b1 > b0) sections = overlayLanes(sections, b0, b1, (sec) => ({ ...sec, lanesB: sec.lanesB + 1 }));
+    }
+  }
+  return sections
+    .filter((sec) => sec.to - sec.from > 0.5)
+    .map((sec) => ({
+      from: +sec.from.toFixed(1),
+      to: +sec.to.toFixed(1),
+      lanes: sec.lanesF + sec.lanesB,
+      lanesF: sec.lanesF,
+      lanesB: sec.lanesB,
+      center: sec.center,
+      ...sectionWidths(sec),
+    }));
+}
+
 function roadMetadata(path, cumLen, origin, roads, signalNodes) {
   const projectedRoads = roads.map((road) => ({
     id: road.id,
     tags: road.tags ?? {},
     pts: project(road.geometry.map((p) => [p.lat, p.lon]), origin).map(([x, z]) => [x * SCALE, z * SCALE]),
   })).filter((r) => r.pts.length > 1);
-
-  const samples = [];
-  for (let s = 0; s <= cumLen.at(-1); s += 70) {
-    const [px, pz] = pointAtPath(path, cumLen, s);
-    const routeH = routeHeadingAt(path, cumLen, s);
-    let best = null;
-    for (const road of projectedRoads) {
-      for (let i = 0; i < road.pts.length - 1; i++) {
-        const a = road.pts[i], b = road.pts[i + 1];
-        const segH = Math.atan2(b[0] - a[0], b[1] - a[1]);
-        const aligned = Math.min(angleDiff(routeH, segH), angleDiff(routeH, segH + Math.PI));
-        if (aligned > 0.55) continue;
-        const hit = pointSegDistance([px, pz], a, b);
-        if (hit.d > 10) continue;
-        if (!best || hit.d < best.d) best = { d: hit.d, tags: road.tags };
-      }
-    }
-    samples.push({ s, lanes: best ? laneCount(best.tags) : 2 });
-  }
-  if (samples.at(-1)?.s < cumLen.at(-1)) samples.push({ s: cumLen.at(-1), lanes: samples.at(-1)?.lanes ?? 2 });
-  const roadSections = [];
-  for (let i = 0; i < samples.length - 1; i++) {
-    const cur = samples[i], next = samples[i + 1];
-    const last = roadSections.at(-1);
-    if (last && last.lanes === cur.lanes) last.to = +next.s.toFixed(1);
-    else roadSections.push({ from: +cur.s.toFixed(1), to: +next.s.toFixed(1), lanes: cur.lanes });
-  }
 
   const intersectionCandidates = [];
   for (const road of projectedRoads) {
@@ -563,7 +653,19 @@ function roadMetadata(path, cumLen, origin, roads, signalNodes) {
   }
   intersections.sort((a, b) => a.s - b.s || a.dist - b.dist);
 
-  return { roadSections, intersections, signals };
+  // 交差道路の実勢オーバーライド(五条通=計9・四条通=計5 等)
+  for (const ov of INTERSECTION_OVERRIDES) {
+    for (const ix of intersections) {
+      if (ix.name !== ov.name) continue;
+      ix.width = ov.width;
+      ix.lanes = ov.lanes;
+      ix.length = +Math.max(34, ov.width * 7).toFixed(1);
+      if (ov.median) ix.median = 1;
+      if (ov.label) ix.name = ov.label;
+    }
+  }
+
+  return { intersections, signals };
 }
 
 function buildingHeight(tags = {}, s, routeLength, id) {
@@ -703,7 +805,8 @@ function railwayMetadata(path, cumLen, origin, railWays, sFrom, sTo) {
  * 通常交差点ではルート接線基準・従道柱は交差道路の幅の外側。
  * head: {kind:'main'|'cross', face, pole:[x,z], head:[x,z], arm?, hoods?}
  */
-function placeSignalHeads(sig, turns, intersections, path, cumLen, hwAt, laneCenterAt) {
+function placeSignalHeads(sig, turns, intersections, path, cumLen, widths) {
+  const { hwAt, wLAt, wRAt, laneCenterAt, oppLaneCenterAt } = widths;
   const round = (p) => [+p[0].toFixed(2), +p[1].toFixed(2)];
   // 柱の退避対象となる舗装矩形: 近傍の交差道路スタブ + 右左折交差点の腕
   const rects = [
@@ -722,13 +825,15 @@ function placeSignalHeads(sig, turns, intersections, path, cumLen, hwAt, laneCen
     for (let iter = 0; iter < 3; iter++) {
       let moved = false;
       const { s, dist } = projectToPath(path, cumLen, p, 0);
-      const need = hwAt(s) + 1.2;
+      const [qx, qz] = pointAtPath(path, cumLen, s);
+      const h = routeHeadingAt(path, cumLen, s);
+      // 進行右方向の法線 (-cos h, sin h) との内積で左右を判定し、その側の幅で退避
+      const latSign = (p[0] - qx) * -Math.cos(h) + (p[1] - qz) * Math.sin(h);
+      const need = (latSign < 0 ? wLAt(s) : wRAt(s)) + 1.2;
       if (dist < need) {
-        const [qx, qz] = pointAtPath(path, cumLen, s);
         let ux = p[0] - qx, uz = p[1] - qz;
         const len = Math.hypot(ux, uz);
         if (len < 0.5) {
-          const h = routeHeadingAt(path, cumLen, s);
           ux = -Math.cos(h); // ほぼ路面中心に居る場合は経路の右法線方向へ
           uz = Math.sin(h);
         } else {
@@ -772,9 +877,12 @@ function placeSignalHeads(sig, turns, intersections, path, cumLen, hwAt, laneCen
     const boxB = Math.max(t.d, t.hwIn) + 2.6;  // 退出側ボックス端(円弧終了より先)
 
     // 進入路(バス)向き: ボックス手前・左路端の柱からアームで自車線上へ
-    push('main', t.headingIn, ptA(-boxA, -(t.hwIn + 1.85)), ptA(-boxA, laneCenterAt(t.sIn) - 0.2), { arm: 1, hoods: 1 });
-    // 退出路の対向車向き: ボックスの先・ルート右側の柱、対向車線上へ
-    push('main', t.headingOut + Math.PI, ptB(boxB, t.hwOut + 1.85), ptB(boxB, -laneCenterAt(t.sOut) + 0.2), { arm: 1 });
+    push('main', t.headingIn, ptA(-boxA, -(wLAt(Math.max(0, t.sIn - 1)) + 1.85)), ptA(-boxA, laneCenterAt(t.sIn) - 0.2), { arm: 1, hoods: 1 });
+    // 退出路の対向車向き: ボックスの先・ルート右側の柱、対向車線上へ(一方通行なら省略)
+    const oppOut = oppLaneCenterAt(t.sOut + 1);
+    if (oppOut != null) {
+      push('main', t.headingOut + Math.PI, ptB(boxB, wRAt(t.sOut + 1) + 1.85), ptB(boxB, oppOut + 0.2), { arm: 1 });
+    }
     // 従道向き(交差点内連動): 両道路の路端が交わる歩道角に柱を置く(柱直付け)
     // p·nA = a, p·nB = b の連立解(nA/nB は各道路軸の左法線)
     const nA = [Math.cos(t.headingIn), -Math.sin(t.headingIn)];
@@ -818,8 +926,11 @@ function placeSignalHeads(sig, turns, intersections, path, cumLen, hwAt, laneCen
   const crossAngle = Math.min(angleDiff(theta, ch), angleDiff(theta, ch + Math.PI));
   const ahead = Math.min(16, Math.max(5.2, (crossHalf + 2.2) / Math.max(0.45, Math.sin(crossAngle))));
   const at = (lat, d) => [px + nx * lat + tx * d, pz + nz * lat + tz * d];
-  push('main', theta, at(-(HW + 1.7), -ahead), at(laneCenterAt(sig.s) - 0.2, -ahead), { arm: 1, hoods: 1 });
-  push('main', theta + Math.PI, at(HW + 1.7, ahead), at(-laneCenterAt(sig.s) + 0.2, ahead), { arm: 1 });
+  push('main', theta, at(-(wLAt(sig.s) + 1.7), -ahead), at(laneCenterAt(sig.s) - 0.2, -ahead), { arm: 1, hoods: 1 });
+  const opp = oppLaneCenterAt(sig.s);
+  if (opp != null) {
+    push('main', theta + Math.PI, at(wRAt(sig.s) + 1.7, ahead), at(opp + 0.2, ahead), { arm: 1 });
+  }
   const cd = [Math.sin(ch), Math.cos(ch)];
   for (const dir of [1, -1]) {
     // 柱は主道の路端(HW+2.2)より先・交差道路の路端(crossHalf+1.6)の外側
@@ -1020,25 +1131,35 @@ async function main() {
     to: z.toStop ? stopS(z.toStop) : +totalLength.toFixed(1),
     limit: z.limit,
   }));
-  const { roadSections, intersections, signals } = roadMetadata(path, cumLen, origin, roads, signalNodes);
+  const { intersections, signals } = roadMetadata(path, cumLen, origin, roads, signalNodes);
 
-  // ゲーム内道路半幅・車線中心(routeData.js の halfWidthAt / laneCenterAt と同式)
-  const lanesAtS = (s) => {
-    for (const sec of roadSections) if (s >= sec.from && s < sec.to) return Math.max(2, sec.lanes || 2);
-    return 2;
-  };
-  const hwAtS = (s) => Math.max(4.0, lanesAtS(s) * 1.6 + 0.8);
+  // 右左折交差点の弧長スパン(右折車線を円弧内に食い込ませないためのクランプ)
+  const turnSpans = turnCorners.map((c) => {
+    const sIn = projectToPath(path, cumLen, c.t1, 0).s;
+    return { sIn, sOut: projectToPath(path, cumLen, c.t2, sIn).s, corner: c };
+  });
+  const roadSections = buildLaneSections(path, cumLen, origin, signals, turnSpans, intersections);
+
+  // ゲーム内道路幅・車線中心(routeData.js と同式)
+  const secAt = (s) => roadSections.find((x) => s >= x.from && s < x.to) ?? roadSections.at(-1);
+  const wLAtS = (s) => secAt(s).wL;
+  const wRAtS = (s) => secAt(s).wR;
+  const hwAtS = (s) => Math.max(secAt(s).wL, secAt(s).wR);
   const laneCenterAtS = (s) => {
-    const lanes = lanesAtS(s);
-    const left = Math.max(1, Math.floor(lanes / 2));
-    return -(((hwAtS(s) - 0.55) * (left - 0.5)) / left);
+    const sec = secAt(s);
+    if (!sec.lanesB) return 0; // 一方通行: 道路中央を走る
+    return -(((sec.wL - 0.55) * (sec.lanesF - 0.5)) / sec.lanesF);
   };
+  const oppLaneCenterAtS = (s) => {
+    const sec = secAt(s);
+    if (!sec.lanesB) return null; // 対向車線なし
+    return ((sec.wR - 0.55) * (sec.lanesB - 0.5)) / sec.lanesB;
+  };
+  const widths = { hwAt: hwAtS, wLAt: wLAtS, wRAt: wRAtS, laneCenterAt: laneCenterAtS, oppLaneCenterAt: oppLaneCenterAtS };
 
   // 右左折交差点: フィレット記録を弧長に射影し、交差道路名を intersections からマッチ
   // (マッチしたエントリは削除 — 旧スタブとの二重描画防止)
-  const turnIntersections = turnCorners.map((c) => {
-    const sIn = projectToPath(path, cumLen, c.t1, 0).s;
-    const sOut = projectToPath(path, cumLen, c.t2, sIn).s;
+  const turnIntersections = turnSpans.map(({ sIn, sOut, corner: c }) => {
     const sMid = projectToPath(path, cumLen, c.vertex, sIn).s;
     let cross = null;
     for (const ix of intersections) {
@@ -1063,10 +1184,27 @@ async function main() {
     };
   });
 
+  // 右左折交差点の脚オーバーライド(九条大宮の大宮通=片道1、羽束師墨染線=計5 等)
+  for (const ov of TURN_OVERRIDES) {
+    const pt = project([ov.anchor], origin)[0].map((v) => v * SCALE);
+    let best = null;
+    for (const t of turnIntersections) {
+      const d = Math.hypot(t.x - pt[0], t.z - pt[1]);
+      if (d < 45 && (!best || d < best.d)) best = { t, d };
+    }
+    if (!best) {
+      console.warn(`  警告: TURN_OVERRIDES のアンカーに一致する右左折交差点がない: [${ov.anchor}]`);
+      continue;
+    }
+    if (ov.stubInHw != null) best.t.stubInHw = ov.stubInHw;
+    if (ov.crossWidth != null) best.t.crossWidth = ov.crossWidth;
+    if (ov.crossLanes != null) best.t.crossLanes = ov.crossLanes;
+  }
+
   // 信号の柱・灯器の設置座標を計算して埋め込む(交差点内の路上に立てない)
   const signalsOut = signals.map((sig) => ({
     ...sig,
-    heads: placeSignalHeads(sig, turnIntersections, intersections, path, cumLen, hwAtS, laneCenterAtS),
+    heads: placeSignalHeads(sig, turnIntersections, intersections, path, cumLen, widths),
   }));
 
   const buildings = buildingMetadata(path, cumLen, origin, buildingWays);

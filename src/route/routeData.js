@@ -23,34 +23,71 @@ export const route = {
   railStructures: raw.railStructures ?? [], // [{kind, s, heading, layer}]
 };
 
-// ---- 車線数に応じた実効道路幅(roadSections 由来。road.js の描画と同式) ----
-const sections = raw.roadSections?.length ? raw.roadSections : [{ from: 0, to: Infinity, lanes: 2 }];
+// ---- 車線構成(roadSections 由来。build-route-data.mjs の LANE_PLAN が生成) ----
+// {from, to, lanesF(進行方向), lanesB(対向。0=一方通行), wL(左幅), wR(右幅), center:'line'|'none'}
+const FALLBACK_SECTION = { from: 0, to: Infinity, lanes: 2, lanesF: 1, lanesB: 1, wL: 4.0, wR: 4.0, center: 'line' };
+const sections = raw.roadSections?.length
+  ? raw.roadSections.map((sec) => ({
+      ...FALLBACK_SECTION,
+      ...sec,
+      // 旧形式(lanes のみ)へのフォールバック
+      lanesF: sec.lanesF ?? Math.max(1, Math.floor((sec.lanes || 2) / 2)),
+      lanesB: sec.lanesB ?? Math.max(1, Math.ceil((sec.lanes || 2) / 2)),
+      wL: sec.wL ?? Math.max(4.0, (sec.lanes || 2) * 1.6 + 0.8),
+      wR: sec.wR ?? Math.max(4.0, (sec.lanes || 2) * 1.6 + 0.8),
+    }))
+  : [FALLBACK_SECTION];
 
-/** s 位置の車線数(往復合計、最低2) */
-export function lanesAt(s) {
+/** s 位置の車線区間 */
+export function sectionAt(s) {
   for (const sec of sections) {
-    if (s >= sec.from && s < sec.to) return Math.max(2, Number(sec.lanes) || 2);
+    if (s >= sec.from && s < sec.to) return sec;
   }
-  return 2;
+  return s < sections[0].from ? sections[0] : sections.at(-1);
 }
 
-/** s 位置の道路半幅(センター〜縁石)[m] */
+/** s 位置の車線数(往復合計、最低1) */
+export function lanesAt(s) {
+  const sec = sectionAt(s);
+  return sec.lanesF + sec.lanesB;
+}
+
+/** s 位置の進行方向(南行き)車線数 */
+export function fwdLanesAt(s) {
+  return sectionAt(s).lanesF;
+}
+
+/** s 位置の対向(北行き)車線数(0=一方通行) */
+export function backLanesAt(s) {
+  return sectionAt(s).lanesB;
+}
+
+/** s 位置の左側(進行方向)幅: センター〜左路端 [m] */
+export function leftWidthAt(s) {
+  return sectionAt(s).wL;
+}
+
+/** s 位置の右側(対向)幅: センター〜右路端 [m] */
+export function rightWidthAt(s) {
+  return sectionAt(s).wR;
+}
+
+/** s 位置の道路半幅(広い側。対称前提の互換用)[m] */
 export function halfWidthAt(s) {
-  return Math.max(4.0, lanesAt(s) * 1.6 + 0.8);
+  const sec = sectionAt(s);
+  return Math.max(sec.wL, sec.wR);
 }
 
-/** s 位置の標準走行位置(左端車線の中心)の横偏差(左=負) */
+/** s 位置の標準走行位置(左端車線の中心)の横偏差(左=負)。一方通行は道路中央 */
 export function laneCenterAt(s) {
-  const lanes = lanesAt(s);
-  const HW = halfWidthAt(s);
-  const leftLanes = Math.max(1, Math.floor(lanes / 2));
-  const usable = HW - 0.55;
-  return -((usable * (leftLanes - 0.5)) / leftLanes);
+  const sec = sectionAt(s);
+  if (!sec.lanesB) return 0;
+  return -(((sec.wL - 0.55) * (sec.lanesF - 0.5)) / sec.lanesF);
 }
 
 /** 停留所への寄せ目標(縁石ギャップ約0.45m) */
 export function curbStopLat(s) {
-  return -(halfWidthAt(s) - 1.7);
+  return -(leftWidthAt(s) - 1.7);
 }
 
 /** 右左折交差点付近の追加コース外マージン(交差点ボックス内は舗装が広がるため広く許容) */

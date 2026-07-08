@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { halfWidthAt } from '../route/routeData.js';
+import { leftWidthAt } from '../route/routeData.js';
 import { loadProps } from '../util/propsLib.js';
 
 /** 停留所名の看板テクスチャ */
@@ -55,7 +55,7 @@ export function buildStops(scene, path, stops) {
   }
 
   stops.forEach((stop, i) => {
-    const HW = halfWidthAt(stop.s); // 片道2車線以上の区間ではその路肩(縁石)基準で配置
+    const HW = leftWidthAt(stop.s); // 進行方向左側の路肩(縁石)基準で配置
     const [px, pz] = path.getPoint(stop.s);
     const [tx, tz] = path.getTangent(stop.s);
     const nx = -tz, nz = tx; // lateral 正方向(右)

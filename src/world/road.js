@@ -43,6 +43,20 @@ function roadHalfWidth(lanes = 2) {
   return Math.max(CFG.road.halfWidth, lanes * 1.6 + 0.8);
 }
 
+/** 区間の左右幅・車線数(旧形式 lanes のみのデータにもフォールバック) */
+function sectionSpec(section) {
+  const lanes = Math.max(1, Number(section.lanes) || 2);
+  const lanesF = section.lanesF ?? Math.max(1, Math.floor(lanes / 2));
+  const lanesB = section.lanesB ?? Math.max(1, lanes - lanesF);
+  return {
+    lanesF,
+    lanesB,
+    wL: section.wL ?? roadHalfWidth(lanes),
+    wR: section.wR ?? roadHalfWidth(lanes),
+    center: section.center ?? 'line',
+  };
+}
+
 function addLine(g, path, lat, y, color, sFrom, sTo, width = 0.06) {
   const mat = new THREE.MeshLambertMaterial({ color });
   g.add(new THREE.Mesh(makeRibbon(path, lat - width, lat + width, y, sFrom, sTo, 3), mat));
@@ -63,9 +77,10 @@ function splitRanges(from, to, gaps) {
   return ranges.filter(([a, b]) => b - a > 0.5);
 }
 
-function addIntersections(g, path, intersections, turns = []) {
+function addIntersections(g, path, intersections, turns = [], routeHwAt = null) {
   const roadMat = new THREE.MeshLambertMaterial({ color: CFG.colors.road });
   const lineMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.52 });
+  const medianMat = new THREE.MeshLambertMaterial({ color: 0x7d9668 }); // 植栽帯
   for (const ix of intersections ?? []) {
     // 右左折交差点の近傍は addTurnIntersections が本物の交差を描くのでスキップ
     if (turns.some((t) => ix.s > t.sIn - 28 && ix.s < t.sOut + 28)) continue;
@@ -79,6 +94,21 @@ function addIntersections(g, path, intersections, turns = []) {
     stub.rotation.z = -(ix.heading ?? 0);
     stub.position.set(px, 0.006 + elev, pz);
     g.add(stub);
+
+    // 中央分離帯(五条通など): 交差道路の中心線に沿って、本線路面の外側から両端まで
+    if (ix.median) {
+      const hwRoute = (routeHwAt ? routeHwAt(s) : halfWidthAt(s)) + 6;
+      const segLen = length / 2 - hwRoute;
+      if (segLen > 6) {
+        for (const side of [-1, 1]) {
+          const strip = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.32, segLen), medianMat);
+          const d = side * (hwRoute + segLen / 2);
+          strip.position.set(px + Math.sin(ix.heading) * d, 0.16 + elev, pz + Math.cos(ix.heading) * d);
+          strip.rotation.y = ix.heading;
+          g.add(strip);
+        }
+      }
+    }
 
     const [tx, tz] = path.getTangent(s);
     const cw = new THREE.Mesh(new THREE.PlaneGeometry(Math.max(9, roadHalfWidth(ix.lanes ?? 2) * 2), 2.8), lineMat);
@@ -118,9 +148,28 @@ function addTurnIntersections(g, path, turns) {
 
     // 各「腕」= 交差点を貫く1本の道路。zSpan: 舗装矩形の範囲(ローカルz、+z=heading方向)
     // gap: 交差点ボックス縁(頂点からの距離)。ここから外側にのみ区画線・縁石・歩道を引く
+    // stubInHw: 直進スタブ(交差点の先の道)の幅がルートと異なる場合(九条大宮の大宮通=片道1 等)
+    const stubIn = t.stubInHw ?? hwIn;
+    const splitIn = Math.abs(stubIn - hwIn) > 0.3;
     const arms = [
-      { heading: t.headingIn, hw: hwIn, crossHw: hwOut, zSpan: [-(dIn + 2), STUB_LEN], furniture: [[hwOut + 2, STUB_LEN - 1]] },
-      { heading: t.headingOut, hw: hwOut, crossHw: hwIn, zSpan: [-STUB_LEN, dOut + 2], furniture: [[-(STUB_LEN - 1), -(hwIn + 2)]] },
+      {
+        heading: t.headingIn, hw: hwIn,
+        zSpan: [-(dIn + 2), splitIn ? hwOut + 2.4 : STUB_LEN],
+        furniture: splitIn ? [] : [[hwOut + 2, STUB_LEN - 1]],
+        crosswalks: splitIn ? [-(hwOut + 3.6)] : [hwOut + 3.6, -(hwOut + 3.6)],
+      },
+      ...(splitIn ? [{
+        heading: t.headingIn, hw: stubIn,
+        zSpan: [hwOut + 2.4, STUB_LEN],
+        furniture: [[hwOut + 2.6, STUB_LEN - 1]],
+        crosswalks: [hwOut + 3.6],
+      }] : []),
+      {
+        heading: t.headingOut, hw: hwOut,
+        zSpan: [-STUB_LEN, dOut + 2],
+        furniture: [[-(STUB_LEN - 1), -(hwIn + 2)]],
+        crosswalks: [hwIn + 3.6, -(hwIn + 3.6)],
+      },
     ];
 
     for (const arm of arms) {
@@ -152,9 +201,7 @@ function addTurnIntersections(g, path, turns) {
       }
 
       // 横断歩道(ボックスの前後の縁)
-      const cw = arm.crossHw + 3.6;
-      flat(grp, arm.hw * 2, 2.8, 0.034, cw, cwMat);
-      flat(grp, arm.hw * 2, 2.8, 0.034, -cw, cwMat);
+      for (const cw of arm.crosswalks) flat(grp, arm.hw * 2, 2.8, 0.034, cw, cwMat);
     }
 
     // 四隅の歩道パッチ: 両道路の歩道帯(路端 +1.85m)が交わる点に正方形を置く
@@ -193,39 +240,44 @@ export function buildRoad(path, route = null) {
     const from = Math.max(0, section.from ?? 0);
     const to = Math.min(path.length, section.to ?? path.length);
     if (to <= from) continue;
-    const lanes = Math.max(2, Number(section.lanes) || 2);
-    const HW = roadHalfWidth(lanes);
+    const { lanesF, lanesB, wL, wR, center } = sectionSpec(section);
 
     // 路面(交差点円弧の下も含め連続 — バスの走行面)
-    g.add(new THREE.Mesh(makeRibbon(path, -HW, HW, 0.0, from, to), mat(C.road)));
+    g.add(new THREE.Mesh(makeRibbon(path, -wL, wR, 0.0, from, to), mat(C.road)));
 
     for (const [f, tt] of splitRanges(from, to, gaps)) {
-      // センターライン(黄色実線)
-      g.add(new THREE.Mesh(makeRibbon(path, -0.08, 0.08, 0.024, f, tt, 3), mat(0xd8a017)));
+      // センターライン(黄色実線。一方通行・センターライン無し区間は引かない)
+      if (lanesB > 0 && center !== 'none') {
+        g.add(new THREE.Mesh(makeRibbon(path, -0.08, 0.08, 0.024, f, tt, 3), mat(0xd8a017)));
+      }
 
       // 車線境界(方向別に1車線を超える場合のみ白線)
-      const leftLanes = Math.max(1, Math.floor(lanes / 2));
-      const rightLanes = Math.max(1, lanes - leftLanes);
-      const usableLeft = HW - 0.55;
-      const usableRight = HW - 0.55;
-      for (let i = 1; i < leftLanes; i++) addLine(g, path, -(usableLeft * i) / leftLanes, 0.026, C.roadLine, f, tt, 0.035);
-      for (let i = 1; i < rightLanes; i++) addLine(g, path, (usableRight * i) / rightLanes, 0.026, C.roadLine, f, tt, 0.035);
+      const usableLeft = wL - 0.55;
+      const usableRight = wR - 0.55;
+      for (let i = 1; i < lanesF; i++) addLine(g, path, -(usableLeft * i) / lanesF, 0.026, C.roadLine, f, tt, 0.035);
+      for (let i = 1; i < lanesB; i++) addLine(g, path, (usableRight * i) / lanesB, 0.026, C.roadLine, f, tt, 0.035);
 
       // 路側線(白実線)
-      g.add(new THREE.Mesh(makeRibbon(path, -HW + 0.35, -HW + 0.5, 0.025, f, tt, 3), mat(C.roadLine)));
-      g.add(new THREE.Mesh(makeRibbon(path, HW - 0.5, HW - 0.35, 0.025, f, tt, 3), mat(C.roadLine)));
+      g.add(new THREE.Mesh(makeRibbon(path, -wL + 0.35, -wL + 0.5, 0.025, f, tt, 3), mat(C.roadLine)));
+      g.add(new THREE.Mesh(makeRibbon(path, wR - 0.5, wR - 0.35, 0.025, f, tt, 3), mat(C.roadLine)));
 
       // 縁石
-      g.add(new THREE.Mesh(makeRibbon(path, -HW - 0.5, -HW, 0.13, f, tt), mat(C.curb)));
-      g.add(new THREE.Mesh(makeRibbon(path, HW, HW + 0.5, 0.13, f, tt), mat(C.curb)));
+      g.add(new THREE.Mesh(makeRibbon(path, -wL - 0.5, -wL, 0.13, f, tt), mat(C.curb)));
+      g.add(new THREE.Mesh(makeRibbon(path, wR, wR + 0.5, 0.13, f, tt), mat(C.curb)));
 
       // 歩道
-      g.add(new THREE.Mesh(makeRibbon(path, -HW - 3.2, -HW - 0.5, 0.1, f, tt), mat(0xcfd2cc)));
-      g.add(new THREE.Mesh(makeRibbon(path, HW + 0.5, HW + 3.2, 0.1, f, tt), mat(0xcfd2cc)));
+      g.add(new THREE.Mesh(makeRibbon(path, -wL - 3.2, -wL - 0.5, 0.1, f, tt), mat(0xcfd2cc)));
+      g.add(new THREE.Mesh(makeRibbon(path, wR + 0.5, wR + 3.2, 0.1, f, tt), mat(0xcfd2cc)));
     }
   }
 
-  addIntersections(g, path, route?.intersections ?? [], turns);
+  const routeHwAt = (s) => {
+    const sec = sections.find((x) => s >= (x.from ?? 0) && s < (x.to ?? path.length));
+    if (!sec) return CFG.road.halfWidth;
+    const spec = sectionSpec(sec);
+    return Math.max(spec.wL, spec.wR);
+  };
+  addIntersections(g, path, route?.intersections ?? [], turns, routeHwAt);
   addTurnIntersections(g, path, turns);
 
   return g;
