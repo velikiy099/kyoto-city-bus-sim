@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { route } from '../route/routeData.js';
+import { route, rightWidthAt } from '../route/routeData.js';
 
 const mat = (color, opts = {}) => new THREE.MeshLambertMaterial({ color, ...opts });
 
@@ -122,7 +122,9 @@ function buildNijoStation(scene, path) {
 /** 京都水族館+梅小路公園 */
 function buildAquarium(scene, path) {
   const s = stopS('七条大宮・京都水族館前');
-  const a = anchor(path, s + 20, 60); // 右(西)側
+  const PARK_HALF_W = 75; // PlaneGeometry(150,120) の半幅(道路と垂直な方向)
+  const lat = rightWidthAt(s + 20) + 3.2 + 8 + PARK_HALF_W; // 車道+歩道+余白の外側に芝生の内縁を置く
+  const a = anchor(path, s + 20, lat); // 右(西)側
   const g = new THREE.Group();
   g.position.set(a.x, 0, a.z);
   g.rotation.y = a.ry;

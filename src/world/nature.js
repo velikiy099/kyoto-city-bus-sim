@@ -83,8 +83,14 @@ export function buildNature(scene, path) {
 
   // ---- 街路樹(Blender製2種を InstancedMesh で量産) ----
   const turnZones = turnExclusions(); // 右左折交差点のスタブ道路上には植えない
+  // 線路の下(JR在来線・新幹線の桁が路側を大きく覆う区間)には植えない
+  const railZones = (route.railStructures ?? []).map((r) => ({
+    from: r.s - (r.width ?? 20) / 2 - 6,
+    to: r.s + (r.width ?? 20) / 2 + 6,
+  }));
   const items = [];
   for (let s = 40; s < path.length * 0.62; s += 42) {
+    if (railZones.some((z) => s > z.from && s < z.to)) continue;
     for (const side of [-1, 1]) {
       if (((s / 42) | 0) % 2 === (side === -1 ? 0 : 1)) continue; // 互い違い
       const [px, pz] = path.getPoint(s);
