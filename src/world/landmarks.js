@@ -13,32 +13,49 @@ function anchor(path, s, lat) {
   return { x: px + -tz * lat, z: pz + tx * lat, ry: Math.atan2(tx, tz) };
 }
 
-/** 東寺五重塔(高さ約55m・日本一の木造塔)+ 金堂・境内 */
+/**
+ * 東寺(境内・五重塔・金堂)。
+ * 境内は実際の道路配置に接するよう矩形で囲む: 北端=東寺道交差点、東端=大宮通(七条〜九条間)、
+ * 南端=九条通(九条大宮の交差点)、西端=京阪国道口(国道1号)交差点。
+ * 五重塔は史実どおり境内南東寄り(九条大宮交差点の北西方向)に配置する。
+ */
 function buildToji(scene, path) {
   const g = new THREE.Group();
-  const s = stopS('東寺南門前');
-  const a = anchor(path, s - 15, 78); // 進行方向右(北)側の境内
-  g.position.set(a.x, 0, a.z);
-  g.rotation.y = a.ry;
+  const findIx = (name) => route.intersections.find((ix) => ix.name === name);
+  const tojiDo = findIx('東寺道');
+  const keihan = findIx('京阪国道口(国道1号)');
+  const turn = route.turnIntersections.find((t) => t.crossName === '大宮通');
+  if (!tojiDo || !keihan || !turn) {
+    scene.add(g);
+    return { x: 0, z: 0, r: 0 };
+  }
+
+  const [, northZ] = path.getPoint(tojiDo.s); // 北端: 東寺道交差点の緯度
+  const eastX = turn.x;                        // 東端: 大宮通(九条大宮進入直前)の経度
+  const southZ = turn.z;                       // 南端: 九条通(九条大宮)の緯度
+  const [westX] = path.getPoint(keihan.s);      // 西端: 京阪国道口交差点の経度
+  const w = eastX - westX;
+  const d = southZ - northZ;
+  const cx = (eastX + westX) / 2, cz = (northZ + southZ) / 2;
+  g.position.set(cx, 0, cz);
 
   // 境内(砂利色) と 塀
-  const ground = new THREE.Mesh(new THREE.PlaneGeometry(130, 120), mat(0xcabfa5));
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(w, d), mat(0xcabfa5));
   ground.rotation.x = -Math.PI / 2;
   ground.position.y = 0.08;
   g.add(ground);
-  for (const [w, d, x, z] of [[130, 2, 0, -59], [130, 2, 0, 59], [2, 120, -64, 0], [2, 120, 64, 0]]) {
-    const wall = new THREE.Mesh(new THREE.BoxGeometry(w, 3.2, d), mat(0xe8e0d0));
+  for (const [ww, dd, x, z] of [[w, 2, 0, -d / 2], [w, 2, 0, d / 2], [2, d, -w / 2, 0], [2, d, w / 2, 0]]) {
+    const wall = new THREE.Mesh(new THREE.BoxGeometry(ww, 3.2, dd), mat(0xe8e0d0));
     wall.position.set(x, 1.6, z);
     g.add(wall);
-    const cap = new THREE.Mesh(new THREE.BoxGeometry(w + 0.6, 0.5, d + 0.6), mat(0x4a4f55));
+    const cap = new THREE.Mesh(new THREE.BoxGeometry(ww + 0.6, 0.5, dd + 0.6), mat(0x4a4f55));
     cap.position.set(x, 3.4, z);
     g.add(cap);
   }
 
-  // 五重塔(境内の道路寄り・南東角 — 実際の伽藍配置と同じ)
-  // ローカル軸: +x=ワールド南, +z=ワールド西(anchor 接線が西向きのため)
+  // 五重塔(境内の南東寄り = 九条大宮交差点の北西方向。実際の伽藍配置と同じ)
   const pagoda = new THREE.Group();
-  pagoda.position.set(45, 0, -55);
+  pagoda.position.set(eastX - cx - 65, 0, southZ - cz - 55);
   let y = 0;
   for (let i = 0; i < 5; i++) {
     const bw = 12.5 - i * 1.7;
@@ -59,9 +76,9 @@ function buildToji(scene, path) {
   pagoda.add(finial);
   g.add(pagoda);
 
-  // 金堂(大きな寄棟屋根の堂・境内中央の北寄り)
+  // 金堂(大きな寄棟屋根の堂・境内中央よりやや北)
   const hall = new THREE.Group();
-  hall.position.set(-20, 0, 0);
+  hall.position.set(0, 0, -d * 0.12);
   const hallBody = new THREE.Mesh(new THREE.BoxGeometry(38, 10, 26), mat(0xa08464));
   hallBody.position.y = 5;
   hall.add(hallBody);
@@ -73,7 +90,7 @@ function buildToji(scene, path) {
   g.add(hall);
 
   scene.add(g);
-  return { x: a.x, z: a.z, r: 115 };
+  return { x: cx, z: cz, r: Math.max(w, d) / 2 + 15 };
 }
 
 /** JR二条駅(かまぼこ型の大屋根) */
