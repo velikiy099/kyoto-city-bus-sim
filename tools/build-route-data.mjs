@@ -23,7 +23,10 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const CACHE = join(ROOT, 'tools', 'cache');
 const OUT = join(ROOT, 'src', 'data', 'route18.json');
 const RELATION_ID = 13027168;
-const OVERPASS = 'https://overpass-api.de/api/interpreter';
+const OVERPASS_ENDPOINTS = [
+  'https://overpass-api.de/api/interpreter',
+  'https://overpass.kumi.systems/api/interpreter',
+];
 
 // 距離スケール: 実距離に乗算。1.0 で OSM 実距離どおり。
 const SCALE = 1.0;
@@ -57,6 +60,33 @@ const EXTRA_STOPS = {
   '城南宮道': [34.9501719, 135.7431768], // node 8955892662
   '赤池': [34.9473836, 135.7430396],     // node 8955892665
 };
+
+// 南行きと北行きで停車位置(道)が異なる停留所: 南行きプラットフォームのOSM実測座標で上書き
+const SOUTHBOUND_STOP_OVERRIDES = {
+  '千本十条': [34.973279, 135.7422175],       // node 8955892643(十条通 南側)
+  '五丁橋': [34.9705886, 135.7426048],        // node 8955892645(旧千本通)
+  '上ノ町': [34.9673125, 135.7425638],        // node 8955892647(旧千本通)
+  '上鳥羽村山町': [34.96565, 135.74247],      // 北行きのみ停車。データ整合のため旧千本通上へ射影
+  '上鳥羽小学校前': [34.9643776, 135.7424912], // node 8955892650
+  '地蔵前': [34.9585329, 135.7430509],        // node 8955892656(一方通行南行き側)
+  '奈須野': [34.9561146, 135.7425598],        // node 8955892658(一方通行南行き側)
+  '小枝橋': [34.9540361, 135.7415567],        // node 8955892661
+};
+
+// 南行き専用区間1(十条新千本→十条通を東進→十条旧千本→旧千本通を南進)
+// 北行きは新千本通を通るため、南行きの実経路を way 実形状で差し替える。
+// way ID を南行きの通過順に列挙(向きは連結時に自動判定)
+const JUJO_WAY_IDS = [
+  968070106, // 十条通り: 新千本通交点 → 東
+  968070105, // 十条通り: → 旧千本通交点(十条旧千本)
+  27211283,  // 千本通(旧): 十条旧千本 → 南(一方通行)
+  1061759843, // 千本通: → 中山稲荷線(府道201)
+  968070098, // 千本通: 府道201 → 南(2車線・センターラインなし)
+  63124503,  // 千本通: → 地蔵前手前交差点
+  116803173, // 千本通: 一方通行区間(地蔵前手前 → 34.9554 の合流部)
+];
+const JUJO_FROM = [34.9736, 135.7414];  // 差し替え開始: 新千本通・十条通の手前
+const JUJO_TO = [34.9554039, 135.7421815]; // 差し替え終了: 一方通行南端の合流点
 
 // 南行き専用区間(小枝橋→上鳥羽塔ノ森): 千本通の実 way 形状
 // way 621847400(逆順) + way 217638202(逆順) + 交差点接続
@@ -104,20 +134,34 @@ const SPEED_ZONES = [
 
 // ---------------------------------------------------------------- utilities
 
-async function fetchJson(url, body) {
-  const res = await fetch(url, {
-    method: body ? 'POST' : 'GET',
-    headers: {
-      Accept: 'application/json',
-      'User-Agent': 'cc-sample-game-route-builder/0.1 (OpenStreetMap data refresh)',
-    },
-    body: body ? new URLSearchParams({ data: body }) : undefined,
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(`HTTP ${res.status} for ${url}${text ? `: ${text.slice(0, 500)}` : ''}`);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Overpass はレート制限(429)が頻発するためミラー横断+バックオフで再試行する
+async function fetchJson(_url, body) {
+  let lastErr = null;
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const url = OVERPASS_ENDPOINTS[attempt % OVERPASS_ENDPOINTS.length];
+    try {
+      const res = await fetch(url, {
+        method: body ? 'POST' : 'GET',
+        headers: {
+          Accept: 'application/json',
+          'User-Agent': 'cc-sample-game-route-builder/0.1 (OpenStreetMap data refresh)',
+        },
+        body: body ? new URLSearchParams({ data: body }) : undefined,
+      });
+      if (res.ok) return res.json();
+      const text = await res.text().catch(() => '');
+      lastErr = new Error(`HTTP ${res.status} for ${url}${text ? `: ${text.slice(0, 300)}` : ''}`);
+      if (res.status !== 429 && res.status !== 504) throw lastErr;
+    } catch (e) {
+      lastErr = e;
+    }
+    const wait = 8000 * (attempt + 1);
+    console.log(`  retry in ${wait / 1000}s (${lastErr.message.slice(0, 80)})`);
+    await sleep(wait);
   }
-  return res.json();
+  throw lastErr;
 }
 
 function loadCachedOrFetch(file, query) {
@@ -127,7 +171,7 @@ function loadCachedOrFetch(file, query) {
     return Promise.resolve(JSON.parse(readFileSync(path, 'utf8')));
   }
   console.log(`  fetching from Overpass: ${file} ...`);
-  return fetchJson(OVERPASS, query).then((data) => {
+  return fetchJson(null, query).then((data) => {
     mkdirSync(CACHE, { recursive: true });
     writeFileSync(path, JSON.stringify(data));
     return data;
@@ -187,6 +231,27 @@ function connectWays(ways) {
     throw new Error(`way連結失敗: ${used.size}/${segs.length} 本のみ連結`);
   }
   return line;
+}
+
+/** way を指定順に連結(各 way の向きは前の終端との距離で自動判定) */
+function chainOrderedWays(ways, entry) {
+  let line = [];
+  let cursor = entry;
+  for (const w of ways) {
+    let seg = w.geometry.map((p) => [p.lat, p.lon]);
+    if (dist2(seg.at(-1), cursor) < dist2(seg[0], cursor)) seg = [...seg].reverse();
+    line = line.concat(line.length ? seg.slice(1) : seg);
+    cursor = line.at(-1);
+  }
+  return line;
+}
+
+/** line の from〜to 区間を detour で差し替える */
+function spliceDetour(line, detour, from, to, label) {
+  const iFrom = nearestIndex(line, from);
+  const iTo = nearestIndex(line, to);
+  if (!(iFrom < iTo)) throw new Error(`差し替え区間の探索失敗(${label}) iFrom=${iFrom} iTo=${iTo}`);
+  return [...line.slice(0, iFrom + 1), ...detour, ...line.slice(iTo)];
 }
 
 const nearestIndex = (line, pt) => {
@@ -791,12 +856,16 @@ async function buildFromOSM() {
   );
 
   const rel = relData.elements.find((e) => e.type === 'relation');
+  // 経路ノード = 北行きリレーションの way + 南行き専用区間(十条〜旧千本通)の way
+  const routeNodesQuery = `rel(${RELATION_ID})->.routeRel;
+way(r.routeRel)->.relWays;
+way(id:${JUJO_WAY_IDS.join(',')})->.jujoWays;
+(.relWays; .jujoWays;)->.routeWays;
+node(w.routeWays)->.routeNodes;`;
   const roadData = await loadCachedOrFetch(
-    'route18_roads_wide.json',
+    'route18_roads_wide2.json',
     `[out:json][timeout:90];
-rel(${RELATION_ID})->.routeRel;
-way(r.routeRel)->.routeWays;
-node(w.routeWays)->.routeNodes;
+${routeNodesQuery}
 (
   .routeWays;
   ${ROAD_TYPES.map((type) => `way(around.routeNodes:${ROAD_AROUND_RADIUS})["highway"="${type}"];`).join('\n  ')}
@@ -805,15 +874,17 @@ node(w.routeWays)->.routeNodes;
 out body geom;`
   );
   const buildingData = await loadCachedOrFetch(
-    'route18_buildings.json',
+    'route18_buildings2.json',
     `[out:json][timeout:120];
-rel(${RELATION_ID})->.routeRel;
-way(r.routeRel)->.routeWays;
-node(w.routeWays)->.routeNodes;
+${routeNodesQuery}
 (
   way(around.routeNodes:${BUILDING_AROUND_RADIUS})["building"];
 );
 out body geom;`
+  );
+  const jujoData = await loadCachedOrFetch(
+    'route18_jujo_southbound.json',
+    `[out:json][timeout:60];way(id:${JUJO_WAY_IDS.join(',')});out body geom;`
   );
   const [railSouth, railWest, railNorth, railEast] = RAILWAY_BBOX;
   const railwayData = await loadCachedOrFetch(
@@ -838,10 +909,15 @@ out body geom;`
   if (line[0][0] < line.at(-1)[0]) line.reverse(); // 先頭の緯度が小さい(南)なら反転して北始まりに
   // ここで line = 南行き(二条駅西口 → 久我石原町)
 
-  const iFrom = nearestIndex(line, DETOUR_FROM);
-  const iTo = nearestIndex(line, DETOUR_TO);
-  if (!(iFrom < iTo)) throw new Error(`差し替え区間の探索失敗 iFrom=${iFrom} iTo=${iTo}`);
-  line = [...line.slice(0, iFrom + 1), ...DETOUR_SOUTHBOUND, ...line.slice(iTo)];
+  // 南行き専用区間1: 十条新千本→十条通→十条旧千本→旧千本通(北行きは新千本通経由のため)
+  const jujoWays = JUJO_WAY_IDS.map((id) => {
+    const w = jujoData.elements.find((e) => e.type === 'way' && e.id === id);
+    if (!w?.geometry?.length) throw new Error(`十条南行き way が見つからない: ${id}`);
+    return w;
+  });
+  line = spliceDetour(line, chainOrderedWays(jujoWays, JUJO_FROM), JUJO_FROM, JUJO_TO, '十条南行き');
+  // 南行き専用区間2: 小枝橋→城南宮道→赤池→上鳥羽塔ノ森
+  line = spliceDetour(line, DETOUR_SOUTHBOUND, DETOUR_FROM, DETOUR_TO, '城南宮道');
 
   console.log('[3/5] 停留所を南行き順に整列');
   // 北行きの platform 順(久我石原町→二条駅西口)を逆転し、南行き専用停を挿入
@@ -851,6 +927,9 @@ out body geom;`
     .map((n) => ({ name: NAME_ALIAS[n.tags?.name] ?? n.tags?.name, latlon: [n.lat, n.lon] }))
     .reverse();
   for (const [name, latlon] of Object.entries(EXTRA_STOPS)) osmStops.push({ name, latlon });
+  for (const st of osmStops) {
+    if (SOUTHBOUND_STOP_OVERRIDES[st.name]) st.latlon = SOUTHBOUND_STOP_OVERRIDES[st.name];
+  }
   const stopsLL = STOP_ORDER.map((name) => {
     const hit = osmStops.find((s) => s.name === name);
     if (!hit) throw new Error(`停留所がOSMデータに見つからない: ${name}`);
@@ -876,11 +955,11 @@ function buildFallback() {
     '七条大宮・京都水族館前': [34.9884228, 135.7490843], '東寺東門前': [34.9823598, 135.7491945],
     '九条大宮': [34.9801091, 135.7491864], '東寺南門前': [34.9793729, 135.7469272],
     '羅城門': [34.97912, 135.7429916], '唐戸町': [34.9760434, 135.7413693],
-    '千本十条': [34.972717, 135.7411332], '五丁橋': [34.9702057, 135.7410436],
-    '上ノ町': [34.9684134, 135.7409965], '上鳥羽村山町': [34.9663379, 135.740911],
-    '上鳥羽小学校前': [34.9640204, 135.7424117], '城ケ前町': [34.9626138, 135.7424736],
-    '岩ノ本町': [34.9607101, 135.7425161], '地蔵前': [34.9580168, 135.7424495],
-    '奈須野': [34.9563035, 135.7419988], '小枝橋': [34.9541881, 135.741534],
+    '千本十条': SOUTHBOUND_STOP_OVERRIDES['千本十条'], '五丁橋': SOUTHBOUND_STOP_OVERRIDES['五丁橋'],
+    '上ノ町': SOUTHBOUND_STOP_OVERRIDES['上ノ町'], '上鳥羽村山町': SOUTHBOUND_STOP_OVERRIDES['上鳥羽村山町'],
+    '上鳥羽小学校前': SOUTHBOUND_STOP_OVERRIDES['上鳥羽小学校前'], '城ケ前町': [34.9626138, 135.7424736],
+    '岩ノ本町': [34.9607101, 135.7425161], '地蔵前': SOUTHBOUND_STOP_OVERRIDES['地蔵前'],
+    '奈須野': SOUTHBOUND_STOP_OVERRIDES['奈須野'], '小枝橋': SOUTHBOUND_STOP_OVERRIDES['小枝橋'],
     '城南宮道': EXTRA_STOPS['城南宮道'], '赤池': EXTRA_STOPS['赤池'],
     '上鳥羽塔ノ森': [34.9467722, 135.7391107], '久我': [34.945528, 135.7342175],
     '菱妻神社前': [34.94775, 135.7293566], '久我石原町': [34.9476875, 135.7248118],
@@ -1008,6 +1087,7 @@ async function main() {
     source,
     generatedAt: new Date().toISOString(),
     scale: SCALE,
+    origin: [+origin[0].toFixed(7), +origin[1].toFixed(7)], // 投影原点 [lat, lon](デバッグ・座標変換用)
     totalLength: +totalLength.toFixed(1),
     path,
     stops: stops.map(({ name, s }) => ({ name, s })),
