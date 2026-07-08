@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { makeRibbon } from './road.js';
-import { elevationAt, gradeAt } from '../route/routeData.js';
+import { elevationAt, gradeAt, halfWidthAt } from '../route/routeData.js';
 
 const mat = (color, opts = {}) => new THREE.MeshLambertMaterial({ color, ...opts });
 
@@ -108,7 +108,10 @@ function buildShinkansenViaduct(scene, path, spec) {
   g.add(girder);
   addDeckRails(g, width, deckY + 0.85, length);
 
+  // 橋脚(道路上には立てない — 高架は線路が道路と直交して跨ぐ)
+  const clearHalf = halfWidthAt(spec.s) + 4;
   for (const z of [-70, -35, 0, 35, 70]) {
+    if (Math.abs(z) < clearHalf) continue;
     const pier = new THREE.Mesh(new THREE.BoxGeometry(width * 0.55, deckY - 0.55, 1.15), mat(0xb8b8b1));
     pier.position.set(0, (deckY - 0.55) / 2, z);
     g.add(pier);

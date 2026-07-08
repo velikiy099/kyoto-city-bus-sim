@@ -28,8 +28,10 @@ const OVERPASS = 'https://overpass-api.de/api/interpreter';
 // 距離スケール: 実距離に乗算。1.0 で OSM 実距離どおり。
 const SCALE = 1.0;
 const RESAMPLE_STEP = 2;      // 最終ポリラインの点間隔 [m]
-const FILLET_RADIUS = 18;     // 交差点コーナーの円弧半径 [m]
+const FILLET_RADIUS = 18;     // 緩い折れの円弧半径 [m]
 const FILLET_MIN_ANGLE = 25;  // この角度[deg]を超える折れをフィレット化
+const TURN_MIN_ANGLE = 55;    // この角度[deg]以上の折れは「右左折交差点」扱い(小半径+交差描画)
+const TURN_FILLET_RADIUS = 12; // 交差点内でバスが曲がる現実的な回転半径 [m]
 const ROAD_AROUND_RADIUS = 90; // route node 周辺から接続道路を拾う距離 [m]
 const BUILDING_AROUND_RADIUS = 95; // route node 周辺から沿道建物を拾う距離 [m]
 const BUILDING_BIN_SIZE = 120;
@@ -221,9 +223,11 @@ function rdp(pts, eps) {
   return rdp(pts.slice(0, idx + 1), eps).slice(0, -1).concat(rdp(pts.slice(idx), eps));
 }
 
-// 鋭い折れを円弧フィレットに置換(スケール圧縮でコーナーが小さくなりバスが曲がれなくなる対策)
-function filletCorners(pts, radius, minAngleDeg) {
+// 鋭い折れを円弧フィレットに置換。TURN_MIN_ANGLE 以上の折れ(右左折交差点)は
+// 小半径 turnRadius で曲げ、交差点情報(頂点・接点・進入/退出方位)を corners に記録する。
+function filletCorners(pts, radius, minAngleDeg, turnMinAngleDeg = Infinity, turnRadius = radius) {
   const out = [pts[0]];
+  const corners = [];
   for (let i = 1; i < pts.length - 1; i++) {
     const p = pts[i];
     const v1 = [p[0] - pts[i - 1][0], p[1] - pts[i - 1][1]];
@@ -235,10 +239,12 @@ function filletCorners(pts, radius, minAngleDeg) {
     const dot = u1[0] * u2[0] + u1[1] * u2[1];
     const angle = Math.atan2(cross, dot); // 転回角(符号付き)
     if (Math.abs(angle) < (minAngleDeg * Math.PI) / 180) { out.push(p); continue; }
+    const isTurn = Math.abs(angle) >= (turnMinAngleDeg * Math.PI) / 180;
+    const baseR = isTurn ? turnRadius : radius;
     // 接点距離 d = R tan(|θ|/2)。セグメント長でクランプし実効半径を再計算
-    let d = radius * Math.tan(Math.abs(angle) / 2);
+    let d = baseR * Math.tan(Math.abs(angle) / 2);
     const dMax = 0.45 * Math.min(l1, l2);
-    const r = d > dMax ? dMax / Math.tan(Math.abs(angle) / 2) : radius;
+    const r = d > dMax ? dMax / Math.tan(Math.abs(angle) / 2) : baseR;
     d = Math.min(d, dMax);
     const t1 = [p[0] - u1[0] * d, p[1] - u1[1] * d];
     // 円弧中心: t1 から進入方向の法線(曲がる側)へ r
@@ -251,9 +257,21 @@ function filletCorners(pts, radius, minAngleDeg) {
       const a = a0 + (angle * k) / steps;
       out.push([c[0] + r * Math.cos(a), c[1] + r * Math.sin(a)]);
     }
+    if (isTurn) {
+      corners.push({
+        vertex: p,
+        t1,
+        t2: [p[0] + u2[0] * d, p[1] + u2[1] * d],
+        u1,
+        u2,
+        angle,
+        r,
+        d,
+      });
+    }
   }
   out.push(pts.at(-1));
-  return out;
+  return { pts: out, corners };
 }
 
 // Chaikin 平滑化(開曲線・端点保持)
@@ -570,9 +588,16 @@ function railwayMetadata(path, cumLen, origin, railWays, sFrom, sTo) {
     const sorted = [...list].sort((a, b) => a.s - b.s);
     const sMin = sorted[0].s;
     const sMax = sorted.at(-1).s;
-    const mainTracks = sorted.filter((r) => !['crossover', 'yard'].includes(r.service)).length;
-    const s = sorted.reduce((a, r) => a + r.s, 0) / sorted.length;
-    const heading = sorted.reduce((a, r) => a + r.heading, 0) / sorted.length;
+    const main = sorted.filter((r) => !['crossover', 'siding', 'yard', 'spur'].includes(r.service));
+    const src = main.length ? main : sorted;
+    const mainTracks = main.length;
+    const s = src.reduce((a, r) => a + r.s, 0) / src.length;
+    // 方位は mod-π の円周平均(倍角トリック)。OSM の way は東向き/西向きが混在し
+    // (θ と θ+π)、単純平均では打ち消し合って道路と平行な向きに潰れてしまう。
+    const heading = 0.5 * Math.atan2(
+      src.reduce((a, r) => a + Math.sin(2 * r.heading), 0),
+      src.reduce((a, r) => a + Math.cos(2 * r.heading), 0)
+    );
     if (kind === 'shinkansen') {
       return {
         kind: 'shinkansen-viaduct',
@@ -605,6 +630,141 @@ function railwayMetadata(path, cumLen, origin, railWays, sFrom, sTo) {
     buildGroup('conventional', groups.conventional),
     buildGroup('shinkansen', groups.shinkansen),
   ].filter(Boolean).sort((a, b) => a.s - b.s);
+}
+
+/**
+ * 信号の柱・灯器のワールド座標を計算して heads 配列を返す(JSONに埋め込み、描画側は置くだけ)。
+ * 右左折交差点では四隅の歩道角(両道路の路端+1.85m の交点)に柱を立てる。
+ * 通常交差点ではルート接線基準・従道柱は交差道路の幅の外側。
+ * head: {kind:'main'|'cross', face, pole:[x,z], head:[x,z], arm?, hoods?}
+ */
+function placeSignalHeads(sig, turns, intersections, path, cumLen, hwAt, laneCenterAt) {
+  const round = (p) => [+p[0].toFixed(2), +p[1].toFixed(2)];
+  // 柱の退避対象となる舗装矩形: 近傍の交差道路スタブ + 右左折交差点の腕
+  const rects = [
+    ...intersections.filter((i) => Math.abs(i.s - sig.s) < 70).map((i) => {
+      const [cx, cz] = pointAtPath(path, cumLen, i.s);
+      return { cx, cz, heading: i.heading, from: -i.length / 2, to: i.length / 2, hw: i.width / 2 };
+    }),
+    ...turns.filter((t) => Math.abs(t.s - sig.s) < 90).flatMap((t) => [
+      { cx: t.x, cz: t.z, heading: t.headingIn, from: -(t.d + 2), to: 42, hw: t.hwIn },
+      { cx: t.x, cz: t.z, heading: t.headingOut, from: -42, to: t.d + 2, hw: t.hwOut },
+    ]),
+  ];
+  // 柱が路面(本線・スタブ)に乗っていたら外へ押し出す(最終保険・反復)
+  const clearPole = (p0) => {
+    let p = p0;
+    for (let iter = 0; iter < 3; iter++) {
+      let moved = false;
+      const { s, dist } = projectToPath(path, cumLen, p, 0);
+      const need = hwAt(s) + 1.2;
+      if (dist < need) {
+        const [qx, qz] = pointAtPath(path, cumLen, s);
+        let ux = p[0] - qx, uz = p[1] - qz;
+        const len = Math.hypot(ux, uz);
+        if (len < 0.5) {
+          const h = routeHeadingAt(path, cumLen, s);
+          ux = -Math.cos(h); // ほぼ路面中心に居る場合は経路の右法線方向へ
+          uz = Math.sin(h);
+        } else {
+          ux /= len;
+          uz /= len;
+        }
+        p = [qx + ux * (need + 0.5), qz + uz * (need + 0.5)];
+        moved = true;
+      }
+      for (const r of rects) {
+        const dx = p[0] - r.cx, dz = p[1] - r.cz;
+        const dir = [Math.sin(r.heading), Math.cos(r.heading)];
+        const along = dx * dir[0] + dz * dir[1];
+        const lat = dx * dir[1] - dz * dir[0];
+        if (along > r.from - 0.5 && along < r.to + 0.5 && Math.abs(lat) < r.hw + 0.7) {
+          const target = (lat >= 0 ? 1 : -1) * (r.hw + 0.9); // 矩形の短手方向へ退避
+          p = [p[0] + dir[1] * (target - lat), p[1] - dir[0] * (target - lat)];
+          moved = true;
+        }
+      }
+      if (!moved) break;
+    }
+    return p;
+  };
+  const heads = [];
+  const push = (kind, face, pole, head, opts = {}) => {
+    heads.push({ kind, face: +face.toFixed(4), pole: round(clearPole(pole)), head: round(head), ...opts });
+  };
+
+  const t = turns.find((tt) => Math.abs(tt.s - sig.s) <= 30);
+  if (t) {
+    // 右左折交差点: 円弧(バスの実走路)を避け、交差点ボックスの外側に軸沿いで配置する。
+    // pt(基準軸, along, latRight): 軸方向 along + 進行右方向 latRight のワールド座標
+    const dirA = [Math.sin(t.headingIn), Math.cos(t.headingIn)];
+    const rightA = [-Math.cos(t.headingIn), Math.sin(t.headingIn)];
+    const dirB = [Math.sin(t.headingOut), Math.cos(t.headingOut)];
+    const rightB = [-Math.cos(t.headingOut), Math.sin(t.headingOut)];
+    const ptA = (along, lat) => [t.x + dirA[0] * along + rightA[0] * lat, t.z + dirA[1] * along + rightA[1] * lat];
+    const ptB = (along, lat) => [t.x + dirB[0] * along + rightB[0] * lat, t.z + dirB[1] * along + rightB[1] * lat];
+    const boxA = Math.max(t.d, t.hwOut) + 2.6; // 進入側ボックス端(円弧開始より手前)
+    const boxB = Math.max(t.d, t.hwIn) + 2.6;  // 退出側ボックス端(円弧終了より先)
+
+    // 進入路(バス)向き: ボックス手前・左路端の柱からアームで自車線上へ
+    push('main', t.headingIn, ptA(-boxA, -(t.hwIn + 1.85)), ptA(-boxA, laneCenterAt(t.sIn) - 0.2), { arm: 1, hoods: 1 });
+    // 退出路の対向車向き: ボックスの先・ルート右側の柱、対向車線上へ
+    push('main', t.headingOut + Math.PI, ptB(boxB, t.hwOut + 1.85), ptB(boxB, -laneCenterAt(t.sOut) + 0.2), { arm: 1 });
+    // 従道向き(交差点内連動): 両道路の路端が交わる歩道角に柱を置く(柱直付け)
+    // p·nA = a, p·nB = b の連立解(nA/nB は各道路軸の左法線)
+    const nA = [Math.cos(t.headingIn), -Math.sin(t.headingIn)];
+    const nB = [Math.cos(t.headingOut), -Math.sin(t.headingOut)];
+    const det = nA[0] * nB[1] - nA[1] * nB[0];
+    if (Math.abs(det) > 0.3) {
+      const cornerPole = (a, b) => [t.x + (a * nB[1] - b * nA[1]) / det, t.z + (-a * nB[0] + b * nA[0]) / det];
+      // 直進スタブの先から来る車向き: A軸の先(alongA>0)側の角
+      for (const sb of [1, -1]) {
+        const p = cornerPole(-(t.hwIn + 1.85), sb * (t.hwOut + 1.85));
+        const alongA = (p[0] - t.x) * dirA[0] + (p[1] - t.z) * dirA[1];
+        if (alongA > 0) {
+          push('cross', t.headingIn + Math.PI, p, [p[0] + nA[0] * 0.6, p[1] + nA[1] * 0.6]);
+          break;
+        }
+      }
+      // 退出路の後方から来る車向き: B軸の後方(alongB<0)側の角
+      for (const sa of [1, -1]) {
+        const p = cornerPole(sa * (t.hwIn + 1.85), t.hwOut + 1.85);
+        const alongB = (p[0] - t.x) * dirB[0] + (p[1] - t.z) * dirB[1];
+        if (alongB < 0) {
+          push('cross', t.headingOut, p, [p[0] - nB[0] * 0.6, p[1] - nB[1] * 0.6]);
+          break;
+        }
+      }
+    }
+    return heads;
+  }
+
+  // 通常交差点: ルート接線基準(従来 traffic.js にあった配置式を移植)。
+  // 柱の前後オフセットは交差道路の幅の外側まで取る(交差道路の路上に立てない)
+  const [px, pz] = pointAtPath(path, cumLen, sig.s);
+  const theta = routeHeadingAt(path, cumLen, sig.s);
+  const [tx, tz] = [Math.sin(theta), Math.cos(theta)];
+  const nx = -tz, nz = tx; // lateral 正(右)方向
+  const HW = hwAt(sig.s);
+  const ix = intersections.find((i) => Math.abs(i.s - sig.s) < 28);
+  const ch = ix ? ix.heading : theta + Math.PI / 2;
+  const crossHalf = (ix?.width ?? 8) / 2;
+  // 主道柱の前後オフセット: 交差道路の路端の外まで。斜め交差では路端が主道方向に伸びる分を割り増す
+  const crossAngle = Math.min(angleDiff(theta, ch), angleDiff(theta, ch + Math.PI));
+  const ahead = Math.min(16, Math.max(5.2, (crossHalf + 2.2) / Math.max(0.45, Math.sin(crossAngle))));
+  const at = (lat, d) => [px + nx * lat + tx * d, pz + nz * lat + tz * d];
+  push('main', theta, at(-(HW + 1.7), -ahead), at(laneCenterAt(sig.s) - 0.2, -ahead), { arm: 1, hoods: 1 });
+  push('main', theta + Math.PI, at(HW + 1.7, ahead), at(-laneCenterAt(sig.s) + 0.2, ahead), { arm: 1 });
+  const cd = [Math.sin(ch), Math.cos(ch)];
+  for (const dir of [1, -1]) {
+    // 柱は主道の路端(HW+2.2)より先・交差道路の路端(crossHalf+1.6)の外側
+    const pole = [
+      px - cd[0] * dir * (HW + 2.2) + cd[1] * dir * (crossHalf + 1.6),
+      pz - cd[1] * dir * (HW + 2.2) - cd[0] * dir * (crossHalf + 1.6),
+    ];
+    push('cross', dir === 1 ? ch : ch + Math.PI, pole, [pole[0] + cd[0] * dir * 0.6, pole[1] + cd[1] * dir * 0.6]);
+  }
+  return heads;
 }
 
 function pointAtPath(path, cumLen, s) {
@@ -748,8 +908,9 @@ async function main() {
   };
   path.unshift(ext(path[0], path[1], 18));
   path.push(ext(path.at(-1), path.at(-2), 30));
-  path = filletCorners(path, FILLET_RADIUS, FILLET_MIN_ANGLE);
-  path = chaikin(path);
+  const filleted = filletCorners(path, FILLET_RADIUS, FILLET_MIN_ANGLE, TURN_MIN_ANGLE, TURN_FILLET_RADIUS);
+  const turnCorners = filleted.corners;
+  path = chaikin(filleted.pts);
   path = resample(path, RESAMPLE_STEP);
   path = path.map(([x, z]) => [+x.toFixed(2), +z.toFixed(2)]);
 
@@ -781,6 +942,54 @@ async function main() {
     limit: z.limit,
   }));
   const { roadSections, intersections, signals } = roadMetadata(path, cumLen, origin, roads, signalNodes);
+
+  // ゲーム内道路半幅・車線中心(routeData.js の halfWidthAt / laneCenterAt と同式)
+  const lanesAtS = (s) => {
+    for (const sec of roadSections) if (s >= sec.from && s < sec.to) return Math.max(2, sec.lanes || 2);
+    return 2;
+  };
+  const hwAtS = (s) => Math.max(4.0, lanesAtS(s) * 1.6 + 0.8);
+  const laneCenterAtS = (s) => {
+    const lanes = lanesAtS(s);
+    const left = Math.max(1, Math.floor(lanes / 2));
+    return -(((hwAtS(s) - 0.55) * (left - 0.5)) / left);
+  };
+
+  // 右左折交差点: フィレット記録を弧長に射影し、交差道路名を intersections からマッチ
+  // (マッチしたエントリは削除 — 旧スタブとの二重描画防止)
+  const turnIntersections = turnCorners.map((c) => {
+    const sIn = projectToPath(path, cumLen, c.t1, 0).s;
+    const sOut = projectToPath(path, cumLen, c.t2, sIn).s;
+    const sMid = projectToPath(path, cumLen, c.vertex, sIn).s;
+    let cross = null;
+    for (const ix of intersections) {
+      if (Math.abs(ix.s - sMid) < 30 && (!cross || Math.abs(ix.s - sMid) < Math.abs(cross.s - sMid))) cross = ix;
+    }
+    if (cross) intersections.splice(intersections.indexOf(cross), 1);
+    return {
+      s: +sMid.toFixed(1),
+      sIn: +sIn.toFixed(1),
+      sOut: +sOut.toFixed(1),
+      x: +c.vertex[0].toFixed(2),
+      z: +c.vertex[1].toFixed(2),
+      headingIn: +Math.atan2(c.u1[0], c.u1[1]).toFixed(4),
+      headingOut: +Math.atan2(c.u2[0], c.u2[1]).toFixed(4),
+      angleDeg: +((c.angle * 180) / Math.PI).toFixed(1),
+      d: +c.d.toFixed(1), // 頂点→円弧接点の距離(交差点ボックス描画用)
+      hwIn: +hwAtS(Math.max(0, sIn - 1)).toFixed(1),
+      hwOut: +hwAtS(sOut + 1).toFixed(1),
+      crossName: cross?.name ?? '',
+      crossWidth: cross?.width ?? 8,
+      crossLanes: cross?.lanes ?? 2,
+    };
+  });
+
+  // 信号の柱・灯器の設置座標を計算して埋め込む(交差点内の路上に立てない)
+  const signalsOut = signals.map((sig) => ({
+    ...sig,
+    heads: placeSignalHeads(sig, turnIntersections, intersections, path, cumLen, hwAtS, laneCenterAtS),
+  }));
+
   const buildings = buildingMetadata(path, cumLen, origin, buildingWays);
   const railStructures = railwayMetadata(
     path,
@@ -806,7 +1015,8 @@ async function main() {
     speedZones,
     roadSections,
     intersections: intersections.map(({ dist, ...ix }) => ix),
-    signals,
+    turnIntersections,
+    signals: signalsOut,
     buildings,
     railStructures,
   };
@@ -821,6 +1031,13 @@ async function main() {
   console.log('橋:', bridges.map((b) => `${b.name}@${b.s}`).join('  '));
   console.log('速度ゾーン:', speedZones.map((z) => `${z.from}-${z.to}:${z.limit}km/h`).join('  '));
   console.log(`道路区間: ${roadSections.length}  交差点: ${intersections.length}  OSM信号: ${signals.length}  OSM建物: ${buildings.length}  鉄道構造: ${railStructures.length}`);
+  console.log(`右左折交差点: ${turnIntersections.length}`);
+  for (const t of turnIntersections) {
+    console.log(`  s=${String(t.s).padStart(7)}  ${String(t.angleDeg).padStart(6)}°  ${t.crossName || '(交差道路名なし)'}`);
+  }
+  for (const r of railStructures) {
+    console.log(`鉄道: ${r.name}  s=${r.s}  heading=${r.heading.toFixed(4)}rad`);
+  }
   const bad = stops.filter((st, i) => i > 0 && st.s <= stops[i - 1].s);
   if (bad.length) throw new Error(`s値が単調増加でない停留所: ${bad.map((b) => b.name).join(',')}`);
   if (stops.length !== 30) throw new Error(`停留所数が30でない: ${stops.length}`);

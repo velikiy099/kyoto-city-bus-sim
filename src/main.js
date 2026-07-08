@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import './style.css';
 import { CFG } from './config.js';
-import { route, speedLimitKmhAt, speedLimitAt, elevationAt, gradeAt, halfWidthAt, laneCenterAt, curbStopLat } from './route/routeData.js';
+import { route, speedLimitKmhAt, speedLimitAt, elevationAt, gradeAt, halfWidthAt, laneCenterAt, curbStopLat, turnExclusions, turnAllowanceAt } from './route/routeData.js';
 import { input } from './input.js';
 import { BusPhysics } from './bus/busPhysics.js';
 import { createBusModel } from './bus/busModel.js';
@@ -48,7 +48,7 @@ scene.add(buildGround(path));
 scene.add(buildRoad(path, route));
 buildExtraRoads(scene); // 千本通北側(二条駅前交差点)などルート外の道路
 buildRailways(scene, path, route.railStructures);
-const exclusions = [...buildLandmarks(scene, path), ...buildNature(scene, path)];
+const exclusions = [...buildLandmarks(scene, path), ...buildNature(scene, path), ...turnExclusions()];
 buildBuildings(scene, path, exclusions, route.buildings);
 
 // ---------------------------------------------------------------- bus / game objects
@@ -228,7 +228,7 @@ function tick(dt, ePressed) {
   const proj = path.closestS([bus.x, bus.z], state.s, 150);
   state.s = proj.s;
   state.lateral = proj.lateral;
-  state.offRoute = proj.dist > halfWidthAt(state.s) + CFG.road.offroadMargin + 2.5;
+  state.offRoute = proj.dist > halfWidthAt(state.s) + turnAllowanceAt(state.s) + CFG.road.offroadMargin + 2.5;
 
   if (state.offRoute && bus.v > 15 / 3.6) bus.v = 15 / 3.6;
 
@@ -377,6 +377,21 @@ showTitle(() => {
   state.phase = 'RUNNING';
   state.clock = firstDepartTime - 45;
 });
+
+// ---------------------------------------------------------------- reset (Shift+R)
+// リロードで全状態(乗客・交通・スコア・ダイヤ)を確実に初期化し、タイトルを飛ばして即再開する
+function resetGame() {
+  sessionStorage.setItem('bus18-restart', '1');
+  window.location.reload();
+}
+window.game.debug.reset = resetGame;
+window.addEventListener('keydown', (e) => {
+  if (e.code === 'KeyR' && e.shiftKey && !e.repeat) resetGame();
+});
+if (sessionStorage.getItem('bus18-restart')) {
+  sessionStorage.removeItem('bus18-restart');
+  document.getElementById('start-btn')?.click();
+}
 
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;

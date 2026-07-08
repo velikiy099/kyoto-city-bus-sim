@@ -3,19 +3,10 @@ import { CFG } from '../config.js';
 
 /**
  * ルート外の周辺道路(景観用)。heading は atan2(dx,dz) 規約(0=南北)。
- * 千本通北側: 二条駅前交差点(ワールド座標 40.9, -4095.8)からルートは南へ曲がるが、
- * 実際の千本通は北へも続くため、その区間を描画する。
+ * 千本通北側(二条駅前交差点)は road.js の右左折交差点スタブ(turnIntersections)が
+ * 描画するようになったため削除済み。追加したい景観道路があればここに定義する。
  */
-const EXTRA_ROADS = [
-  {
-    name: '千本通(二条駅前交差点の北側)',
-    x: 39.4,
-    z: -4167.8, // 交差点中心から北へ 72m の位置(=スタブ中点)
-    heading: 0.021,
-    length: 150,
-    width: 8,
-  },
-];
+const EXTRA_ROADS = [];
 
 export function buildExtraRoads(scene) {
   const g = new THREE.Group();

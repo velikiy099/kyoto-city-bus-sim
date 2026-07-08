@@ -16,6 +16,8 @@ export const route = {
   speedZones: raw.speedZones, // [{from, to, limit(km/h)}]
   roadSections: raw.roadSections ?? [], // [{from, to, lanes}]
   intersections: raw.intersections ?? [], // [{s, heading, width, lanes}]
+  // 右左折交差点 [{s, sIn, sOut, x, z, headingIn, headingOut, angleDeg, crossName, crossWidth, crossLanes}]
+  turnIntersections: raw.turnIntersections ?? [],
   signals: raw.signals ?? [], // [{s, name}]
   buildings: raw.buildings ?? [], // [{footprint:[[x,z]], height, color}]
   railStructures: raw.railStructures ?? [], // [{kind, s, heading, layer}]
@@ -49,6 +51,33 @@ export function laneCenterAt(s) {
 /** 停留所への寄せ目標(縁石ギャップ約0.45m) */
 export function curbStopLat(s) {
   return -(halfWidthAt(s) - 1.7);
+}
+
+/** 右左折交差点付近の追加コース外マージン(交差点ボックス内は舗装が広がるため広く許容) */
+export function turnAllowanceAt(s) {
+  for (const t of route.turnIntersections) {
+    if (s > t.sIn - 5 && s < t.sOut + 30) return (t.crossWidth ?? 8) / 2 + 5;
+  }
+  return 0;
+}
+
+/** 右左折交差点のスタブ道路を覆う除外円 [{x,z,r}](街路樹・建物の配置回避用) */
+export function turnExclusions() {
+  const out = [];
+  for (const t of route.turnIntersections) {
+    const hwIn = halfWidthAt(t.sIn);
+    const hwOut = halfWidthAt(t.sOut);
+    out.push({ x: t.x, z: t.z, r: Math.max(hwIn, hwOut) + (t.crossWidth ?? 8) / 2 + 3 });
+    // 直進スタブ(headingIn 前方)と退出道路の後方延長に沿って円を並べる
+    const arms = [
+      [Math.sin(t.headingIn), Math.cos(t.headingIn), hwIn],
+      [-Math.sin(t.headingOut), -Math.cos(t.headingOut), hwOut],
+    ];
+    for (const [dx, dz, hw] of arms) {
+      for (const d of [14, 27, 40]) out.push({ x: t.x + dx * d, z: t.z + dz * d, r: hw + 3.5 });
+    }
+  }
+  return out;
 }
 
 // ---- 跨線橋の標高プロファイル ----

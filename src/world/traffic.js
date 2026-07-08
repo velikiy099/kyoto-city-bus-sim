@@ -103,11 +103,6 @@ function fallbackSignalPositions(path) {
   }).filter((sig) => sig && sig.s <= path.length - 30);
 }
 
-// 交差道の方位はルート接線+90°を基本とし、例外はここで上書き(atan2(dx,dz) 規約)
-const CROSS_HEADING_OVERRIDES = [
-  { s: 306, heading: 0.021 }, // 二条駅前交差点: 千本通(ほぼ南北)。ルートはカーブ中のため接線+90°が不正確
-];
-
 /**
  * 交通(対向車・同方向の同行車)と交差点信号(各方向の灯器+連動)。
  * update(dt, busS, busPos, busV) を毎ステップ呼ぶ。
@@ -160,59 +155,40 @@ export function buildTraffic(scene, path, events = {}) {
 
   const signals = [];
   const signalDefs = route.signals?.length ? route.signals : fallbackSignalPositions(path);
+  /** 柱を立て、必要ならアームを渡し、灯器を付ける */
+  function buildHead(h) {
+    const pole = new THREE.Mesh(poleGeo, mat(0x8a8f94));
+    pole.position.set(h.pole[0], 2.7, h.pole[1]);
+    g.add(pole);
+    if (h.arm) g.add(makeCylinderBetween([h.pole[0], 5.1, h.pole[1]], [h.head[0], 5.1, h.head[1]], 0.06, 0x8a8f94));
+    return makeHead(h.head[0], 4.85, h.head[1], h.face, !!h.hoods);
+  }
+
   for (const def of signalDefs) {
     const s = def.s;
     if (s > path.length - 30) continue;
-    const [px, pz] = path.getPoint(s);
-    const [tx, tz] = path.getTangent(s);
-    const nx = -tz, nz = tx; // lateral 正(右)方向
-    const HW = halfWidthAt(s);
-    const theta = Math.atan2(tx, tz); // 自道方位
     const mainHeads = [];
     const crossHeads = [];
 
-    // --- 自道向き(接近するバス/同行車から見える): 左柱+アーム+車線上の灯器 ---
-    {
-      const ahead = -5.2;
-      const poleX = px + nx * -(HW + 1.7) + tx * ahead;
-      const poleZ = pz + nz * -(HW + 1.7) + tz * ahead;
-      const pole = new THREE.Mesh(poleGeo, mat(0x8a8f94));
-      pole.position.set(poleX, 2.7, poleZ);
-      g.add(pole);
-      const headLat = laneCenterAt(s) - 0.2;
-      const headX = px + nx * headLat + tx * ahead;
-      const headZ = pz + nz * headLat + tz * ahead;
-      g.add(makeCylinderBetween([poleX, 5.1, poleZ], [headX, 5.1, headZ], 0.06, 0x8a8f94));
-      mainHeads.push(makeHead(headX, 4.85, headZ, theta, true));
-    }
-    // --- 対向向き(対向車から見える): 右柱+アーム、交差点の先(バス基準で +5.2) ---
-    {
-      const ahead = 5.2;
-      const poleX = px + nx * (HW + 1.7) + tx * ahead;
-      const poleZ = pz + nz * (HW + 1.7) + tz * ahead;
-      const pole = new THREE.Mesh(poleGeo, mat(0x8a8f94));
-      pole.position.set(poleX, 2.7, poleZ);
-      g.add(pole);
-      const headLat = -laneCenterAt(s) + 0.2; // 対向レーン上
-      const headX = px + nx * headLat + tx * ahead;
-      const headZ = pz + nz * headLat + tz * ahead;
-      g.add(makeCylinderBetween([poleX, 5.1, poleZ], [headX, 5.1, headZ], 0.06, 0x8a8f94));
-      mainHeads.push(makeHead(headX, 4.85, headZ, theta + Math.PI, false));
-    }
-    // --- 交差道向き×2(交差点内で連動する従道の灯器。柱直付け) ---
-    {
-      const ov = CROSS_HEADING_OVERRIDES.find((o) => Math.abs(o.s - s) < 15);
-      const ch = ov ? ov.heading : theta + Math.PI / 2;
-      const cd = [Math.sin(ch), Math.cos(ch)]; // 交差道の一方向
+    if (def.heads?.length) {
+      // 設置座標はビルド時に計算済み(route18.json)。ここでは置くだけ
+      for (const h of def.heads) (h.kind === 'cross' ? crossHeads : mainHeads).push(buildHead(h));
+    } else {
+      // フォールバック(--fallback データ等で heads がない場合): ルート接線基準の簡易配置
+      const [px, pz] = path.getPoint(s);
+      const [tx, tz] = path.getTangent(s);
+      const nx = -tz, nz = tx; // lateral 正(右)方向
+      const HW = halfWidthAt(s);
+      const theta = Math.atan2(tx, tz);
+      const at = (lat, ahead) => [px + nx * lat + tx * ahead, pz + nz * lat + tz * ahead];
+      mainHeads.push(buildHead({ pole: at(-(HW + 1.7), -5.2), head: at(laneCenterAt(s) - 0.2, -5.2), face: theta, arm: 1, hoods: 1 }));
+      mainHeads.push(buildHead({ pole: at(HW + 1.7, 5.2), head: at(-laneCenterAt(s) + 0.2, 5.2), face: theta + Math.PI, arm: 1 }));
+      const ch = theta + Math.PI / 2;
+      const cd = [Math.sin(ch), Math.cos(ch)];
       for (const dir of [1, -1]) {
-        // dir 方向へ進む車から見た「交差点手前の左側」に柱
         const ax = px - cd[0] * dir * (HW + 2.2) + cd[1] * dir * 4.0;
         const az = pz - cd[1] * dir * (HW + 2.2) - cd[0] * dir * 4.0;
-        const pole = new THREE.Mesh(poleGeo, mat(0x8a8f94));
-        pole.position.set(ax, 2.7, az);
-        g.add(pole);
-        const faceH = dir === 1 ? ch : ch + Math.PI;
-        crossHeads.push(makeHead(ax + cd[0] * dir * 0.6, 4.85, az + cd[1] * dir * 0.6, faceH, false));
+        crossHeads.push(buildHead({ pole: [ax, az], head: [ax + cd[0] * dir * 0.6, az + cd[1] * dir * 0.6], face: dir === 1 ? ch : ch + Math.PI }));
       }
     }
 
@@ -251,6 +227,14 @@ export function buildTraffic(scene, path, events = {}) {
 
   // 二条駅前ロータリー(急カーブ・狭隘)には一般車を入れない
   const TRAFFIC_MIN_S = 360;
+
+  // 右左折交差点の交錯ゾーン(近接ターンは連結: 狭隘路のS字ジョグ等)
+  const turnZones = [];
+  for (const t of route.turnIntersections ?? []) {
+    const last = turnZones.at(-1);
+    if (last && t.sIn - last.to < 45) last.to = Math.max(last.to, t.sOut);
+    else turnZones.push({ from: t.sIn, to: t.sOut });
+  }
 
   const ONCOMING_DEFS = [
     { make: () => makeCar(0xd8dde2), hitR: 2.0, vMax: 11 },
@@ -358,6 +342,17 @@ export function buildTraffic(scene, path, events = {}) {
           if (ahead > -14 && ahead < 45) {
             vT = Math.min(vT, 5.5);
             latT += 0.5;
+          }
+        }
+        // 対向車: バスが右左折交差点を通過する間はゾーン手前で待つ(交差点内での交錯防止)。
+        // 停止線は出口の膨らみゾーンの外(to+26)に置き、バスの膨らみが収まるまで解除しない
+        if (c.dir === -1) {
+          for (const z of turnZones) {
+            if (busS > z.from - 35 && busS < z.to + 25 && c.s > z.to) {
+              const d = c.s - (z.to + 26);
+              if (d < 55) vT = Math.min(vT, d < 1 ? 0 : Math.sqrt(2 * 1.8 * Math.max(0, d - 1.5)));
+              break;
+            }
           }
         }
         if (c.dir === 1) {
