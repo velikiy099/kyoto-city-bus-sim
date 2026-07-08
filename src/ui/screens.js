@@ -16,7 +16,7 @@ export function showTitle(onStart) {
         <div><b>A・D / ←・→</b> ハンドル</div>
         <div><b>E</b> ドア開閉(停留所で停車中)</div>
         <div><b>C</b> カメラ切替(追従 / 運転席) <b>M</b> ミニマップ</div>
-        <div><b>R</b> 路上に復帰(コース外では -500点)</div>
+        <div><b>R</b> 路上に復帰(コース外では -500点) <b>Shift+R</b> 最初からやり直し</div>
       </div>
       <div style="font-size:13px;color:#9db4d8;line-height:1.8">
         後乗り・前降り・運賃230円均一。停止線に合わせて左に寄せて停車し、<br>

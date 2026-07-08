@@ -4,3 +4,4 @@ tools/cache/
 .claude/
 .DS_Store
 tools/*.blend1
+tools/map*.svg

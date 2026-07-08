@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { route, halfWidthAt } from '../route/routeData.js';
+import { route, halfWidthAt, turnExclusions } from '../route/routeData.js';
 import { loadProps } from '../util/propsLib.js';
 
 const mat = (color, opts = {}) => new THREE.MeshLambertMaterial({ color, ...opts });
@@ -82,6 +82,7 @@ export function buildNature(scene, path) {
   for (let i = 0; i < 6; i++) mk(minX - 980 - (i % 2) * 240, minZ + 500 + i * 700, 560 + (i % 3) * 140, 280 + (i % 2) * 100);
 
   // ---- 街路樹(Blender製2種を InstancedMesh で量産) ----
+  const turnZones = turnExclusions(); // 右左折交差点のスタブ道路上には植えない
   const items = [];
   for (let s = 40; s < path.length * 0.62; s += 42) {
     for (const side of [-1, 1]) {
@@ -89,7 +90,9 @@ export function buildNature(scene, path) {
       const [px, pz] = path.getPoint(s);
       const [tx, tz] = path.getTangent(s);
       const lat = side * (halfWidthAt(s) + 2.4); // 複数車線区間は広い道路幅に合わせて外側へ
-      items.push([px + -tz * lat, pz + tx * lat]);
+      const x = px + -tz * lat, z = pz + tx * lat;
+      if (turnZones.some((e) => (x - e.x) ** 2 + (z - e.z) ** 2 < e.r * e.r)) continue;
+      items.push([x, z]);
     }
   }
   // 座標由来の決定的な擬似乱数(向き・大きさのばらつき)

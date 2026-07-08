@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "build-data": "node tools/build-route-data.mjs"
+    "build-data": "node tools/build-route-data.mjs",
+    "map": "node tools/render-map.mjs",
+    "map-check": "node tools/render-map.mjs --check"
   },
   "dependencies": {
     "three": "^0.170.0"
