@@ -1,12 +1,21 @@
 import * as THREE from 'three';
-import { route, leftWidthAt, rightWidthAt, turnExclusions } from '../route/routeData.js';
+import { route, leftWidthAt, rightWidthAt, turnExclusions, elevationAt } from '../route/routeData.js';
 import { loadProps } from '../util/propsLib.js';
 
 const mat = (color, opts = {}) => new THREE.MeshLambertMaterial({ color, ...opts });
 
+// 川底を地表(y=0)より低く見せる深さ[m]。橋は road.js のデッキ(elevationAt)がそのまま
+// 川の上を跨ぐので、川岸ぶんだけ相対的に「道路が高く・川が低く」見える。
+const RIVER_DEPTH = 2.4;
+const BANK_TIERS = [
+  { h: 1.0, w: 6, color: 0x7ba15e }, // 上段: 芝の土手
+  { h: RIVER_DEPTH - 1.0, w: 4.5, color: 0x9c9178 }, // 下段: 護岸(土)
+];
+
 /**
- * 川(鴨川・桂川)・橋・遠景の山・街路樹
- * 川は bridges の s 位置で経路と直交する帯として描く。
+ * 川(鴨川・桂川・西高瀬川)・橋・遠景の山・街路樹
+ * 川は bridges の s 位置で経路と直交する帯として描く。川底は RIVER_DEPTH ぶん低く、
+ * 土手は段状(芝→護岸)に地表から水面まで下る。
  */
 export function buildNature(scene, path) {
   const g = new THREE.Group();
@@ -18,41 +27,48 @@ export function buildNature(scene, path) {
     const [px, pz] = path.getPoint(br.s);
     const [tx, tz] = path.getTangent(br.s);
     const across = Math.atan2(tx, tz); // 経路方位
-    const w = Math.max(24, br.length * 0.85); // 川幅
+    const w = Math.max(18, br.length * 0.85); // 川幅
+    const deckElev = elevationAt(br.s); // 跨線橋等と重なる場合は路面高さに追従
 
-    // 川面(道路の左右に2枚 — 道路帯とは重ねない。地面 y=-0.05 より上)
+    // 川面(道路の左右に2枚 — 道路帯とは重ねない)。水面は地表より RIVER_DEPTH 低い。
     const nx = -tz, nz = tx; // 経路の横方向
     for (const side of [-1, 1]) {
       const water = new THREE.Mesh(new THREE.PlaneGeometry(340, w), mat(0x5d8fb5));
       water.rotation.x = -Math.PI / 2;
       water.rotation.z = -across;
       const off = side * (340 / 2 + 7);
-      water.position.set(px + nx * off, 0.015, pz + nz * off);
+      water.position.set(px + nx * off, -RIVER_DEPTH + 0.05, pz + nz * off);
       g.add(water);
 
-      // 土手(両岸の緑帯)も左右分割
+      // 土手(地表→水面の段状斜面)。両岸(bankSide)・両段(BANK_TIERS)で計4段。
       for (const bankSide of [-1, 1]) {
-        const bank = new THREE.Mesh(new THREE.PlaneGeometry(340, 9), mat(0x7ba15e));
-        bank.rotation.x = -Math.PI / 2;
-        bank.rotation.z = -across;
-        bank.position.set(
-          px + nx * off + tx * bankSide * (w / 2 + 4.5),
-          0.025,
-          pz + nz * off + tz * bankSide * (w / 2 + 4.5)
-        );
-        g.add(bank);
+        let yTop = 0, distFromWater = w / 2;
+        for (const tier of BANK_TIERS) {
+          const yMid = yTop - tier.h / 2;
+          const bank = new THREE.Mesh(new THREE.BoxGeometry(340, tier.h, tier.w), mat(tier.color));
+          bank.rotation.y = across;
+          const d = distFromWater + tier.w / 2;
+          bank.position.set(
+            px + nx * off + tx * bankSide * d,
+            yMid,
+            pz + nz * off + tz * bankSide * d
+          );
+          g.add(bank);
+          yTop -= tier.h;
+          distFromWater += tier.w;
+        }
       }
     }
 
-    // 橋桁(路面より確実に下げて z-fight を防ぐ)と欄干
+    // 橋桁(路面 elevationAt(br.s) の下に確実に下げて z-fight を防ぐ)と欄干
     const deck = new THREE.Mesh(new THREE.BoxGeometry(11, 0.8, w + 10), mat(0x8f9499));
-    deck.position.set(px, -0.48, pz);
+    deck.position.set(px, deckElev - 0.48, pz);
     deck.rotation.y = across;
     g.add(deck);
     for (const side of [-1, 1]) {
       const rail = new THREE.Mesh(new THREE.BoxGeometry(0.35, 1.15, w + 10), mat(0xdfe3e6));
       const nx = -tz, nz = tx;
-      rail.position.set(px + nx * side * 5.1, 0.85, pz + nz * side * 5.1);
+      rail.position.set(px + nx * side * 5.1, deckElev + 0.85, pz + nz * side * 5.1);
       rail.rotation.y = across;
       g.add(rail);
     }

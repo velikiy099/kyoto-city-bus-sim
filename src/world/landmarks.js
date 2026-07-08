@@ -197,6 +197,58 @@ function buildKyotoTower(scene, path) {
   return { x: a.x, z: a.z, r: 60 };
 }
 
+function makeLabelTexture(text) {
+  const cv = document.createElement('canvas');
+  cv.width = 512;
+  cv.height = 128;
+  const ctx = cv.getContext('2d');
+  ctx.fillStyle = '#1e2a33';
+  ctx.fillRect(0, 0, 512, 128);
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 46px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, 256, 64);
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+/** 西高瀬川(天神橋)〜桂川(久我橋)間の沿道工場(オムロン京都太陽・有本機業) */
+function buildRiverIndustries(scene, path) {
+  const bridgeS = (prefix) => route.bridges.find((b) => b.name.startsWith(prefix))?.s;
+  const s0 = bridgeS('天神橋');
+  const s1 = bridgeS('久我橋');
+  if (s0 == null || s1 == null) return [];
+  const mid = (s0 + s1) / 2;
+  const specs = [
+    { name: 'オムロン京都太陽', s: mid - 60, side: 1, w: 46, d: 30, h: 9, color: 0xd9d4c6 },
+    { name: '有本機業', s: mid + 55, side: -1, w: 34, d: 24, h: 7, color: 0xb7bcc0 },
+  ];
+  const out = [];
+  for (const f of specs) {
+    const a = anchor(path, f.s, f.side * 34);
+    const g = new THREE.Group();
+    g.position.set(a.x, 0, a.z);
+    g.rotation.y = a.ry;
+    const body = new THREE.Mesh(new THREE.BoxGeometry(f.w, f.h, f.d), mat(f.color));
+    body.position.y = f.h / 2;
+    g.add(body);
+    const roof = new THREE.Mesh(new THREE.BoxGeometry(f.w + 1.2, 0.6, f.d + 1.2), mat(0x5d6268));
+    roof.position.y = f.h + 0.3;
+    g.add(roof);
+    const sign = new THREE.Mesh(
+      new THREE.PlaneGeometry(9, 2.2),
+      new THREE.MeshBasicMaterial({ map: makeLabelTexture(f.name), side: THREE.DoubleSide })
+    );
+    sign.position.set(0, f.h + 2.4, f.d / 2 + 0.05);
+    g.add(sign);
+    scene.add(g);
+    out.push({ x: a.x, z: a.z, r: Math.max(f.w, f.d) / 2 + 8 });
+  }
+  return out;
+}
+
 /** すべてのランドマークを配置し、建物生成の除外域リストを返す */
 export function buildLandmarks(scene, path) {
   return [
@@ -205,5 +257,6 @@ export function buildLandmarks(scene, path) {
     buildAquarium(scene, path),
     buildRajomon(scene, path),
     buildKyotoTower(scene, path),
+    ...buildRiverIndustries(scene, path),
   ];
 }

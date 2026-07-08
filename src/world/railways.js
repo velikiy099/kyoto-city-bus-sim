@@ -157,10 +157,58 @@ function buildShinkansenViaduct(scene, path, spec) {
   scene.add(g);
 }
 
+/** 名神高速道路の高架(片道3車線・中央分離帯)。経路と斜めに交差する一般的な立体交差。 */
+function buildExpresswayViaduct(scene, path, spec) {
+  const p = at(path, spec.s);
+  const g = new THREE.Group();
+  g.position.set(p.x, 0, p.z);
+  g.rotation.y = spec.heading;
+
+  const length = spec.length ?? 210;
+  const width = spec.width ?? 27;
+  const deckY = 7.0;
+  const girder = new THREE.Mesh(new THREE.BoxGeometry(width, 1.2, length), mat(0xaeb2ae));
+  girder.position.y = deckY;
+  g.add(girder);
+  const deckTop = deckY + 0.62;
+  const surf = new THREE.Mesh(new THREE.BoxGeometry(width - 1.2, 0.14, length), mat(0x4a4f55));
+  surf.position.y = deckTop;
+  g.add(surf);
+
+  const lanesEachWay = spec.lanesEachWay ?? 3;
+  const laneW = (width - 4) / (lanesEachWay * 2);
+  for (let side of [-1, 1]) {
+    for (let i = 1; i < lanesEachWay; i++) {
+      const line = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.02, length - 6), mat(0xe8e8e8));
+      line.position.set(side * (laneW * i + (side < 0 ? 1 : 0.5)), deckTop + 0.08, 0);
+      g.add(line);
+    }
+  }
+  const median = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.5, length), mat(0x8a9080));
+  median.position.y = deckTop + 0.25;
+  g.add(median);
+  for (const side of [-1, 1]) {
+    const parapet = new THREE.Mesh(new THREE.BoxGeometry(0.4, 1.05, length), mat(0xc4c8c4));
+    parapet.position.set(side * (width / 2 - 0.2), deckTop + 0.5, 0);
+    g.add(parapet);
+  }
+
+  // 橋脚(道路上には立てない — 高架は経路と斜めに交差する)
+  const clearHalf = halfWidthAt(spec.s) + 5;
+  for (const z of [-75, -38, 0, 38, 75]) {
+    if (Math.abs(z) < clearHalf) continue;
+    const pier = new THREE.Mesh(new THREE.BoxGeometry(width * 0.5, deckY - 0.6, 1.6), mat(0x9c9f9c));
+    pier.position.set(0, (deckY - 0.6) / 2, z);
+    g.add(pier);
+  }
+  scene.add(g);
+}
+
 export function buildRailways(scene, path, structures = []) {
   for (const spec of structures) {
     if (spec.kind === 'conventional-underpass') buildConventionalUnderpass(scene, path, spec);
     else if (spec.kind === 'shinkansen-viaduct') buildShinkansenViaduct(scene, path, spec);
+    else if (spec.kind === 'expressway-viaduct') buildExpresswayViaduct(scene, path, spec);
   }
   return { count: structures.length };
 }
