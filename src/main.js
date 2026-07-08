@@ -238,6 +238,7 @@ function tick(dt, ePressed) {
   // 衝突判定は後軸でなく車体中心基準
   const [bfx, bfz] = bus.forward;
   traffic.update(dt, state.s, [bus.x + bfx * 3.15, bus.z + bfz * 3.15], bus.v);
+  stopsView.updateWalkers(dt);
 
   // 「まもなく」アナウンス(次停留所の 120m 手前)
   const ns = route.stops[state.nextStopIndex];

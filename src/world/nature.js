@@ -6,10 +6,10 @@ const mat = (color, opts = {}) => new THREE.MeshLambertMaterial({ color, ...opts
 
 // 川底を地表(y=0)より低く見せる深さ[m]。橋は road.js のデッキ(elevationAt)がそのまま
 // 川の上を跨ぐので、川岸ぶんだけ相対的に「道路が高く・川が低く」見える。
-const RIVER_DEPTH = 2.4;
+const RIVER_DEPTH = 3.2;
 const BANK_TIERS = [
-  { h: 1.0, w: 6, color: 0x7ba15e }, // 上段: 芝の土手
-  { h: RIVER_DEPTH - 1.0, w: 4.5, color: 0x9c9178 }, // 下段: 護岸(土)
+  { h: 1.2, w: 6, color: 0x7ba15e }, // 上段: 芝の土手
+  { h: RIVER_DEPTH - 1.2, w: 4.5, color: 0x9c9178 }, // 下段: 護岸(土)
 ];
 
 /**
@@ -33,7 +33,7 @@ export function buildNature(scene, path) {
     // 川面(道路の左右に2枚 — 道路帯とは重ねない)。水面は地表より RIVER_DEPTH 低い。
     const nx = -tz, nz = tx; // 経路の横方向
     for (const side of [-1, 1]) {
-      const water = new THREE.Mesh(new THREE.PlaneGeometry(340, w), mat(0x5d8fb5));
+      const water = new THREE.Mesh(new THREE.PlaneGeometry(340, w), mat(0x4fa8d8));
       water.rotation.x = -Math.PI / 2;
       water.rotation.z = -across;
       const off = side * (340 / 2 + 7);
@@ -104,9 +104,14 @@ export function buildNature(scene, path) {
     from: r.s - (r.width ?? 20) / 2 - 6,
     to: r.s + (r.width ?? 20) / 2 + 6,
   }));
+  // 歩道が無い区間(旧千本通など)には街路樹を植えない
+  const noSidewalkZones = (route.roadSections ?? [])
+    .filter((sec) => sec.sidewalk === 'none')
+    .map((sec) => ({ from: sec.from, to: sec.to }));
   const items = [];
   for (let s = 40; s < path.length * 0.62; s += 42) {
     if (railZones.some((z) => s > z.from && s < z.to)) continue;
+    if (noSidewalkZones.some((z) => s > z.from && s < z.to)) continue;
     for (const side of [-1, 1]) {
       if (((s / 42) | 0) % 2 === (side === -1 ? 0 : 1)) continue; // 互い違い
       const [px, pz] = path.getPoint(s);
@@ -125,9 +130,9 @@ export function buildNature(scene, path) {
       seed = (seed * 1103515245 + 12345) & 0x7fffffff;
       return seed / 0x7fffffff;
     };
-    for (let i = 0; i < 110; i++) {
+    for (let i = 0; i < 150; i++) {
       const s = tobaStop.s - 60 + rndSeeded() * 300;
-      const lat = -(16 + rndSeeded() * 75); // 進行方向左(東側)へ広く不規則に
+      const lat = -(9 + rndSeeded() * 24); // 進行方向左(東側)の沿道すぐに密集させる
       const ss = Math.max(0, Math.min(path.length, s));
       const [px, pz] = path.getPoint(ss);
       const [tx, tz] = path.getTangent(ss);

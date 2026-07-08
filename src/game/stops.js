@@ -61,8 +61,8 @@ export function buildStops(scene, path, stops) {
     const nx = -tz, nz = tx; // lateral 正方向(右)
     const at = (lat, along = 0) => [px + nx * lat + tx * along, pz + nz * lat + tz * along];
 
-    // ポール(歩道上・進行方向左)
-    const poleLat = -(HW + 1.1);
+    // ポール(道路端・進行方向左。歩道の有無によらず縁石すぐ外に置く)
+    const poleLat = -(HW + 0.7);
     const [poleX, poleZ] = at(poleLat);
     const pole = new THREE.Mesh(
       new THREE.CylinderGeometry(0.05, 0.05, 2.4, 8),
@@ -113,6 +113,11 @@ export function buildStops(scene, path, stops) {
     waiting.push({ at, HW, meshes: [], face: Math.atan2(nx, nz) }); // face: 車道向き
   });
 
+  // ---- 降車客(ドア付近に現れ、バス停から歩いて離れていく) ----
+  const walkers = []; // {mesh, vx, vz, life}
+  const WALK_SPEED = 1.15; // [m/s]
+  const WALK_LIFE = 6; // 消えるまでの秒数
+
   return {
     /** 待ち客を n 人表示 */
     setWaiting(i, n) {
@@ -121,10 +126,41 @@ export function buildStops(scene, path, stops) {
       while (w.meshes.length < n) {
         const k = w.meshes.length;
         const m = makeWaitingPax((i * 3 + k) % paxMats.length, w.face, i * 7 + k);
-        const [x, z] = w.at(-(w.HW + 0.9) + (k % 2) * 0.55, -1.1 - Math.floor(k / 2) * 0.75);
+        const [x, z] = w.at(-(w.HW + 0.6) + (k % 2) * 0.5, -1.1 - Math.floor(k / 2) * 0.75);
         m.position.set(x, 0, z);
         group.add(m);
         w.meshes.push(m);
+      }
+    },
+    /** 降車客を1人スポーンし、道路から離れる向きへ歩かせる */
+    spawnAlighting(i) {
+      const w = waiting[i];
+      if (!w) return;
+      const along = (Math.random() - 0.5) * 3;
+      const [x, z] = w.at(-(w.HW + 0.4), along);
+      const awayAngle = w.face + Math.PI + (Math.random() - 0.5) * 0.7; // 車道と反対向き+ばらつき
+      const holder = makeWaitingPax((Math.random() * paxColors.length) | 0, awayAngle, Math.floor(Math.random() * 1000));
+      holder.rotation.y = awayAngle;
+      holder.position.set(x, 0, z);
+      group.add(holder);
+      walkers.push({
+        mesh: holder,
+        vx: Math.sin(awayAngle) * WALK_SPEED,
+        vz: Math.cos(awayAngle) * WALK_SPEED,
+        life: WALK_LIFE,
+      });
+    },
+    /** 降車客の徒歩アニメーションを進める(毎フレーム呼ぶ) */
+    updateWalkers(dt) {
+      for (let k = walkers.length - 1; k >= 0; k--) {
+        const w = walkers[k];
+        w.mesh.position.x += w.vx * dt;
+        w.mesh.position.z += w.vz * dt;
+        w.life -= dt;
+        if (w.life <= 0) {
+          group.remove(w.mesh);
+          walkers.splice(k, 1);
+        }
       }
     },
   };

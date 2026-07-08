@@ -189,6 +189,7 @@ export function createOps(ctx) {
               b.aTimer = O.alightInterval;
               pax.alightOne();
               state.fareTotal += O.fare;
+              stopsView.spawnAlighting(i);
               events.onFare?.();
             }
           }

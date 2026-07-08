@@ -42,6 +42,9 @@ const BUILDINGS_PER_BIN = 15;
 const MAX_BUILDINGS = 1400;
 const RAILWAY_BBOX = [34.982, 135.744, 34.9895, 135.752]; // 七条大宮〜東寺東門前のJR線群
 const ROAD_TYPES = ['primary', 'secondary', 'tertiary', 'unclassified', 'residential', 'service'];
+// DETOUR_SOUTHBOUND(小枝橋→城南宮道→赤池→塔ノ森)はハードコード座標のため routeNodesQuery
+// の「経路ノード周辺」取得に乗らず、周辺道路・建物が一切取れない。bboxで直接補う。
+const DETOUR_BBOX = [34.9430, 135.7350, 34.9560, 135.7460]; // [south, west, north, east]
 
 // 南行きの公式停留所順(京都市交通局 時刻表より、城南宮道経由・全区間便)
 const STOP_ORDER = [
@@ -154,9 +157,9 @@ const LANE_PLAN = [
   { to: [34.97880, 135.74145], F: 2, B: 2, name: '九条通' },
   { to: [34.97340, 135.74140], F: 1, B: 1, name: '新千本通' },
   { to: [34.97335, 135.74254], F: 2, B: 2, name: '十条通' },
-  { to: [34.96477, 135.74247], F: 1, B: 0, name: '旧千本通(十条旧千本〜府道201・一方通行)' },
-  { to: [34.95866, 135.74266], F: 1, B: 1, center: 'none', name: '旧千本通(府道201〜地蔵前手前)' },
-  { to: [34.95540, 135.74218], F: 1, B: 0, name: '旧千本通(地蔵前手前〜合流・一方通行)' },
+  { to: [34.96477, 135.74247], F: 1, B: 0, sidewalk: 'none', name: '旧千本通(十条旧千本〜府道201・一方通行)' },
+  { to: [34.95866, 135.74266], F: 1, B: 1, center: 'none', sidewalk: 'none', name: '旧千本通(府道201〜地蔵前手前)' },
+  { to: [34.95540, 135.74218], F: 1, B: 0, sidewalk: 'none', name: '旧千本通(地蔵前手前〜合流・一方通行)' },
   { to: [34.95066, 135.74276], F: 1, B: 1, center: 'none', name: '鳥羽街道(〜羽束師墨染線)' },
   { to: [34.95055, 135.74315], F: 2, B: 2, name: '羽束師墨染線(ジョグ)' },
   { to: [34.94645, 135.74301], F: 1, B: 1, name: '城南宮道通り(〜赤池)' },
@@ -559,7 +562,11 @@ function buildLaneSections(path, cumLen, origin, signals, turnSpans, intersectio
   let from = 0, cursor = 0;
   for (const seg of LANE_PLAN) {
     const end = seg.to ? toS(seg.to, cursor) : cumLen.at(-1);
-    sections.push({ from, to: end, lanesF: seg.F, lanesB: seg.B, center: seg.center ?? (seg.B ? 'line' : 'none') });
+    sections.push({
+      from, to: end, lanesF: seg.F, lanesB: seg.B,
+      center: seg.center ?? (seg.B ? 'line' : 'none'),
+      sidewalk: seg.sidewalk ?? 'line',
+    });
     cursor = end;
     from = end;
   }
@@ -597,6 +604,7 @@ function buildLaneSections(path, cumLen, origin, signals, turnSpans, intersectio
       lanesF: sec.lanesF,
       lanesB: sec.lanesB,
       center: sec.center,
+      ...(sec.sidewalk === 'none' ? { sidewalk: 'none' } : {}),
       ...(sec.bridge ? { bridge: 1 } : {}),
       ...sectionWidths(sec),
     }));
@@ -1020,6 +1028,22 @@ out body geom;`
     'route18_jujo_southbound.json',
     `[out:json][timeout:60];way(id:${JUJO_WAY_IDS.join(',')});out body geom;`
   );
+  const [detourSouth, detourWest, detourNorth, detourEast] = DETOUR_BBOX;
+  const detourRoadData = await loadCachedOrFetch(
+    'route18_detour_roads.json',
+    `[out:json][timeout:90];
+(
+  ${ROAD_TYPES.map((type) => `way["highway"="${type}"](${detourSouth},${detourWest},${detourNorth},${detourEast});`).join('\n  ')}
+  node["highway"="traffic_signals"](${detourSouth},${detourWest},${detourNorth},${detourEast});
+);
+out body geom;`
+  );
+  const detourBuildingData = await loadCachedOrFetch(
+    'route18_detour_buildings.json',
+    `[out:json][timeout:120];
+way["building"](${detourSouth},${detourWest},${detourNorth},${detourEast});
+out body geom;`
+  );
   const [railSouth, railWest, railNorth, railEast] = RAILWAY_BBOX;
   const railwayData = await loadCachedOrFetch(
     'route18_railways_sevenjo_toji.json',
@@ -1070,9 +1094,23 @@ out body geom;`
     return { name, latlon: hit.latlon };
   });
 
-  const roads = roadData.elements.filter((e) => e.type === 'way' && isMajorRoad(e.tags) && e.geometry?.length > 1);
-  const signalNodes = roadData.elements.filter((e) => e.type === 'node' && e.tags?.highway === 'traffic_signals');
-  const buildings = buildingData.elements.filter((e) => e.type === 'way' && e.tags?.building && e.geometry?.length > 2);
+  // way ID で重複排除しつつ、detour bbox 由来の道路・建物・信号をマージ
+  const byId = (arr) => {
+    const seen = new Set();
+    return arr.filter((e) => (seen.has(e.id) ? false : (seen.add(e.id), true)));
+  };
+  const roads = byId([
+    ...roadData.elements.filter((e) => e.type === 'way' && isMajorRoad(e.tags) && e.geometry?.length > 1),
+    ...detourRoadData.elements.filter((e) => e.type === 'way' && isMajorRoad(e.tags) && e.geometry?.length > 1),
+  ]);
+  const signalNodes = byId([
+    ...roadData.elements.filter((e) => e.type === 'node' && e.tags?.highway === 'traffic_signals'),
+    ...detourRoadData.elements.filter((e) => e.type === 'node' && e.tags?.highway === 'traffic_signals'),
+  ]);
+  const buildings = byId([
+    ...buildingData.elements.filter((e) => e.type === 'way' && e.tags?.building && e.geometry?.length > 2),
+    ...detourBuildingData.elements.filter((e) => e.type === 'way' && e.tags?.building && e.geometry?.length > 2),
+  ]);
   const railways = railwayData.elements.filter((e) => e.type === 'way' && e.tags?.railway && e.geometry?.length > 1);
 
   return { line, stopsLL, roads, signalNodes, buildings, railways, source: `OpenStreetMap relation ${RELATION_ID} © OpenStreetMap contributors (ODbL)` };

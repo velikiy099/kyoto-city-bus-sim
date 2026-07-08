@@ -238,6 +238,10 @@ export function buildTraffic(scene, path, events = {}) {
   // 二条駅前ロータリー(急カーブ・狭隘)には一般車を入れない
   const TRAFFIC_MIN_S = 360;
 
+  // 対向車(北行き)はこの2交差点(府道201号線・(34.9554,135.7422)地点)を越えて北上せず、
+  // 西へ左折して経路上から消える(=この地点より北側には南から来た対向車が現れない)
+  const TURNOFF_S = [6598.7, 7672.5];
+
   // 右左折交差点の交錯ゾーン(近接ターンは連結: 狭隘路のS字ジョグ等)
   const turnZones = [];
   for (const t of route.turnIntersections ?? []) {
@@ -246,7 +250,7 @@ export function buildTraffic(scene, path, events = {}) {
     else turnZones.push({ from: t.sIn, to: t.sOut });
   }
 
-  const ONCOMING_DEFS = [
+  const ONCOMING_BASE = [
     { make: () => makeCar(0xd8dde2), hitR: 2.0, vMax: 11 },
     { make: () => makeCar(0x7a1f24), hitR: 2.0, vMax: 11.5 },
     { make: () => makeTruck(0x2e5e8c), hitR: 2.35, vMax: 10 },
@@ -260,7 +264,7 @@ export function buildTraffic(scene, path, events = {}) {
     { make: () => makeTruck(0xd8d8d2), hitR: 2.35, vMax: 10 },
     { make: () => makeCar(0x6f8091), hitR: 2.0, vMax: 12 },
   ];
-  const SAME_DEFS = [
+  const SAME_BASE = [
     { make: () => makeCar(0xe2e4e6), hitR: 2.0, vMax: 11 },
     { make: () => makeCar(0x3f5e48), hitR: 2.0, vMax: 10.5 },
     { make: () => makeTruck(0x7d8288), hitR: 2.35, vMax: 9.5 },
@@ -268,14 +272,32 @@ export function buildTraffic(scene, path, events = {}) {
     { make: () => makeCar(0xcfc4a2), hitR: 2.0, vMax: 10.5 },
     { make: () => makeTruck(0x8c3a2e), hitR: 2.35, vMax: 9.5 },
   ];
+  // 片側2車線以上の区間では対向車・同行車を5倍の体感密度にするため、車種バリエーションを
+  // 使い回しつつプールを拡張する(リスポーン位置は多車線区間へ寄せる。1車線区間は従来並み)。
+  const DENSITY_FACTOR = 5;
+  const expandDefs = (base) => Array.from({ length: base.length * DENSITY_FACTOR }, (_, i) => base[i % base.length]);
+  const ONCOMING_DEFS = expandDefs(ONCOMING_BASE);
+  const SAME_DEFS = expandDefs(SAME_BASE);
+
+  // sBase 付近(±searchRange)で片側2車線以上の区間があればそこへ寄せたsを返す
+  function nearMultiLane(sBase, searchRange = 500, step = 25) {
+    const qualifies = (s) => s >= 0 && s <= path.length && fwdLanesAt(s) >= 2 && backLanesAt(s) >= 2;
+    if (qualifies(sBase)) return sBase;
+    for (let d = step; d <= searchRange; d += step) {
+      if (qualifies(sBase + d)) return sBase + d;
+      if (qualifies(sBase - d)) return sBase - d;
+    }
+    return sBase; // 近傍に多車線区間が無ければそのまま(1車線区間は疎らな密度を維持)
+  }
 
   const cars = [];
   ONCOMING_DEFS.forEach((def, i) => {
-    cars.push(spawnCar(def, -1, ((i + 1) / (ONCOMING_DEFS.length + 1)) * path.length, i % 2));
+    const sBase = ((i + 1) / (ONCOMING_DEFS.length + 1)) * path.length;
+    cars.push(spawnCar(def, -1, nearMultiLane(sBase), i % 2));
   });
   SAME_DEFS.forEach((def, i) => {
     // 自車(始発)の前方に並べる。走行中はリスポーンで前後に維持される
-    cars.push(spawnCar(def, 1, 400 + i * 180, i % 2));
+    cars.push(spawnCar(def, 1, nearMultiLane(400 + i * 180), i % 2));
   });
 
   function spawnCar(def, dir, s, laneIdx) {
@@ -289,7 +311,6 @@ export function buildTraffic(scene, path, events = {}) {
       s: Math.max(360, Math.min(path.length - 15, s)),
       v: 6,
       latCur: null,
-      passTimer: 0,
     };
   }
 
@@ -348,6 +369,9 @@ export function buildTraffic(scene, path, events = {}) {
         let latT = laneLat(c.s, c.dir, c.laneIdx);
         const inOneway = latT == null; // 対向車が一方通行区間に入った → 実在しないのでリスポーン
         if (inOneway) latT = c.latCur ?? 2.5;
+        // 対向車: 府道201号線・(34.9554,...)地点で西へ左折させる(その北側には出さない)
+        const turnedOff = c.dir === -1 && TURNOFF_S.some((th) => c.s <= th);
+        if (turnedOff) latT = c.latCur ?? 2.5;
         // 対向車: 狭い2車線でバスと接近したら減速して外側に待避(狭隘路の譲り合い)
         if (c.dir === -1 && lanesAt(c.s) <= 2) {
           const ahead = c.s - busS; // すれ違い前は正
@@ -370,17 +394,9 @@ export function buildTraffic(scene, path, events = {}) {
         if (c.dir === 1) {
           const gapBus = busS - c.s;
           const sameLane = Math.abs((c.latCur ?? latT) - laneLat(c.s, 1, 1)) < 2.2 || lanesAt(c.s) <= 2;
-          if (gapBus > -16 && gapBus < 55 && sameLane) {
-            if (gapBus > 0 && busV < 1.5 && !busHeldAtSignal && lanesAt(c.s) <= 2 && gapBus < 30) {
-              c.passTimer = 5; // バスが客扱い等で停車中 → 対向車線側から追い越す
-            }
-            if (c.passTimer <= 0 && gapBus > 0) {
-              vT = Math.min(vT, Math.max(0, (gapBus - 11) * 0.55)); // 車間維持
-            }
-          }
-          if (c.passTimer > 0) {
-            c.passTimer -= dt;
-            if (gapBus > -16) latT = laneLat(c.s, 1, 0) + 3.3; // はみ出して通過
+          // 1車線(片道1車線)の道ではバスが停車中でも追い越さず、そのまま後ろで待つ
+          if (gapBus > -16 && gapBus < 55 && sameLane && gapBus > 0) {
+            vT = Math.min(vT, Math.max(0, (gapBus - 11) * 0.55)); // 車間維持
           }
         }
 
@@ -389,22 +405,22 @@ export function buildTraffic(scene, path, events = {}) {
         c.v += (vT - c.v) * Math.min(1, dt * rate);
         c.s += c.v * dt * c.dir;
 
-        // リスポーン: 経路端・駅前ロータリー・自車から離れすぎ・一方通行進入 → 自車の周辺へ
+        // リスポーン: 経路端・駅前ロータリー・自車から離れすぎ・一方通行進入・左折地点通過 → 自車の周辺へ
         const rel = (c.s - busS) * 1;
-        if (c.s < TRAFFIC_MIN_S || c.s > path.length - 15 || Math.abs(rel) > 1800 || inOneway) {
+        if (c.s < TRAFFIC_MIN_S || c.s > path.length - 15 || Math.abs(rel) > 1800 || inOneway || turnedOff) {
           if (c.dir === 1) {
             const behind = Math.random() < 0.4;
             const off = behind ? -(160 + Math.random() * 380) : 250 + Math.random() * 900;
-            c.s = Math.max(TRAFFIC_MIN_S, Math.min(path.length - 15, busS + off));
+            const s1 = Math.max(TRAFFIC_MIN_S, Math.min(path.length - 15, busS + off));
+            c.s = nearMultiLane(s1, 300); // 片側2車線以上の区間があれば近傍で密度を上げる
           } else {
-            // 対向車は一方通行(対向車線なし)の区間を避けて配置
-            let s2 = Math.max(TRAFFIC_MIN_S, Math.min(path.length - 15, busS + 400 + Math.random() * 1200));
+            // 対向車は一方通行(対向車線なし)の区間を避け、片側2車線以上の区間に寄せて配置
+            let s2 = nearMultiLane(Math.max(TRAFFIC_MIN_S, Math.min(path.length - 15, busS + 400 + Math.random() * 1200)), 300);
             for (let k = 0; k < 40 && backLanesAt(s2) === 0; k++) s2 = Math.min(path.length - 15, s2 + 60);
             if (backLanesAt(s2) === 0) s2 = Math.max(TRAFFIC_MIN_S, busS - 300); // 前方に空きがなければ後方
             c.s = s2;
           }
           c.v = 6;
-          c.passTimer = 0;
           c.latCur = null;
           latT = laneLat(c.s, c.dir, c.laneIdx) ?? 0;
         }

@@ -54,6 +54,7 @@ function sectionSpec(section) {
     wL: section.wL ?? roadHalfWidth(lanes),
     wR: section.wR ?? roadHalfWidth(lanes),
     center: section.center ?? 'line',
+    sidewalk: section.sidewalk ?? 'line',
   };
 }
 
@@ -240,7 +241,7 @@ export function buildRoad(path, route = null) {
     const from = Math.max(0, section.from ?? 0);
     const to = Math.min(path.length, section.to ?? path.length);
     if (to <= from) continue;
-    const { lanesF, lanesB, wL, wR, center } = sectionSpec(section);
+    const { lanesF, lanesB, wL, wR, center, sidewalk } = sectionSpec(section);
 
     // 路面(交差点円弧の下も含め連続 — バスの走行面)
     g.add(new THREE.Mesh(makeRibbon(path, -wL, wR, 0.0, from, to), mat(C.road)));
@@ -265,9 +266,11 @@ export function buildRoad(path, route = null) {
       g.add(new THREE.Mesh(makeRibbon(path, -wL - 0.5, -wL, 0.13, f, tt), mat(C.curb)));
       g.add(new THREE.Mesh(makeRibbon(path, wR, wR + 0.5, 0.13, f, tt), mat(C.curb)));
 
-      // 歩道
-      g.add(new THREE.Mesh(makeRibbon(path, -wL - 3.2, -wL - 0.5, 0.1, f, tt), mat(0xcfd2cc)));
-      g.add(new THREE.Mesh(makeRibbon(path, wR + 0.5, wR + 3.2, 0.1, f, tt), mat(0xcfd2cc)));
+      // 歩道(旧千本通など歩道が無い区間は sidewalk:'none' でスキップ)
+      if (sidewalk !== 'none') {
+        g.add(new THREE.Mesh(makeRibbon(path, -wL - 3.2, -wL - 0.5, 0.1, f, tt), mat(0xcfd2cc)));
+        g.add(new THREE.Mesh(makeRibbon(path, wR + 0.5, wR + 3.2, 0.1, f, tt), mat(0xcfd2cc)));
+      }
     }
   }
 

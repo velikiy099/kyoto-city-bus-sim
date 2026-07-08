@@ -31,7 +31,9 @@ function buildToji(scene, path) {
   }
 
   const [, northZ] = path.getPoint(tojiDo.s); // 北端: 東寺道交差点の緯度
-  const eastX = turn.x;                        // 東端: 大宮通(九条大宮進入直前)の経度
+  // 東端: 大宮通(九条大宮進入直前)の西側路端(東寺は大宮通の西側にある。センターラインではなく
+  // 実際の舗装外側+歩道分。西側=positive lateral=rightWidthAt が管轄)
+  const eastX = turn.x - rightWidthAt((tojiDo.s + turn.s) / 2) - 2.5;
   const southZ = turn.z;                       // 南端: 九条通(九条大宮)の緯度
   const [westX] = path.getPoint(keihan.s);      // 西端: 京阪国道口交差点の経度
   const w = eastX - westX;
@@ -214,9 +216,16 @@ function makeLabelTexture(text) {
   return tex;
 }
 
-/** 箱型工場・倉庫を1棟配置(共通ヘルパー)。社名等の表示はしない */
+/**
+ * 箱型工場・倉庫を1棟配置(共通ヘルパー)。社名等の表示はしない。
+ * lat は「道路端(実際の舗装+セットバック)から建物中心までの距離」として、道路半幅
+ * (leftWidthAt/rightWidthAt)+ setback + 建物自身の半幅(f.w/2)から算出する
+ * (単純な固定オフセットだと大きな建物ほど道路側へ食い込むため、必ず建物半幅を足す)。
+ */
 function buildLabeledFactory(scene, path, f) {
-  const a = anchor(path, f.s, f.side * f.lat);
+  const roadHW = f.side < 0 ? leftWidthAt(f.s) : rightWidthAt(f.s);
+  const lat = f.side * (roadHW + (f.setback ?? 8) + f.w / 2);
+  const a = anchor(path, f.s, lat);
   const g = new THREE.Group();
   g.position.set(a.x, 0, a.z);
   g.rotation.y = a.ry;
@@ -238,8 +247,8 @@ function buildRiverIndustries(scene, path) {
   if (s0 == null || s1 == null) return [];
   const mid = (s0 + s1) / 2;
   const specs = [
-    { name: 'オムロン京都太陽', s: mid - 60, side: 1, lat: 34, w: 46, d: 30, h: 9, color: 0xd9d4c6 },
-    { name: '有本機業', s: mid + 55, side: -1, lat: 34, w: 34, d: 24, h: 7, color: 0xb7bcc0 },
+    { name: 'オムロン京都太陽', s: mid - 60, side: 1, setback: 10, w: 46, d: 30, h: 9, color: 0xd9d4c6 },
+    { name: '有本機業', s: mid + 55, side: -1, setback: 10, w: 34, d: 24, h: 7, color: 0xb7bcc0 },
   ];
   return specs.map((f) => buildLabeledFactory(scene, path, f));
 }
@@ -255,11 +264,11 @@ function buildKugaIndustries(scene, path) {
   const s1 = stopSByName('久我石原町');
   if (s0 == null || s1 == null) return [];
   const specs = [
-    { name: '玉村運輸', s: s0 + 55, side: 1, lat: 20, w: 30, d: 20, h: 6.5, color: 0xc9c2b0 },
-    { name: '松下精機', s: s0 + 130, side: -1, lat: 20, w: 26, d: 22, h: 7.5, color: 0xb9bdb9 },
-    { name: '原田工業', s: s0 + 215, side: 1, lat: 20, w: 32, d: 22, h: 7, color: 0xaeb4a8 },
-    { name: '山幸製作所', s: s0 + 290, side: -1, lat: 20, w: 24, d: 20, h: 6.5, color: 0xc4bca6 },
-    { name: '京セラ 京都伏見事業所', s: s1 - 85, side: -1, lat: 30, w: 70, d: 46, h: 11, color: 0xd8dbd8 },
+    { name: '玉村運輸', s: s0 + 55, side: 1, setback: 6, w: 30, d: 20, h: 6.5, color: 0xc9c2b0 },
+    { name: '松下精機', s: s0 + 130, side: -1, setback: 6, w: 26, d: 22, h: 7.5, color: 0xb9bdb9 },
+    { name: '原田工業', s: s0 + 215, side: 1, setback: 6, w: 32, d: 22, h: 7, color: 0xaeb4a8 },
+    { name: '山幸製作所', s: s0 + 290, side: -1, setback: 6, w: 24, d: 20, h: 6.5, color: 0xc4bca6 },
+    { name: '京セラ 京都伏見事業所', s: s1 - 85, side: -1, setback: 8, w: 70, d: 46, h: 11, color: 0xd8dbd8 },
   ];
   return specs.map((f) => buildLabeledFactory(scene, path, f));
 }
@@ -269,19 +278,29 @@ function buildKugaIndustries(scene, path) {
  * バス駐車スペース(区画線入り舗装)と屋根付きバス停(乗降場)を表現。
  * バスは進行方向左側(negative lateral)の縁石に着けて停まる規約に合わせ、
  * 敷地は経路の負側(curbStopLat と同じ側)に置く。
+ *
+ * 終点直前(s≈10505)に府道202→南への支線への右左折交差点(実データ由来の急カーブ)が
+ * あるため、円弧のど真ん中に敷地を置くと接線が急回転して歪む。円弧を抜けた先の
+ * 短い直線区間(sOut〜経路終端)に敷地を収める。
  */
 function buildTerminus(scene, path) {
   const stop = route.stops.find((st) => st.name === '久我石原町');
   if (!stop) return { x: 0, z: 0, r: 0 };
-  const s = stop.s - 6; // 停止位置よりわずかに手前を敷地中心に
+
+  // 敷地の舗装(バス駐車スペース)。local X=道路と直交(奥行き)・local Z=道路沿い(長さ)
+  const lotW = 26, lotD = 28; // lotW: 道路からの奥行き, lotD: 道路沿いの長さ
+
+  const turn = route.turnIntersections.find((t) => Math.abs(t.s - stop.s) < 60);
+  const availFrom = turn ? turn.sOut + 2 : Math.max(0, stop.s - lotD / 2);
+  const availTo = path.length - 3;
+  let s = availFrom + lotD / 2;
+  if (s + lotD / 2 > availTo) s = availTo - lotD / 2;
+
   const HW = leftWidthAt(s);
   const a = anchor(path, s, -(HW + 14)); // 縁石の外側、敷地中央
   const g = new THREE.Group();
   g.position.set(a.x, 0, a.z);
   g.rotation.y = a.ry;
-
-  // 敷地の舗装(バス駐車スペース)。local X=道路と直交(奥行き)・local Z=道路沿い(長さ)
-  const lotW = 26, lotD = 34; // lotW: 道路からの奥行き, lotD: 道路沿いの長さ
   const pavement = new THREE.Mesh(new THREE.PlaneGeometry(lotW, lotD), mat(0x6a6e70));
   pavement.rotation.x = -Math.PI / 2;
   pavement.position.y = 0.02;
