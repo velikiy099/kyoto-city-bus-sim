@@ -532,7 +532,7 @@ function overlayLanes(sections, from, to, mut) {
 }
 
 /** LANE_PLAN と右折車線ゾーンから roadSections を生成 */
-function buildLaneSections(path, cumLen, origin, signals, turnSpans, intersections) {
+function buildLaneSections(path, cumLen, origin, signals, turnSpans, intersections, elevations = []) {
   const toS = (anchor, fromS = 0) => {
     if (typeof anchor === 'string') {
       const ix = intersections.find((i) => i.name === anchor && i.s >= fromS - 5);
@@ -566,6 +566,15 @@ function buildLaneSections(path, cumLen, origin, signals, turnSpans, intersectio
       if (b1 > b0) sections = overlayLanes(sections, b0, b1, (sec) => ({ ...sec, lanesB: sec.lanesB + 1 }));
     }
   }
+  // 跨線橋区間: 高架デッキは中央の片道2車線のみ(両脇の地上1車線は railways.js が側道として描く)
+  for (const e of elevations) {
+    sections = overlayLanes(
+      sections,
+      e.from - (e.approachIn ?? 50),
+      e.to + (e.approachOut ?? 50),
+      (sec) => ({ ...sec, lanesF: 2, lanesB: 2, bridge: 1 })
+    );
+  }
   return sections
     .filter((sec) => sec.to - sec.from > 0.5)
     .map((sec) => ({
@@ -575,6 +584,7 @@ function buildLaneSections(path, cumLen, origin, signals, turnSpans, intersectio
       lanesF: sec.lanesF,
       lanesB: sec.lanesB,
       center: sec.center,
+      ...(sec.bridge ? { bridge: 1 } : {}),
       ...sectionWidths(sec),
     }));
 }
@@ -1131,14 +1141,48 @@ async function main() {
     to: z.toStop ? stopS(z.toStop) : +totalLength.toFixed(1),
     limit: z.limit,
   }));
-  const { intersections, signals } = roadMetadata(path, cumLen, origin, roads, signalNodes);
+  const { intersections, signals: signalsRaw } = roadMetadata(path, cumLen, origin, roads, signalNodes);
+
+  const railStructures = railwayMetadata(
+    path,
+    cumLen,
+    origin,
+    railways,
+    stopS('七条大宮・京都水族館前'),
+    stopS('東寺東門前')
+  );
+
+  // 大宮跨線橋: JR在来線を跨ぎ、八条通も高架のまま跨いで東寺道交差点の手前約100mで着地。
+  // 高架は中央の片道2車線のみ(roadSections を橋区間だけ F2/B2 に上書き)。両脇の1車線は
+  // 地上の側道として railways.js が描画する。
+  const elevations = [];
+  const railJR = railStructures.find((r) => r.kind === 'conventional-underpass');
+  if (railJR) {
+    // 東寺前交差点(東寺道)の手前約100mで完全に地上(高さ0)に降りる。八条通はデッキの下をくぐる。
+    // elevationAt() の "to" は下り勾配の開始点(まだ全高)なので、接地点(groundS)から
+    // approachOut を差し引いた点を渡す。
+    const APPROACH_IN = 50, APPROACH_OUT = 90;
+    const tojimae = intersections.find((ix) => ix.name === '東寺道' && ix.s > railJR.s);
+    const from = railJR.fromS;
+    const groundS = tojimae ? +(tojimae.s - 100).toFixed(1) : railJR.toS + 90;
+    const to = +(groundS - APPROACH_OUT).toFixed(1);
+    Object.assign(railJR, { bridgeFromS: from, bridgeToS: to, approachIn: APPROACH_IN, approachOut: APPROACH_OUT, deckHalf: 7.2 });
+    elevations.push({ name: '大宮跨線橋', from, to, height: 4, approachIn: APPROACH_IN, approachOut: APPROACH_OUT });
+    for (const ix of intersections) {
+      if (ix.s > from - 20 && ix.s < groundS + 20) ix.under = 1; // 八条通など高架下の交差道路は地上のまま
+    }
+  }
+  // 高架上の信号は存在しない(高架下の信号は自車に無関係)ので除外
+  const signals = signalsRaw.filter(
+    (sig) => !elevations.some((e) => sig.s > e.from - e.approachIn + 5 && sig.s < e.to + e.approachOut - 5)
+  );
 
   // 右左折交差点の弧長スパン(右折車線を円弧内に食い込ませないためのクランプ)
   const turnSpans = turnCorners.map((c) => {
     const sIn = projectToPath(path, cumLen, c.t1, 0).s;
     return { sIn, sOut: projectToPath(path, cumLen, c.t2, sIn).s, corner: c };
   });
-  const roadSections = buildLaneSections(path, cumLen, origin, signals, turnSpans, intersections);
+  const roadSections = buildLaneSections(path, cumLen, origin, signals, turnSpans, intersections, elevations);
 
   // ゲーム内道路幅・車線中心(routeData.js と同式)
   const secAt = (s) => roadSections.find((x) => s >= x.from && s < x.to) ?? roadSections.at(-1);
@@ -1208,14 +1252,6 @@ async function main() {
   }));
 
   const buildings = buildingMetadata(path, cumLen, origin, buildingWays);
-  const railStructures = railwayMetadata(
-    path,
-    cumLen,
-    origin,
-    railways,
-    stopS('七条大宮・京都水族館前'),
-    stopS('東寺東門前')
-  );
 
   const out = {
     routeName: '18号系統',
@@ -1225,7 +1261,7 @@ async function main() {
     source,
     generatedAt: new Date().toISOString(),
     scale: SCALE,
-    origin: [+origin[0].toFixed(7), +origin[1].toFixed(7)], // 投影原点 [lat, lon](デバッグ・座標変換用)
+    projOrigin: [+origin[0].toFixed(7), +origin[1].toFixed(7)], // 投影原点 [lat, lon](座標変換用)
     totalLength: +totalLength.toFixed(1),
     path,
     stops: stops.map(({ name, s }) => ({ name, s })),
@@ -1237,6 +1273,7 @@ async function main() {
     signals: signalsOut,
     buildings,
     railStructures,
+    elevations,
   };
   writeFileSync(OUT, JSON.stringify(out));
 

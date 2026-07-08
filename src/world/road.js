@@ -6,7 +6,7 @@ import { elevationAt, halfWidthAt } from '../route/routeData.js';
  * 経路に沿った帯(リボン)ジオメトリを生成
  * latFrom/latTo: 横偏差(左が負) / sStep: サンプリング間隔
  */
-export function makeRibbon(path, latFrom, latTo, y, sFrom = 0, sTo = null, sStep = 4) {
+export function makeRibbon(path, latFrom, latTo, y, sFrom = 0, sTo = null, sStep = 4, withElevation = true) {
   sTo = sTo ?? path.length;
   const positions = [];
   const indices = [];
@@ -17,7 +17,7 @@ export function makeRibbon(path, latFrom, latTo, y, sFrom = 0, sTo = null, sStep
     const [tx, tz] = path.getTangent(ss);
     // 左法線 = (tz, -tx) が lateral 負方向(path.closestS の符号系と整合)
     const nx = -tz, nz = tx; // lateral 正(右)方向
-    const ye = y + elevationAt(ss); // 跨線橋区間は路面ごと持ち上げる
+    const ye = y + (withElevation ? elevationAt(ss) : 0); // 跨線橋区間は路面ごと持ち上げる(側道は地上)
     positions.push(px + nx * latFrom, ye, pz + nz * latFrom);
     positions.push(px + nx * latTo, ye, pz + nz * latTo);
     if (row > 0) {
@@ -88,7 +88,7 @@ function addIntersections(g, path, intersections, turns = [], routeHwAt = null) 
     const [px, pz] = path.getPoint(s);
     const width = Math.max(5.5, ix.width ?? 7);
     const length = Math.max(28, ix.length ?? 54);
-    const elev = elevationAt(s);
+    const elev = ix.under ? 0 : elevationAt(s); // 高架下の交差道路(八条通)は地上のまま
     const stub = new THREE.Mesh(new THREE.PlaneGeometry(length, width), roadMat);
     stub.rotation.x = -Math.PI / 2;
     stub.rotation.z = -(ix.heading ?? 0);

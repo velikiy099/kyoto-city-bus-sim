@@ -118,22 +118,31 @@ export function turnExclusions() {
 }
 
 // ---- 跨線橋の標高プロファイル ----
-// roadLayer>0 の在来線アンダーパス(=道路が線路を橋で越える)区間で道路を持ち上げる。
-// デッキ区間は一定高、前後 APPROACH_LEN のアプローチを smoothstep で擦り付ける。
+// raw.elevations([{from, to, height, approachIn, approachOut}])で道路を持ち上げる。
+// デッキ区間は一定高、前後アプローチを smoothstep で擦り付ける。
+// 旧形式フォールバック: roadLayer>0 の在来線アンダーパス区間。
 const APPROACH_LEN = 50;
-const DECK_HEIGHT = 4.0;
-const elevRamps = (raw.railStructures ?? [])
-  .filter((r) => r.kind === 'conventional-underpass' && (r.roadLayer ?? 0) > 0)
-  .map((r) => ({ a0: r.fromS - APPROACH_LEN, a1: r.fromS, b0: r.toS, b1: r.toS + APPROACH_LEN }));
+const elevSrc = raw.elevations?.length
+  ? raw.elevations
+  : (raw.railStructures ?? [])
+      .filter((r) => r.kind === 'conventional-underpass' && (r.roadLayer ?? 0) > 0)
+      .map((r) => ({ from: r.fromS, to: r.toS, height: 4.0 }));
+const elevRamps = elevSrc.map((r) => ({
+  a0: r.from - (r.approachIn ?? APPROACH_LEN),
+  a1: r.from,
+  b0: r.to,
+  b1: r.to + (r.approachOut ?? APPROACH_LEN),
+  h: r.height ?? 4.0,
+}));
 const smoothstep = (t) => t * t * (3 - 2 * t);
 
 /** s 位置の路面標高 [m](跨線橋以外は 0) */
 export function elevationAt(s) {
   for (const r of elevRamps) {
     if (s <= r.a0 || s >= r.b1) continue;
-    if (s < r.a1) return DECK_HEIGHT * smoothstep((s - r.a0) / (r.a1 - r.a0));
-    if (s <= r.b0) return DECK_HEIGHT;
-    return DECK_HEIGHT * smoothstep((r.b1 - s) / (r.b1 - r.b0));
+    if (s < r.a1) return r.h * smoothstep((s - r.a0) / (r.a1 - r.a0));
+    if (s <= r.b0) return r.h;
+    return r.h * smoothstep((r.b1 - s) / (r.b1 - r.b0));
   }
   return 0;
 }
