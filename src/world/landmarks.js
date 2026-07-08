@@ -214,6 +214,28 @@ function makeLabelTexture(text) {
   return tex;
 }
 
+/** 名前入りの箱型工場・倉庫を1棟配置(共通ヘルパー) */
+function buildLabeledFactory(scene, path, f) {
+  const a = anchor(path, f.s, f.side * f.lat);
+  const g = new THREE.Group();
+  g.position.set(a.x, 0, a.z);
+  g.rotation.y = a.ry;
+  const body = new THREE.Mesh(new THREE.BoxGeometry(f.w, f.h, f.d), mat(f.color));
+  body.position.y = f.h / 2;
+  g.add(body);
+  const roof = new THREE.Mesh(new THREE.BoxGeometry(f.w + 1.2, 0.6, f.d + 1.2), mat(0x5d6268));
+  roof.position.y = f.h + 0.3;
+  g.add(roof);
+  const sign = new THREE.Mesh(
+    new THREE.PlaneGeometry(9, 2.2),
+    new THREE.MeshBasicMaterial({ map: makeLabelTexture(f.name), side: THREE.DoubleSide })
+  );
+  sign.position.set(0, f.h + 2.4, f.d / 2 + 0.05);
+  g.add(sign);
+  scene.add(g);
+  return { x: a.x, z: a.z, r: Math.max(f.w, f.d) / 2 + 8 };
+}
+
 /** 西高瀬川(天神橋)〜桂川(久我橋)間の沿道工場(オムロン京都太陽・有本機業) */
 function buildRiverIndustries(scene, path) {
   const bridgeS = (prefix) => route.bridges.find((b) => b.name.startsWith(prefix))?.s;
@@ -222,31 +244,30 @@ function buildRiverIndustries(scene, path) {
   if (s0 == null || s1 == null) return [];
   const mid = (s0 + s1) / 2;
   const specs = [
-    { name: 'オムロン京都太陽', s: mid - 60, side: 1, w: 46, d: 30, h: 9, color: 0xd9d4c6 },
-    { name: '有本機業', s: mid + 55, side: -1, w: 34, d: 24, h: 7, color: 0xb7bcc0 },
+    { name: 'オムロン京都太陽', s: mid - 60, side: 1, lat: 34, w: 46, d: 30, h: 9, color: 0xd9d4c6 },
+    { name: '有本機業', s: mid + 55, side: -1, lat: 34, w: 34, d: 24, h: 7, color: 0xb7bcc0 },
   ];
-  const out = [];
-  for (const f of specs) {
-    const a = anchor(path, f.s, f.side * 34);
-    const g = new THREE.Group();
-    g.position.set(a.x, 0, a.z);
-    g.rotation.y = a.ry;
-    const body = new THREE.Mesh(new THREE.BoxGeometry(f.w, f.h, f.d), mat(f.color));
-    body.position.y = f.h / 2;
-    g.add(body);
-    const roof = new THREE.Mesh(new THREE.BoxGeometry(f.w + 1.2, 0.6, f.d + 1.2), mat(0x5d6268));
-    roof.position.y = f.h + 0.3;
-    g.add(roof);
-    const sign = new THREE.Mesh(
-      new THREE.PlaneGeometry(9, 2.2),
-      new THREE.MeshBasicMaterial({ map: makeLabelTexture(f.name), side: THREE.DoubleSide })
-    );
-    sign.position.set(0, f.h + 2.4, f.d / 2 + 0.05);
-    g.add(sign);
-    scene.add(g);
-    out.push({ x: a.x, z: a.z, r: Math.max(f.w, f.d) / 2 + 8 });
-  }
-  return out;
+  return specs.map((f) => buildLabeledFactory(scene, path, f));
+}
+
+/**
+ * 菱妻神社前〜久我石原町間の工場・倉庫群(玉村運輸・松下精機・原田工業・山幸製作所・
+ * 京セラ京都伏見事業所)。京セラは終点(久我石原町バス停)の東隣の大規模な敷地として、
+ * 終点直前に配置する。
+ */
+function buildKugaIndustries(scene, path) {
+  const stopSByName = (name) => route.stops.find((st) => st.name === name)?.s;
+  const s0 = stopSByName('菱妻神社前');
+  const s1 = stopSByName('久我石原町');
+  if (s0 == null || s1 == null) return [];
+  const specs = [
+    { name: '玉村運輸', s: s0 + 55, side: 1, lat: 20, w: 30, d: 20, h: 6.5, color: 0xc9c2b0 },
+    { name: '松下精機', s: s0 + 130, side: -1, lat: 20, w: 26, d: 22, h: 7.5, color: 0xb9bdb9 },
+    { name: '原田工業', s: s0 + 215, side: 1, lat: 20, w: 32, d: 22, h: 7, color: 0xaeb4a8 },
+    { name: '山幸製作所', s: s0 + 290, side: -1, lat: 20, w: 24, d: 20, h: 6.5, color: 0xc4bca6 },
+    { name: '京セラ 京都伏見事業所', s: s1 - 55, side: 1, lat: 26, w: 70, d: 46, h: 11, color: 0xd8dbd8 },
+  ];
+  return specs.map((f) => buildLabeledFactory(scene, path, f));
 }
 
 /** すべてのランドマークを配置し、建物生成の除外域リストを返す */
@@ -258,5 +279,6 @@ export function buildLandmarks(scene, path) {
     buildRajomon(scene, path),
     buildKyotoTower(scene, path),
     ...buildRiverIndustries(scene, path),
+    ...buildKugaIndustries(scene, path),
   ];
 }

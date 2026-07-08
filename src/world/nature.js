@@ -117,6 +117,26 @@ export function buildNature(scene, path) {
       items.push([x, z]);
     }
   }
+  // ---- 鳥羽離宮(城南宮道バス停の東側に木を密に植えて表現) ----
+  const tobaStop = route.stops.find((st) => st.name === '城南宮道');
+  if (tobaStop) {
+    let seed = 9001;
+    const rndSeeded = () => {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      return seed / 0x7fffffff;
+    };
+    for (let i = 0; i < 110; i++) {
+      const s = tobaStop.s - 60 + rndSeeded() * 300;
+      const lat = -(16 + rndSeeded() * 75); // 進行方向左(東側)へ広く不規則に
+      const ss = Math.max(0, Math.min(path.length, s));
+      const [px, pz] = path.getPoint(ss);
+      const [tx, tz] = path.getTangent(ss);
+      const x = px + -tz * lat, z = pz + tx * lat;
+      if (turnZones.some((e) => (x - e.x) ** 2 + (z - e.z) ** 2 < e.r * e.r)) continue;
+      items.push([x, z]);
+    }
+  }
+
   // 座標由来の決定的な擬似乱数(向き・大きさのばらつき)
   const rnd = (x, z, k) => {
     const v = Math.sin(x * 127.1 + z * 311.7 + k * 74.7) * 43758.5453;

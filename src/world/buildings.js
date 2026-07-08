@@ -2,6 +2,28 @@ import * as THREE from 'three';
 import { CFG } from '../config.js';
 import { leftWidthAt, rightWidthAt } from '../route/routeData.js';
 
+// ---- InstancedMesh 構築(色付き)。複数の関数から共用 ----
+function makeInstanced(scene, geo, list, getMatrix) {
+  if (!list.length) return null;
+  const mesh = new THREE.InstancedMesh(geo, new THREE.MeshLambertMaterial(), list.length);
+  const m = new THREE.Matrix4();
+  const q = new THREE.Quaternion();
+  const e = new THREE.Euler();
+  const v = new THREE.Vector3();
+  const sc = new THREE.Vector3();
+  list.forEach((it, i) => {
+    getMatrix(it, v, e, sc);
+    q.setFromEuler(e);
+    m.compose(v, q, sc);
+    mesh.setMatrixAt(i, m);
+    mesh.setColorAt(i, new THREE.Color(it.color));
+  });
+  mesh.instanceMatrix.needsUpdate = true;
+  if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+  scene.add(mesh);
+  return mesh;
+}
+
 function mulberry32(seed) {
   let a = seed >>> 0;
   return () => {
@@ -56,7 +78,12 @@ function buildOsmBuildings(scene, buildings, exclusions) {
  * ランドマーク周辺(landmarks.js の除外域)には置かない。
  */
 export function buildBuildings(scene, path, exclusions = [], osmBuildings = []) {
-  if (osmBuildings.length) return buildOsmBuildings(scene, osmBuildings, exclusions);
+  if (osmBuildings.length) {
+    const { count } = buildOsmBuildings(scene, osmBuildings, exclusions);
+    // OSM建物データが疎い区間(南行き専用の迂回路沿い)は密な住宅を手動で補う
+    const denseCount = buildDenseResidential(scene, path, exclusions, osmBuildings);
+    return { count: count + denseCount };
+  }
 
   const rand = mulberry32(20260703);
   const boxGeo = new THREE.BoxGeometry(1, 1, 1);
@@ -119,42 +146,82 @@ export function buildBuildings(scene, path, exclusions = [], osmBuildings = []) 
   }
 
   // ---- InstancedMesh 構築(色付き) ----
-  const makeInstanced = (geo, list, getMatrix) => {
-    if (!list.length) return null;
-    const mesh = new THREE.InstancedMesh(geo, new THREE.MeshLambertMaterial(), list.length);
-    const m = new THREE.Matrix4();
-    const q = new THREE.Quaternion();
-    const e = new THREE.Euler();
-    const v = new THREE.Vector3();
-    const sc = new THREE.Vector3();
-    list.forEach((it, i) => {
-      getMatrix(it, v, e, sc);
-      q.setFromEuler(e);
-      m.compose(v, q, sc);
-      mesh.setMatrixAt(i, m);
-      mesh.setColorAt(i, new THREE.Color(it.color));
-    });
-    mesh.instanceMatrix.needsUpdate = true;
-    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-    scene.add(mesh);
-    return mesh;
-  };
-
-  makeInstanced(boxGeo, items, (it, v, e, sc) => {
+  makeInstanced(scene, boxGeo, items, (it, v, e, sc) => {
     v.set(it.x, 0, it.z);
     e.set(0, it.ry, 0);
     sc.set(it.w, it.h, it.d);
   });
-  makeInstanced(boxGeo, roofItems, (it, v, e, sc) => {
+  makeInstanced(scene, boxGeo, roofItems, (it, v, e, sc) => {
     v.set(it.x, it.y, it.z);
     e.set(0, it.ry, 0);
     sc.set(it.w, it.h, it.d);
   });
-  makeInstanced(fieldGeo, fields, (it, v, e, sc) => {
+  makeInstanced(scene, fieldGeo, fields, (it, v, e, sc) => {
     v.set(it.x, 0.06, it.z);
     e.set(-Math.PI / 2, 0, it.ry);
     sc.set(it.w, it.d, 1);
   });
 
   return { count: items.length };
+}
+
+// 実際の道路(OSMデータで沿道建物が疎な区間)に手動で密な2階建て住宅を補う区間。
+// 九条新千本〜小枝橋手前、桂川(久我橋)以西〜菱妻神社工場群の手前。
+const DENSE_RESIDENTIAL_ZONES = [
+  [4933, 7773],
+  [9372, 10080],
+];
+const inDenseZone = (s) => DENSE_RESIDENTIAL_ZONES.some(([a, b]) => s >= a && s < b);
+
+/** 沿道の密な2階建て住宅(OSM建物の疎な区間を補う。実在建物とは重ねない) */
+function buildDenseResidential(scene, path, exclusions, osmBuildings) {
+  const rand = mulberry32(0x51ea3 ^ 20260703);
+  const boxGeo = new THREE.BoxGeometry(1, 1, 1);
+  boxGeo.translate(0, 0.5, 0);
+  const palettes = [0xd9d2c4, 0xcfc8ba, 0xbfb7a8, 0xa89f90, 0xe2ddd2, 0xc7b8a0];
+  const roofPalettes = [0x4a4f55, 0x5d5348, 0x39424d, 0x6b625a];
+  const items = [];
+  const roofItems = [];
+
+  const obCenters = osmBuildings.map((b) => {
+    const c = b.footprint.reduce((acc, p) => [acc[0] + p[0], acc[1] + p[1]], [0, 0]);
+    return [c[0] / b.footprint.length, c[1] / b.footprint.length];
+  });
+  const isExcluded = (x, z) =>
+    exclusions.some((e) => (x - e.x) ** 2 + (z - e.z) ** 2 < e.r * e.r) ||
+    obCenters.some((c) => (x - c[0]) ** 2 + (z - c[1]) ** 2 < 121);
+
+  const sMax = DENSE_RESIDENTIAL_ZONES.at(-1)[1];
+  for (let s = DENSE_RESIDENTIAL_ZONES[0][0]; s < sMax; s += 9 + rand() * 5) {
+    if (!inDenseZone(s)) continue;
+    const [px, pz] = path.getPoint(s);
+    const [tx, tz] = path.getTangent(s);
+    const nx = -tz, nz = tx;
+    for (const side of [-1, 1]) {
+      if (rand() > 0.88) continue; // ほぼ隙間なく密集
+      const setback = 5 + rand() * 3;
+      const w = 6 + rand() * 4, d = 6 + rand() * 5, h = 5.6 + rand() * 1.6; // 2階建て程度
+      const lat = side * ((side < 0 ? leftWidthAt(s) : rightWidthAt(s)) + setback + w / 2);
+      const x = px + nx * lat + tx * (rand() - 0.5) * 3;
+      const z = pz + nz * lat + tz * (rand() - 0.5) * 3;
+      if (isExcluded(x, z)) continue;
+      const ry = Math.atan2(tx, tz) + (rand() - 0.5) * 0.1;
+      items.push({ x, z, ry, w, h, d, color: palettes[(rand() * palettes.length) | 0] });
+      if (rand() < 0.85) {
+        roofItems.push({ x, z, ry, w: w + 1, h: 0.5, d: d + 1, y: h, color: roofPalettes[(rand() * roofPalettes.length) | 0] });
+      }
+    }
+  }
+
+  makeInstanced(scene, boxGeo, items, (it, v, e, sc) => {
+    v.set(it.x, 0, it.z);
+    e.set(0, it.ry, 0);
+    sc.set(it.w, it.h, it.d);
+  });
+  makeInstanced(scene, boxGeo, roofItems, (it, v, e, sc) => {
+    v.set(it.x, it.y, it.z);
+    e.set(0, it.ry, 0);
+    sc.set(it.w, it.h, it.d);
+  });
+  return items.length;
 }
