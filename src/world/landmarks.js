@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { route, rightWidthAt } from '../route/routeData.js';
+import { route, rightWidthAt, leftWidthAt } from '../route/routeData.js';
 
 const mat = (color, opts = {}) => new THREE.MeshLambertMaterial({ color, ...opts });
 
@@ -265,9 +265,77 @@ function buildKugaIndustries(scene, path) {
     { name: '松下精機', s: s0 + 130, side: -1, lat: 20, w: 26, d: 22, h: 7.5, color: 0xb9bdb9 },
     { name: '原田工業', s: s0 + 215, side: 1, lat: 20, w: 32, d: 22, h: 7, color: 0xaeb4a8 },
     { name: '山幸製作所', s: s0 + 290, side: -1, lat: 20, w: 24, d: 20, h: 6.5, color: 0xc4bca6 },
-    { name: '京セラ 京都伏見事業所', s: s1 - 55, side: 1, lat: 26, w: 70, d: 46, h: 11, color: 0xd8dbd8 },
+    { name: '京セラ 京都伏見事業所', s: s1 - 85, side: -1, lat: 30, w: 70, d: 46, h: 11, color: 0xd8dbd8 },
   ];
   return specs.map((f) => buildLabeledFactory(scene, path, f));
+}
+
+/**
+ * 久我石原町バス終点(京セラ京都伏見事業所の西隣の敷地内)。
+ * バス駐車スペース(区画線入り舗装)と屋根付きバス停(乗降場)を表現。
+ * バスは進行方向左側(negative lateral)の縁石に着けて停まる規約に合わせ、
+ * 敷地は経路の負側(curbStopLat と同じ側)に置く。
+ */
+function buildTerminus(scene, path) {
+  const stop = route.stops.find((st) => st.name === '久我石原町');
+  if (!stop) return { x: 0, z: 0, r: 0 };
+  const s = stop.s - 6; // 停止位置よりわずかに手前を敷地中心に
+  const HW = leftWidthAt(s);
+  const a = anchor(path, s, -(HW + 14)); // 縁石の外側、敷地中央
+  const g = new THREE.Group();
+  g.position.set(a.x, 0, a.z);
+  g.rotation.y = a.ry;
+
+  // 敷地の舗装(バス駐車スペース)。local X=道路と直交(奥行き)・local Z=道路沿い(長さ)
+  const lotW = 26, lotD = 34; // lotW: 道路からの奥行き, lotD: 道路沿いの長さ
+  const pavement = new THREE.Mesh(new THREE.PlaneGeometry(lotW, lotD), mat(0x6a6e70));
+  pavement.rotation.x = -Math.PI / 2;
+  pavement.position.y = 0.02;
+  g.add(pavement);
+
+  // 駐車区画の白線(道路沿いに2台分・各区画は道路と直交する線で仕切る)
+  const lineMat = new THREE.MeshBasicMaterial({ color: 0xe8e8e8 });
+  for (const zBay of [-9, 0, 9]) {
+    const line = new THREE.Mesh(new THREE.PlaneGeometry(lotW - 4, 0.18), lineMat);
+    line.rotation.x = -Math.PI / 2;
+    line.position.set(2, 0.03, zBay);
+    g.add(line);
+  }
+
+  // 屋根付きバス停(乗降場)。道路(縁石)寄りの敷地端に設置。
+  const shelter = new THREE.Group();
+  shelter.position.set(lotW / 2 - 4, 0, 0);
+  shelter.rotation.y = Math.PI / 2;
+  const postMat = mat(0x8a8f94);
+  for (const [px, pz] of [[-4.2, -3.5], [4.2, -3.5], [-4.2, 3.5], [4.2, 3.5]]) {
+    const post = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 2.6, 8), postMat);
+    post.position.set(px, 1.3, pz);
+    shelter.add(post);
+  }
+  const roof = new THREE.Mesh(new THREE.BoxGeometry(9.4, 0.25, 8.2), mat(0x2f5c46));
+  roof.position.y = 2.7;
+  shelter.add(roof);
+  const bench = new THREE.Mesh(new THREE.BoxGeometry(6, 0.5, 1.2), mat(0x8f8577));
+  bench.position.set(0, 0.5, 2.6);
+  shelter.add(bench);
+  const sign = new THREE.Mesh(
+    new THREE.PlaneGeometry(3.2, 0.9),
+    new THREE.MeshBasicMaterial({ map: makeLabelTexture('久我石原町'), side: THREE.DoubleSide })
+  );
+  sign.position.set(0, 3.4, 0);
+  shelter.add(sign);
+  g.add(shelter);
+
+  // 敷地境界のフェンス(京セラ側・奥側の3辺のみ。道路側は出入口として開放)
+  const fenceMat = mat(0xb4b8b4);
+  for (const [w, d, x, z] of [[lotW, 0.3, 0, -lotD / 2], [lotW, 0.3, 0, lotD / 2], [0.3, lotD, -lotW / 2, 0]]) {
+    const fence = new THREE.Mesh(new THREE.BoxGeometry(w, 1.4, d), fenceMat);
+    fence.position.set(x, 0.7, z);
+    g.add(fence);
+  }
+
+  scene.add(g);
+  return { x: a.x, z: a.z, r: Math.max(lotW, lotD) / 2 + 6 };
 }
 
 /** すべてのランドマークを配置し、建物生成の除外域リストを返す */
@@ -280,5 +348,6 @@ export function buildLandmarks(scene, path) {
     buildKyotoTower(scene, path),
     ...buildRiverIndustries(scene, path),
     ...buildKugaIndustries(scene, path),
+    buildTerminus(scene, path),
   ];
 }
