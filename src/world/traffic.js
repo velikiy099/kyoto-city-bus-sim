@@ -64,21 +64,24 @@ function makeOncomingBus() {
     // bus.glb は原点=後軸中心(車体 z -2.6..8.9)なので車体中心を holder 原点へ
     node.position.set(0, 0, -3.15);
     holder.add(node);
-    // 方向幕: 北行き「18 二条駅西口」
+    // 方向幕: 北行き「二条駅西口 | 18」。系統番号は右端の水色矩形に白字。
     const cv = document.createElement('canvas');
     cv.width = 512;
     cv.height = 128;
     const c2 = cv.getContext('2d');
     c2.fillStyle = '#0d1116';
     c2.fillRect(0, 0, 512, 128);
+    const numBoxX = 392;
+    c2.fillStyle = '#3fa9dc';
+    c2.fillRect(numBoxX, 0, 512 - numBoxX, 128);
     c2.fillStyle = '#ffffff';
-    c2.font = 'bold 92px sans-serif';
     c2.textBaseline = 'middle';
-    c2.fillText('18', 28, 70);
+    c2.textAlign = 'center';
+    c2.font = 'bold 78px sans-serif';
+    c2.fillText('18', numBoxX + (512 - numBoxX) / 2, 68);
     c2.fillStyle = '#ffb43c';
     c2.font = 'bold 52px sans-serif';
-    c2.textAlign = 'center';
-    c2.fillText('二条駅西口', 330, 64);
+    c2.fillText('二条駅西口', 196, 64);
     const tex = new THREE.CanvasTexture(cv);
     tex.colorSpace = THREE.SRGBColorSpace;
     const sign = new THREE.Mesh(

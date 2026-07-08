@@ -1178,6 +1178,9 @@ async function main() {
     for (const ix of intersections) {
       if (ix.s > from - 20 && ix.s < groundS + 20) ix.under = 1; // 八条通など高架下の交差道路は地上のまま
     }
+    // 東寺東門前停留所: 東寺道交差点の約20m先(南)に実際の停留所がある
+    const tojimonStop = stops.find((st) => st.name === '東寺東門前');
+    if (tojimae && tojimonStop) tojimonStop.s = +(tojimae.s + 20).toFixed(1);
   }
   // 鴨川(小枝橋)・名神高速道路が近接して交差する地点: 川岸なので道路をわずかに高く、
   // 川を低く見せる(river-crossing elevation。車線数は変えない = laneOverride なし)

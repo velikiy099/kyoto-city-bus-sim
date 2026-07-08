@@ -214,7 +214,7 @@ function makeLabelTexture(text) {
   return tex;
 }
 
-/** 名前入りの箱型工場・倉庫を1棟配置(共通ヘルパー) */
+/** 箱型工場・倉庫を1棟配置(共通ヘルパー)。社名等の表示はしない */
 function buildLabeledFactory(scene, path, f) {
   const a = anchor(path, f.s, f.side * f.lat);
   const g = new THREE.Group();
@@ -226,12 +226,6 @@ function buildLabeledFactory(scene, path, f) {
   const roof = new THREE.Mesh(new THREE.BoxGeometry(f.w + 1.2, 0.6, f.d + 1.2), mat(0x5d6268));
   roof.position.y = f.h + 0.3;
   g.add(roof);
-  const sign = new THREE.Mesh(
-    new THREE.PlaneGeometry(9, 2.2),
-    new THREE.MeshBasicMaterial({ map: makeLabelTexture(f.name), side: THREE.DoubleSide })
-  );
-  sign.position.set(0, f.h + 2.4, f.d / 2 + 0.05);
-  g.add(sign);
   scene.add(g);
   return { x: a.x, z: a.z, r: Math.max(f.w, f.d) / 2 + 8 };
 }
