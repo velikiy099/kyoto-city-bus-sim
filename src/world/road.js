@@ -78,8 +78,36 @@ function splitRanges(from, to, gaps) {
   return ranges.filter(([a, b]) => b - a > 0.5);
 }
 
+/** 交差点の1腕分の区画線(センターライン・車線境界)をワールド座標で直接描く */
+function addArmLaneMarkings(g, px, pz, heading, side, armLen, hw, lanesF, lanesB, elev) {
+  if (lanesF + lanesB < 2) return;
+  const dx = Math.sin(heading) * side, dz = Math.cos(heading) * side; // 腕の外向き方向
+  const nx = Math.cos(heading), nz = -Math.sin(heading); // 横方向(+heading基準で一定)
+  const lineMat = (color) => new THREE.MeshBasicMaterial({ color });
+  const drawLine = (lat, color, width, y) => {
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(width, armLen), lineMat(color));
+    m.rotation.x = -Math.PI / 2;
+    m.rotation.z = -heading;
+    m.position.set(
+      px + dx * (armLen / 2) + nx * lat,
+      y + elev,
+      pz + dz * (armLen / 2) + nz * lat
+    );
+    g.add(m);
+  };
+  const usable = hw * 2 - 1.1;
+  // lat の基準: nx/nz は heading 方向を"+"とした横方向。lanesF(+heading方向の車線)を
+  // 負側、lanesB(heading+PI方向の車線)を正側に割り当て、中心にセンターラインを引く
+  const wF = usable * (lanesF / (lanesF + lanesB));
+  if (lanesB > 0) drawLine(0, 0xd8a017, 0.16, 0.028); // センターライン(黄)
+  for (let i = 1; i < lanesF; i++) drawLine(-((wF * i) / lanesF), CFG.colors.roadLine, 0.09, 0.026);
+  const wB = usable - wF;
+  for (let i = 1; i < lanesB; i++) drawLine((wB * i) / lanesB, CFG.colors.roadLine, 0.09, 0.026);
+}
+
 function addIntersections(g, path, intersections, turns = [], routeHwAt = null) {
   const roadMat = new THREE.MeshLambertMaterial({ color: CFG.colors.road });
+  const pedMat = new THREE.MeshLambertMaterial({ color: 0xb9a488 }); // 商店街等の歩行者専用舗装
   const lineMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.52 });
   const medianMat = new THREE.MeshLambertMaterial({ color: 0x7d9668 }); // 植栽帯
   for (const ix of intersections ?? []) {
@@ -88,13 +116,37 @@ function addIntersections(g, path, intersections, turns = [], routeHwAt = null) 
     const s = Math.max(0, Math.min(path.length - 0.1, ix.s));
     const [px, pz] = path.getPoint(s);
     const width = Math.max(5.5, ix.width ?? 7);
-    const length = Math.max(28, ix.length ?? 54);
     const elev = ix.under ? 0 : elevationAt(s); // 高架下の交差道路(八条通)は地上のまま
-    const stub = new THREE.Mesh(new THREE.PlaneGeometry(length, width), roadMat);
-    stub.rotation.x = -Math.PI / 2;
-    stub.rotation.z = -(ix.heading ?? 0);
-    stub.position.set(px, 0.006 + elev, pz);
-    g.add(stub);
+
+    if (ix.arms?.length) {
+      // 腕ごとに独立した舗装(実在しない側は描かない、腕ごとに幅・車線・歩行者専用を反映)
+      for (const arm of ix.arms) {
+        if (!arm.exists || arm.length <= 0) continue;
+        const armW = arm.width ?? width;
+        const off = (arm.side * arm.length) / 2;
+        const mat = arm.pedestrian ? pedMat : roadMat;
+        const stub = new THREE.Mesh(new THREE.PlaneGeometry(arm.length, armW), mat);
+        stub.rotation.x = -Math.PI / 2;
+        stub.rotation.z = -(ix.heading ?? 0);
+        stub.position.set(
+          px + Math.sin(ix.heading) * off,
+          0.006 + elev,
+          pz + Math.cos(ix.heading) * off
+        );
+        g.add(stub);
+        if (!arm.pedestrian) {
+          addArmLaneMarkings(g, px, pz, ix.heading, arm.side, arm.length, armW / 2, arm.lanesF ?? 1, arm.lanesB ?? 1, elev);
+        }
+      }
+    } else {
+      const length = Math.max(28, ix.length ?? 54);
+      const stub = new THREE.Mesh(new THREE.PlaneGeometry(length, width), roadMat);
+      stub.rotation.x = -Math.PI / 2;
+      stub.rotation.z = -(ix.heading ?? 0);
+      stub.position.set(px, 0.006 + elev, pz);
+      g.add(stub);
+    }
+    const length = ix.arms?.length ? Math.max(...ix.arms.map((a) => (a.exists ? a.length : 0)), 28) * 2 : Math.max(28, ix.length ?? 54);
 
     // 中央分離帯(五条通など): 交差道路の中心線に沿って、本線路面の外側から両端まで
     if (ix.median) {

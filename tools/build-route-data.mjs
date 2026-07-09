@@ -30,6 +30,8 @@ const OVERPASS_ENDPOINTS = [
 
 // 距離スケール: 実距離に乗算。1.0 で OSM 実距離どおり。
 const SCALE = 1.0;
+const CROSS_STREET_ARM_LEN = 100;   // 交差点の腕(交差道路)を舗装・建物とも延ばす距離 [m]
+const CROSS_STREET_ARM_MIN = 15;    // これ未満は「腕なし(行き止まり)」とみなす
 const RESAMPLE_STEP = 2;      // 最終ポリラインの点間隔 [m]
 const FILLET_RADIUS = 18;     // 緩い折れの円弧半径 [m]
 const FILLET_MIN_ANGLE = 25;  // この角度[deg]を超える折れをフィレット化
@@ -141,6 +143,9 @@ const BRIDGES = [
 // 見出しは経路接線に直交させる(名神自体はほぼ直線だが、経路側のカーブにより実測角度
 // (-65°付近)をそのまま使うと片方の交差点で浅くなるため、立体交差として自然な直交で描く)。
 const HIGHWAY_CROSSINGS = [
+  // 名神高速道路と鴨川の実交点は経路から約118m離れており(射影誤差の許容60mを超える)、
+  // そのアンカーをそのまま使うとクロッシング自体が生成されなくなる。経路に射影できる
+  // 範囲内で、実交点に最も近い位置(名神高速の実ジオメトリ上)をアンカーとする。
   { name: '名神高速道路(鴨川・小枝橋付近)', anchor: [34.95228, 135.74118] },
   { name: '名神高速道路(桂川・菱妻神社付近)', anchor: [34.94773, 135.72919] },
 ];
@@ -183,11 +188,42 @@ const APPROACH_ZONES = [
 ];
 
 // 交差道路の実勢オーバーライド(交差点スタブの幅・車線数を交通量調査どおりに)
+// arms: heading方向(side:1)/heading+PI方向(side:-1)ごとの実在・車線・歩行者専用の上書き。
+// lanesF=heading方向(+heading)の車線数、lanesB=heading+PI方向の車線数(道路全体で共通)。
 const INTERSECTION_OVERRIDES = [
-  { name: '四条通', lanes: 5, width: 17.6 },                                // 片道2+右折で計5
-  { name: '五条大宮', label: '五条通', lanes: 9, width: 30.8, median: 1 },   // 片道4+中央分離帯、交差点付近計9
-  { name: '七条通', lanes: 4, width: 14.4 },                                // 片道2
-  { name: '壬生通', label: '京阪国道口(国道1号)', lanes: 5, width: 17.6 },  // 北行1+南行2+右折で計5
+  {
+    name: '四条通', lanes: 5, width: 17.6, // 片道2+右折で計5
+    arms: [{ side: 1, exists: true, length: CROSS_STREET_ARM_LEN, lanesF: 2, lanesB: 2 },
+      { side: -1, exists: true, length: CROSS_STREET_ARM_LEN, lanesF: 2, lanesB: 2 }],
+  },
+  {
+    name: '五条大宮', label: '五条通', lanes: 9, width: 30.8, median: 1, // 片道4+中央分離帯、交差点付近計9
+    arms: [{ side: 1, exists: true, length: CROSS_STREET_ARM_LEN, lanesF: 4, lanesB: 4 },
+      { side: -1, exists: true, length: CROSS_STREET_ARM_LEN, lanesF: 4, lanesB: 4 }],
+  },
+  {
+    name: '七条通', lanes: 4, width: 14.4, // 片道2
+    arms: [{ side: 1, exists: true, length: CROSS_STREET_ARM_LEN, lanesF: 2, lanesB: 2 },
+      { side: -1, exists: true, length: CROSS_STREET_ARM_LEN, lanesF: 2, lanesB: 2 }],
+  },
+  // 千本三条: heading(side1)は西向き。西側=東行き3車線・西行き2車線(実在)。
+  // 東側(side-1)は商店街(歩行者専用、車道なし)
+  {
+    name: '三条通',
+    arms: [
+      { side: 1, exists: true, length: CROSS_STREET_ARM_LEN, lanesF: 2, lanesB: 3 },
+      { side: -1, exists: true, length: CROSS_STREET_ARM_LEN, pedestrian: true, lanesF: 0, lanesB: 0 },
+    ],
+  },
+  // 京阪国道口(国道1号): heading(side1)は南向き。北行き1車線・南行き2車線(実在、南北とも)。
+  // 交差点自体の幅(計5車線分の広さ)は width で表現。
+  {
+    name: '壬生通', label: '京阪国道口(国道1号)', lanes: 5, width: 17.6,
+    arms: [
+      { side: 1, exists: true, length: CROSS_STREET_ARM_LEN, lanesF: 2, lanesB: 1 },
+      { side: -1, exists: true, length: CROSS_STREET_ARM_LEN, lanesF: 2, lanesB: 1 },
+    ],
+  },
 ];
 
 // 右左折交差点の脚オーバーライド(vertex 近傍の実座標でマッチ)
@@ -618,6 +654,47 @@ function buildLaneSections(path, cumLen, origin, signals, turnSpans, intersectio
     }));
 }
 
+// 交差点腕(側=+1: heading方向 / 側=-1: heading+PI方向)の実在判定と長さ。
+// OSMは交差点ごとに way を分割するため、マッチした1本の way だけでは実際の街路の
+// 延長を過小評価してしまう(4差路が偽のT字路に見える)。そのため周辺の全 road の中から
+// heading 軸にほぼ平行(±22°)かつ軸から近い(横ずれ7m以内)セグメントを拾い集め、
+// 交差点中心から各側へ届く最大距離を求める。
+function armExtent(roads, crossPt, heading) {
+  const dx = Math.sin(heading), dz = Math.cos(heading);
+  const nx = Math.cos(heading), nz = -Math.sin(heading);
+  const LAT_TOL = 7, MAX_REACH = 160, PARALLEL_TOL = (22 * Math.PI) / 180;
+  let pos = 0, neg = 0;
+  for (const road of roads) {
+    for (let i = 0; i < road.pts.length - 1; i++) {
+      const a = road.pts[i], b = road.pts[i + 1];
+      const segH = Math.atan2(b[0] - a[0], b[1] - a[1]);
+      const parallel = Math.min(angleDiff(segH, heading), angleDiff(segH, heading + Math.PI)) < PARALLEL_TOL;
+      if (!parallel) continue;
+      for (const p of [a, b]) {
+        const rx = p[0] - crossPt[0], rz = p[1] - crossPt[1];
+        const along = rx * dx + rz * dz;
+        const lat = rx * nx + rz * nz;
+        if (Math.abs(lat) > LAT_TOL || Math.abs(along) > MAX_REACH) continue;
+        if (along > pos) pos = along;
+        if (-along > neg) neg = -along;
+      }
+    }
+  }
+  return { pos, neg };
+}
+function buildArms(roads, crossPt, heading, lanes) {
+  const { pos, neg } = armExtent(roads, crossPt, heading);
+  const lanesF = Math.max(1, Math.ceil(lanes / 2));
+  const lanesB = Math.max(0, Math.floor(lanes / 2));
+  const mk = (side, extent) => ({
+    side,
+    exists: extent >= CROSS_STREET_ARM_MIN,
+    length: extent >= CROSS_STREET_ARM_MIN ? CROSS_STREET_ARM_LEN : 0,
+    lanesF, lanesB,
+  });
+  return [mk(1, pos), mk(-1, neg)];
+}
+
 function roadMetadata(path, cumLen, origin, roads, signalNodes) {
   const projectedRoads = roads.map((road) => ({
     id: road.id,
@@ -632,15 +709,17 @@ function roadMetadata(path, cumLen, origin, roads, signalNodes) {
     const routeH = routeHeadingAt(path, cumLen, hit.s);
     const crossing = Math.min(angleDiff(routeH, hit.heading), angleDiff(routeH, hit.heading + Math.PI));
     if (crossing < 0.42) continue;
+    const lanes0 = laneCount(road.tags);
     intersectionCandidates.push({
       s: +hit.s.toFixed(1),
       heading: +hit.heading.toFixed(4),
       width: +roadWidth(road.tags).toFixed(1),
       length: +Math.max(34, roadWidth(road.tags) * 7).toFixed(1),
-      lanes: laneCount(road.tags),
+      lanes: lanes0,
       highway: road.tags.highway,
       name: road.tags.name ?? '',
       dist: hit.dist,
+      arms: buildArms(projectedRoads, pointAtPath(path, cumLen, hit.s), hit.heading, lanes0),
     });
   }
   intersectionCandidates.sort((a, b) => a.s - b.s || a.dist - b.dist);
@@ -678,15 +757,17 @@ function roadMetadata(path, cumLen, origin, roads, signalNodes) {
     }
     if (best) {
       const tags = best.road.tags;
+      const lanes0 = laneCount(tags);
       intersections.push({
         s: sig.s,
         heading: +best.hit.heading.toFixed(4),
         width: +roadWidth(tags).toFixed(1),
         length: +Math.max(38, roadWidth(tags) * 7).toFixed(1),
-        lanes: laneCount(tags),
+        lanes: lanes0,
         highway: tags.highway,
         name: tags.name ?? sig.name,
         dist: best.hit.dist,
+        arms: buildArms(projectedRoads, pointAtPath(path, cumLen, sig.s), best.hit.heading, lanes0),
       });
     }
   }
@@ -696,11 +777,18 @@ function roadMetadata(path, cumLen, origin, roads, signalNodes) {
   for (const ov of INTERSECTION_OVERRIDES) {
     for (const ix of intersections) {
       if (ix.name !== ov.name) continue;
-      ix.width = ov.width;
-      ix.lanes = ov.lanes;
-      ix.length = +Math.max(34, ov.width * 7).toFixed(1);
+      if (ov.width != null) ix.width = ov.width;
+      if (ov.lanes != null) ix.lanes = ov.lanes;
+      if (ov.width != null) ix.length = +Math.max(34, ov.width * 7).toFixed(1);
       if (ov.median) ix.median = 1;
       if (ov.label) ix.name = ov.label;
+      if (ov.arms) {
+        ix.arms = (ix.arms ?? [{ side: 1, exists: true, length: CROSS_STREET_ARM_LEN }, { side: -1, exists: true, length: CROSS_STREET_ARM_LEN }])
+          .map((a) => {
+            const o = ov.arms.find((x) => x.side === a.side);
+            return o ? { ...a, ...o } : a;
+          });
+      }
     }
   }
 

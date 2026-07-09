@@ -96,6 +96,36 @@ function makeOncomingBus() {
   return holder;
 }
 
+// ===== 旋回(2次ベジェ)ユーティリティ: T字路合流・対向車の左折で共有 =====
+// スナップせず弧長ベースで position/heading を連続的に算出することで、旋回時のカクつきを防ぐ。
+function buildTurnArc(start, ctrl, end, steps = 16) {
+  const pts = [];
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const mt = 1 - t;
+    pts.push([
+      mt * mt * start[0] + 2 * mt * t * ctrl[0] + t * t * end[0],
+      mt * mt * start[1] + 2 * mt * t * ctrl[1] + t * t * end[1],
+    ]);
+  }
+  const cum = [0];
+  for (let i = 1; i < pts.length; i++) {
+    cum.push(cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
+  }
+  return { pts, cum, length: cum.at(-1) || 1e-6 };
+}
+/** u: 0..1(走行済み弧長の割合)→ {x, z, heading} */
+function sampleTurnArc(arc, u) {
+  const target = Math.max(0, Math.min(1, u)) * arc.length;
+  let i = 0;
+  while (i < arc.cum.length - 2 && arc.cum[i + 1] < target) i++;
+  const segLen = arc.cum[i + 1] - arc.cum[i] || 1e-6;
+  const t = (target - arc.cum[i]) / segLen;
+  const [ax, az] = arc.pts[i], [bx, bz] = arc.pts[i + 1];
+  const dx = bx - ax, dz = bz - az;
+  return { x: ax + dx * t, z: az + dz * t, heading: Math.atan2(dx, dz) };
+}
+
 const stopS = (name) => route.stops.find((st) => st.name === name)?.s ?? null;
 
 function fallbackSignalPositions(path) {
@@ -213,6 +243,16 @@ export function buildTraffic(scene, path, events = {}) {
     return best;
   }
 
+  /** 交差点(自ルート外)を横切る他車が、交差方向の信号に従って停止すべき残距離(なければ null) */
+  function crossRedDist(cc) {
+    if (cc.sig.crossState === 'green') return null;
+    const distToLine = -cc.off * cc.dir; // 交差点中心までの残距離(正=未到達)
+    if (distToLine < -2) return null; // 既に交差点を通過済み
+    const brakeDist = (cc.v * cc.v) / (2 * 2.6);
+    if (distToLine > Math.max(brakeDist + 4, 20)) return null; // まだ反応する距離ではない
+    return distToLine;
+  }
+
   // ================= 車両 =================
   /** dir: +1=同方向(道路左側) / -1=対向(右側)。laneIdx: 0=センター寄り, 1=外側 */
   function laneLat(s, dir, laneIdx = 0) {
@@ -258,8 +298,12 @@ export function buildTraffic(scene, path, events = {}) {
   const TRAFFIC_MIN_S = 360;
 
   // 対向車(北行き)はこの2交差点(府道201号線・(34.9554,135.7422)地点)を越えて北上せず、
-  // 西へ左折して経路上から消える(=この地点より北側には南から来た対向車が現れない)
-  const TURNOFF_S = [6598.7, 7672.5];
+  // 西へ左折して側道へ抜ける(旋回アニメーションの後に消える。heading は交差点を実際に
+  // 西へ抜ける道路の実測方位)
+  const TURNOFF_POINTS = [
+    { s: 6598.7, heading: -1.5931 }, // 府道201号線(西行き一方通行)
+    { s: 7672.5, heading: -1.596 },  // (34.955406,135.742175)付近の交差点
+  ];
 
   // 右左折交差点の交錯ゾーン(近接ターンは連結: 狭隘路のS字ジョグ等)
   const turnZones = [];
@@ -336,25 +380,41 @@ export function buildTraffic(scene, path, events = {}) {
   // ================= 交差点(自ルート外の交差道路)を横切る他車 =================
   // route.intersections(信号との対応)を利用し、交差する道路上にも信号に従う他車を走らせる。
   // 交差道路自体の実ジオメトリは持たないため、交差点中心(path.getPoint(ix.s))を基準に
-  // ix.heading 方向の直線上を往復させる簡易表現(スタブ道路の長さの範囲内)。
+  // ix.heading 方向の直線上を走らせる簡易表現(スタブ道路の長さの範囲内)。
+  // ix.arms(実在・車線・歩行者専用)を見て、四差路は従来どおり直進往復(mode:'through')、
+  // 片側しか実在しないT字路はその腕から本線へ左右どちらかへ旋回合流させる(mode:'tstub')。
+  // 実在しない腕・歩行者専用の腕には他車を生成しない。
   const CROSS_DEFS = [
-    () => makeCar(0xb9bec4),
-    () => makeCar(0x5b3a3a),
-    () => makeTruck(0x7d8288),
-    () => makeCar(0x33465e),
-    () => makeCar(0xc8c0a8),
+    { make: () => makeCar(0xb9bec4), hitR: 2.0 },
+    { make: () => makeCar(0x5b3a3a), hitR: 2.0 },
+    { make: () => makeTruck(0x7d8288), hitR: 2.35 },
+    { make: () => makeCar(0x33465e), hitR: 2.0 },
+    { make: () => makeCar(0xc8c0a8), hitR: 2.0 },
   ];
   const crossCars = [];
-  function spawnCrossCar(ix, sig, dir) {
-    const inner = CROSS_DEFS[crossCars.length % CROSS_DEFS.length]();
+  function spawnCrossCar(ix, sig, dir, mode, arm) {
+    const def = CROSS_DEFS[crossCars.length % CROSS_DEFS.length];
+    const inner = def.make();
     const outer = new THREE.Group();
     outer.add(inner);
     g.add(outer);
+    const vMax = 7 + Math.random() * 3;
+    if (mode === 'tstub') {
+      // 腕(side)の外側寄りに出現し、中心(本線)へ向かって進む(進行方向は常に中心向き)
+      const armLen = Math.max(24, arm.length ?? 60);
+      const off = arm.side * (Math.max(20, armLen * 0.35) + Math.random() * (armLen * 0.5));
+      return {
+        ix, sig, dir: -arm.side, mode, arm, off,
+        v: 6, vMax, hitR: def.hitR,
+        phase: 'approach', turnT: 0, turnArc: null,
+        outer, inner,
+      };
+    }
     const range = Math.max(16, Math.min(60, (ix.length ?? 40) / 2 - 4));
     return {
-      ix, sig, dir, range,
+      ix, sig, dir, mode: 'through', range,
       off: (Math.random() * 1.6 - 0.8) * range,
-      v: 6, vMax: 7 + Math.random() * 3,
+      v: 6, vMax, hitR: def.hitR,
       outer, inner,
     };
   }
@@ -365,8 +425,20 @@ export function buildTraffic(scene, path, events = {}) {
       if (d < bestD) { bestD = d; nearestIx = ix; }
     }
     if (!nearestIx) continue;
-    crossCars.push(spawnCrossCar(nearestIx, sig, 1));
-    crossCars.push(spawnCrossCar(nearestIx, sig, -1));
+    const armPos = nearestIx.arms?.find((a) => a.side === 1);
+    const armNeg = nearestIx.arms?.find((a) => a.side === -1);
+    const bothThrough = armPos?.exists && !armPos.pedestrian && armNeg?.exists && !armNeg.pedestrian;
+    if (!nearestIx.arms?.length || bothThrough) {
+      // 従来どおり(四差路、または腕情報がない旧データへのフォールバック): 直進往復
+      crossCars.push(spawnCrossCar(nearestIx, sig, 1, 'through'));
+      crossCars.push(spawnCrossCar(nearestIx, sig, -1, 'through'));
+    } else {
+      // T字路: 実在し、かつ車道(非歩行者専用)の腕だけに他車を生成し、本線へ旋回合流させる
+      for (const arm of [armPos, armNeg]) {
+        if (!arm?.exists || arm.pedestrian) continue;
+        crossCars.push(spawnCrossCar(nearestIx, sig, arm.side, 'tstub', arm));
+      }
+    }
   }
 
   let collisionCooldown = 0;
@@ -401,7 +473,30 @@ export function buildTraffic(scene, path, events = {}) {
       const busHeldAtSignal = busRedD != null && busRedD < 22;
 
       // ---- 車両 ----
-      for (const c of cars) {
+      for (let ci = cars.length - 1; ci >= 0; ci--) {
+        const c = cars[ci];
+        // 左折旋回中(府道201号線などへの離脱): 弧長ベースでなめらかに進め、完了で消える
+        if (c.turnArc) {
+          c.v += (Math.min(c.vMax, 8) - c.v) * Math.min(1, dt * 1.6);
+          c.turnT += (c.v * dt) / c.turnArc.length;
+          if (c.turnT >= 1) {
+            g.remove(c.outer);
+            cars.splice(ci, 1);
+            continue;
+          }
+          const samp = sampleTurnArc(c.turnArc, c.turnT);
+          c.outer.position.set(samp.x, elevationAt(c.s), samp.z);
+          c.outer.rotation.y = samp.heading;
+          if (collisionCooldown <= 0) {
+            const ddx = c.outer.position.x - busPos[0];
+            const ddz = c.outer.position.z - busPos[1];
+            if (ddx * ddx + ddz * ddz < c.hitR * c.hitR) {
+              collisionCooldown = 4;
+              events.onCollision?.();
+            }
+          }
+          continue;
+        }
         // 目標速度
         let vT = Math.min(c.vMax, speedLimitAt(c.s) * 1.05);
         const k = Math.abs(path.curvatureAt(c.s));
@@ -425,9 +520,20 @@ export function buildTraffic(scene, path, events = {}) {
         const inOneway = latT == null; // 対向車が一方通行区間に入った → 実在しないのでリスポーン
         if (inOneway) latT = c.latCur ?? 2.5;
         // 対向車: 府道201号線・(34.9554,...)地点で西へ左折させる(その交差点通過時のみ)。
-        // th以下すべてで真にすると北側の対向車が全滅するので、交差点手前60m以内の帯域に限定する。
-        const turnedOff = c.dir === -1 && TURNOFF_S.some((th) => c.s <= th && c.s > th - 60);
-        if (turnedOff) latT = c.latCur ?? 2.5;
+        // s以下すべてで真にすると北側の対向車が全滅するので、交差点手前55m以内の帯域に限定する。
+        // 一度だけ旋回アーク(現在位置→交差道路の実方位)を作り、以降は上のブロックが処理する。
+        const turnPoint = c.dir === -1 ? TURNOFF_POINTS.find((p) => c.s <= p.s && c.s > p.s - 55) : null;
+        if (turnPoint) {
+          const sx = c.outer.position.x, sz = c.outer.position.z;
+          const startHeading = c.outer.rotation.y;
+          const [cx, cz] = path.getPoint(turnPoint.s);
+          const hx = Math.sin(turnPoint.heading), hz = Math.cos(turnPoint.heading);
+          const end = [cx + hx * 26, cz + hz * 26];
+          const ctrl = [sx + Math.sin(startHeading) * 12, sz + Math.cos(startHeading) * 12];
+          c.turnArc = buildTurnArc([sx, sz], ctrl, end);
+          c.turnT = 0;
+          continue;
+        }
         // 対向車: 狭い2車線でバスと接近したら減速して外側に待避(狭隘路の譲り合い)
         if (c.dir === -1 && lanesAt(c.s) <= 2) {
           const ahead = c.s - busS; // すれ違い前は正
@@ -461,9 +567,10 @@ export function buildTraffic(scene, path, events = {}) {
         c.v += (vT - c.v) * Math.min(1, dt * rate);
         c.s += c.v * dt * c.dir;
 
-        // リスポーン: 経路端・駅前ロータリー・自車から離れすぎ・一方通行進入・左折地点通過 → 自車の周辺へ
+        // リスポーン: 経路端・駅前ロータリー・自車から離れすぎ・一方通行進入 → 自車の周辺へ
+        // (左折地点通過は上で旋回アークへ切り替え済みのためここでは扱わない)
         const rel = (c.s - busS) * 1;
-        if (c.s < TRAFFIC_MIN_S || c.s > path.length - 15 || Math.abs(rel) > 1800 || inOneway || turnedOff) {
+        if (c.s < TRAFFIC_MIN_S || c.s > path.length - 15 || Math.abs(rel) > 1800 || inOneway) {
           if (c.dir === 1) {
             const behind = Math.random() < 0.4;
             const off = behind ? -(160 + Math.random() * 380) : 250 + Math.random() * 900;
@@ -503,25 +610,90 @@ export function buildTraffic(scene, path, events = {}) {
       }
       collisionCooldown = Math.max(0, collisionCooldown - dt);
 
-      // ---- 交差点(自ルート外)の他車: 信号(交差方向)に従って往復 ----
-      for (const cc of crossCars) {
-        let vT = cc.vMax;
-        const distToLine = -cc.off * cc.dir; // 交差点中心までの残距離(正=未到達)
-        if (cc.sig.crossState !== 'green' && distToLine > 1 && distToLine < 20) {
-          vT = Math.min(vT, Math.max(0, Math.sqrt(Math.max(0, 2 * 1.8 * (distToLine - 3)))));
+      // ---- 交差点(自ルート外)の他車: 信号(交差方向)に従って走行 ----
+      for (let ci = crossCars.length - 1; ci >= 0; ci--) {
+        const cc = crossCars[ci];
+
+        // T字路: 本線の縁まで到達し、旋回合流アークを走行中 → 完了したら cars[] へ正式合流
+        if (cc.phase === 'turn') {
+          cc.v += (Math.min(cc.vMax, 8) - cc.v) * Math.min(1, dt * 1.8);
+          cc.turnT += (cc.v * dt) / cc.turnArc.length;
+          if (cc.turnT >= 1) {
+            cars.push({
+              outer: cc.outer, inner: cc.inner, dir: cc.mergeDir, laneIdx: 0,
+              hitR: cc.hitR, vMax: cc.vMax, s: cc.mergeS, v: cc.v, latCur: cc.mergeLat,
+            });
+            crossCars.splice(ci, 1);
+            continue;
+          }
+          const samp = sampleTurnArc(cc.turnArc, cc.turnT);
+          cc.outer.position.set(samp.x, elevationAt(cc.ix.s), samp.z);
+          cc.outer.rotation.y = samp.heading;
+          if (collisionCooldown <= 0) {
+            const ddx = cc.outer.position.x - busPos[0];
+            const ddz = cc.outer.position.z - busPos[1];
+            if (ddx * ddx + ddz * ddz < cc.hitR * cc.hitR) {
+              collisionCooldown = 4;
+              events.onCollision?.();
+            }
+          }
+          continue;
         }
+
+        let vT = cc.vMax;
+        // 同行車と同じ「速度依存のブレーキ距離ゲート」を使い、赤信号では停止線通過直前・
+        // 直後で解除せず、青になるまで確実に止まり続ける(交差点内での立ち往生バグの修正)
+        const dRed = crossRedDist(cc);
+        if (dRed != null) vT = Math.min(vT, dRed < 1 ? 0 : Math.sqrt(2 * 1.8 * Math.max(0, dRed - 1.5)));
         cc.v += (vT - cc.v) * Math.min(1, dt * 2.2);
         cc.off += cc.v * dt * cc.dir;
-        if (cc.off > cc.range || cc.off < -cc.range) {
+
+        if (cc.mode === 'tstub') {
+          // 本線の縁に到達したら直進させず、左右どちらかへ旋回して本線へ合流させる
+          const edge = (cc.ix.width ?? 8) / 2 + 3;
+          if (Math.abs(cc.off) < edge) {
+            const s0 = Math.max(0, Math.min(path.length, cc.ix.s));
+            const [px, pz] = path.getPoint(s0);
+            const hx = Math.sin(cc.ix.heading), hz = Math.cos(cc.ix.heading);
+            const laneOff = 2.6 * (cc.dir > 0 ? 1 : -1);
+            const start = [px + hx * cc.off + hz * laneOff, pz + hz * cc.off - hx * laneOff];
+            const startHeading = cc.dir > 0 ? cc.ix.heading : cc.ix.heading + Math.PI;
+            const mergeDir = Math.random() < 0.5 ? 1 : -1;
+            const mergeS = Math.max(30, Math.min(path.length - 30, s0 + mergeDir * 16));
+            const mergeLat = laneLat(mergeS, mergeDir, 0) ?? 0;
+            const [mpx, mpz] = path.getPoint(mergeS);
+            const [mtx, mtz] = path.getTangent(mergeS);
+            const end = [mpx + -mtz * mergeLat, mpz + mtx * mergeLat];
+            const ctrl = [start[0] + Math.sin(startHeading) * 12, start[1] + Math.cos(startHeading) * 12];
+            cc.turnArc = buildTurnArc(start, ctrl, end);
+            cc.turnT = 0;
+            cc.phase = 'turn';
+            cc.mergeDir = mergeDir;
+            cc.mergeS = mergeS;
+            cc.mergeLat = mergeLat;
+            continue;
+          }
+        } else if (cc.off > cc.range || cc.off < -cc.range) {
           cc.off = -Math.sign(cc.dir) * cc.range;
           cc.v = 6;
         }
+
         const s = Math.max(0, Math.min(path.length, cc.ix.s));
         const [px, pz] = path.getPoint(s);
         const hx = Math.sin(cc.ix.heading), hz = Math.cos(cc.ix.heading);
         const laneOff = 2.6 * (cc.dir > 0 ? 1 : -1); // 左側通行(進行方向の左に寄せる)
         cc.outer.position.set(px + hx * cc.off + hz * laneOff, elevationAt(s), pz + hz * cc.off - hx * laneOff);
         cc.outer.rotation.y = cc.dir > 0 ? cc.ix.heading : cc.ix.heading + Math.PI;
+
+        // 自車との衝突判定(交差する道路を走る他車にも当たり判定をつける)
+        if (collisionCooldown <= 0) {
+          const ddx = cc.outer.position.x - busPos[0];
+          const ddz = cc.outer.position.z - busPos[1];
+          if (ddx * ddx + ddz * ddz < cc.hitR * cc.hitR) {
+            collisionCooldown = 4;
+            events.onCollision?.();
+          }
+        }
       }
     },
     /** autoDrive 用: 前方の同方向車(同一レーン近傍)までの車間 [m](なければ null) */

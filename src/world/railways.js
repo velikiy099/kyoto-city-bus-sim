@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { makeRibbon } from './road.js';
-import { elevationAt, gradeAt, halfWidthAt } from '../route/routeData.js';
+import { route, elevationAt, gradeAt, halfWidthAt } from '../route/routeData.js';
 
 const mat = (color, opts = {}) => new THREE.MeshLambertMaterial({ color, ...opts });
 
@@ -194,10 +194,17 @@ function buildExpresswayViaduct(scene, path, spec) {
     g.add(parapet);
   }
 
-  // 橋脚(道路上には立てない — 高架は経路と斜めに交差する)
+  // 橋脚(道路上・川面の上には立てない — 高架は経路と斜めに交差する)
   const clearHalf = halfWidthAt(spec.s) + 5;
+  const riverZones = (route.bridges ?? []).map((br) => {
+    const b = at(path, br.s);
+    return { x: b.x, z: b.z, r: Math.max(18, br.length * 0.85) / 2 + 24 };
+  });
   for (const z of [-75, -38, 0, 38, 75]) {
     if (Math.abs(z) < clearHalf) continue;
+    const wx = p.x + Math.sin(spec.heading) * z;
+    const wz = p.z + Math.cos(spec.heading) * z;
+    if (riverZones.some((rz) => (wx - rz.x) ** 2 + (wz - rz.z) ** 2 < rz.r * rz.r)) continue;
     const pier = new THREE.Mesh(new THREE.BoxGeometry(width * 0.5, deckY - 0.6, 1.6), mat(0x9c9f9c));
     pier.position.set(0, (deckY - 0.6) / 2, z);
     g.add(pier);

@@ -1,7 +1,31 @@
 import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { route, rightWidthAt, leftWidthAt } from '../route/routeData.js';
+import { lambertize } from '../util/lambertize.js';
 
 const mat = (color, opts = {}) => new THREE.MeshLambertMaterial({ color, ...opts });
+
+// ===== 駐機バス(bus.glb を共有ロードし、静止状態でクローンして量産) =====
+const busLoader = new GLTFLoader();
+let busLib = null;
+const pendingBus = [];
+busLoader.load('models/bus.glb', (gltf) => {
+  lambertize(gltf.scene);
+  busLib = gltf.scene;
+  for (const fill of pendingBus.splice(0)) fill();
+});
+/** 駐機中のバス(前方=+z)。走行させないので update() は呼ばない */
+function makeParkedBus() {
+  const holder = new THREE.Group();
+  const fill = () => {
+    const node = busLib.clone(true);
+    node.position.set(0, 0, -3.15); // bus.glb は原点=後軸中心なので車体中心を holder 原点へ
+    holder.add(node);
+  };
+  if (busLib) fill();
+  else pendingBus.push(fill);
+  return holder;
+}
 
 /** 停留所名 → s 値 */
 const stopS = (name) => route.stops.find((st) => st.name === name)?.s ?? 0;
@@ -165,27 +189,6 @@ function buildAquarium(scene, path) {
   return { x: a.x, z: a.z, r: 95 };
 }
 
-/** 羅城門跡(児童公園の石碑) */
-function buildRajomon(scene, path) {
-  const s = stopS('羅城門');
-  const a = anchor(path, s - 8, -9);
-  const g = new THREE.Group();
-  g.position.set(a.x, 0, a.z);
-  g.rotation.y = a.ry;
-  const pad = new THREE.Mesh(new THREE.PlaneGeometry(16, 12), mat(0xb9b29b));
-  pad.rotation.x = -Math.PI / 2;
-  pad.position.y = 0.09;
-  g.add(pad);
-  const stone = new THREE.Mesh(new THREE.BoxGeometry(1.1, 2.6, 0.7), mat(0x777d80));
-  stone.position.y = 1.5;
-  g.add(stone);
-  const basePlate = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.4, 1.6), mat(0x8d9296));
-  basePlate.position.y = 0.2;
-  g.add(basePlate);
-  scene.add(g);
-  return { x: a.x, z: a.z, r: 14 };
-}
-
 /** 京都タワー(遠景・東方向) */
 function buildKyotoTower(scene, path) {
   const s = stopS('七条大宮・京都水族館前');
@@ -278,6 +281,10 @@ function buildKugaIndustries(scene, path) {
     { name: '原田工業', s: s0 + 215, side: 1, setback: 6, w: 32, d: 22, h: 7, color: 0xaeb4a8 },
     { name: '山幸製作所', s: s0 + 290, side: -1, setback: 6, w: 24, d: 20, h: 6.5, color: 0xc4bca6 },
     { name: '京セラ 京都伏見事業所', s: s1 - 85, side: -1, setback: 8, w: 70, d: 46, h: 11, color: 0xd8dbd8 },
+    // 終点(久我石原町)敷地の道路反対側(西側)の倉庫群。実地図では PISORICO久我(手前)と
+    // クレアジオーネ伏見(奥)が連なる大型倉庫として並ぶ。
+    { name: 'PISORICO久我', s: s1 - 95, side: 1, setback: 6, w: 60, d: 34, h: 8, color: 0xa9adae },
+    { name: 'クレアジオーネ伏見', s: s1 - 45, side: 1, setback: 6, w: 26, d: 20, h: 7, color: 0xb8b2a0 },
   ];
   return specs.map((f) => buildLabeledFactory(scene, path, f));
 }
@@ -292,23 +299,32 @@ function buildKugaIndustries(scene, path) {
  * あるため、円弧のど真ん中に敷地を置くと接線が急回転して歪む。円弧を抜けた先の
  * 短い直線区間(sOut〜経路終端)に敷地を収める。
  */
-function buildTerminus(scene, path) {
+// 久我石原町敷地(バス駐車場)の寸法。local X=道路と直交(奥行き)・local Z=道路沿い(長さ)
+const TERMINUS_LOT = { w: 22, d: 18 };
+
+/**
+ * 久我石原町敷地のアンカー(位置・向き)を計算。buildTerminus と stops.js(バス停を
+ * 道路上ではなく敷地内に置くため)の両方から参照する共通ロジック。
+ * 実際の引き込み路(府道202号線→終点)はごく短い(約15m)ため、敷地もそれに合わせて
+ * ターン頂点(≒府道202号線)のすぐ先にコンパクトに収める。
+ */
+export function terminusLotAnchor(path) {
   const stop = route.stops.find((st) => st.name === '久我石原町');
-  if (!stop) return { x: 0, z: 0, r: 0 };
-
-  // 敷地の舗装(バス駐車スペース)。local X=道路と直交(奥行き)・local Z=道路沿い(長さ)
-  // 実際の引き込み路(府道202号線→終点)はごく短い(約15m)ため、敷地もそれに合わせて
-  // ターン頂点(≒府道202号線)のすぐ先にコンパクトに収める。
-  const lotW = 22, lotD = 18; // lotW: 道路からの奥行き, lotD: 道路沿いの長さ
-
+  if (!stop) return null;
   const turn = route.turnIntersections.find((t) => Math.abs(t.s - stop.s) < 60);
-  const availFrom = turn ? turn.sOut + 2 : Math.max(0, stop.s - lotD / 2);
+  const availFrom = turn ? turn.sOut + 2 : Math.max(0, stop.s - TERMINUS_LOT.d / 2);
   const availTo = path.length - 3;
-  let s = availFrom + lotD / 2;
-  if (s + lotD / 2 > availTo) s = availTo - lotD / 2;
-
+  let s = availFrom + TERMINUS_LOT.d / 2;
+  if (s + TERMINUS_LOT.d / 2 > availTo) s = availTo - TERMINUS_LOT.d / 2;
   const HW = leftWidthAt(s);
-  const a = anchor(path, s, -(HW + 14)); // 縁石の外側、敷地中央
+  return { s, ...anchor(path, s, -(HW + 14)), lotW: TERMINUS_LOT.w, lotD: TERMINUS_LOT.d };
+}
+
+function buildTerminus(scene, path) {
+  const lot = terminusLotAnchor(path);
+  if (!lot) return { x: 0, z: 0, r: 0 };
+  const { lotW, lotD } = lot;
+  const a = lot;
   const g = new THREE.Group();
   g.position.set(a.x, 0, a.z);
   g.rotation.y = a.ry;
@@ -350,6 +366,13 @@ function buildTerminus(scene, path) {
   shelter.add(sign);
   g.add(shelter);
 
+  // 駐機バス(北向きに停車)。g 自体は経路接線 a.ry で回転しているため、
+  // ワールドで真北を向くよう子要素側で打ち消して Math.PI(真北)を作る。
+  const bus = makeParkedBus();
+  bus.position.set(-lotW / 2 + 8, 0, 0);
+  bus.rotation.y = Math.PI - a.ry;
+  g.add(bus);
+
   // 敷地境界のフェンス(京セラ側・奥側の3辺のみ。道路側は出入口として開放)
   const fenceMat = mat(0xb4b8b4);
   for (const [w, d, x, z] of [[lotW, 0.3, 0, -lotD / 2], [lotW, 0.3, 0, lotD / 2], [0.3, lotD, -lotW / 2, 0]]) {
@@ -362,16 +385,85 @@ function buildTerminus(scene, path) {
   return { x: a.x, z: a.z, r: Math.max(lotW, lotD) / 2 + 6 };
 }
 
+/**
+ * みぶ操車場前バス停の反対側(進行方向右)にある京都市交通局・壬生操車場。
+ * 斜め駐車ベイ2列×4区画+事務所小屋を敷地内に置き、うち数区画にバスを駐機させる。
+ */
+function buildMibuDepot(scene, path) {
+  const stop = route.stops.find((st) => st.name === 'みぶ操車場前');
+  if (!stop) return { x: 0, z: 0, r: 0 };
+  const s = stop.s;
+  const HW = rightWidthAt(s);
+  const lotW = 50, lotD = 56; // lotW: 道路からの奥行き, lotD: 道路沿いの長さ
+  const a = anchor(path, s, HW + 8 + lotW / 2);
+  const g = new THREE.Group();
+  g.position.set(a.x, 0, a.z);
+  g.rotation.y = a.ry;
+
+  const pavement = new THREE.Mesh(new THREE.PlaneGeometry(lotW, lotD), mat(0x6a6e70));
+  pavement.rotation.x = -Math.PI / 2;
+  pavement.position.y = 0.02;
+  g.add(pavement);
+
+  // 事務所・車庫(道路から一番遠い奥側)
+  const office = new THREE.Mesh(new THREE.BoxGeometry(16, 5.5, 9), mat(0xd7d2c4));
+  office.position.set(-lotW / 2 + 9, 2.75, -lotD / 2 + 5.5);
+  g.add(office);
+  const officeRoof = new THREE.Mesh(new THREE.BoxGeometry(17, 0.5, 10), mat(0x4a4f55));
+  officeRoof.position.set(-lotW / 2 + 9, 5.75, -lotD / 2 + 5.5);
+  g.add(officeRoof);
+  const sign = new THREE.Mesh(
+    new THREE.PlaneGeometry(7, 1.5),
+    new THREE.MeshBasicMaterial({ map: makeLabelTexture('京都市交通局 壬生操車場'), side: THREE.DoubleSide })
+  );
+  sign.position.set(-lotW / 2 + 9, 6.8, -lotD / 2 + 5.5 + 5.05);
+  g.add(sign);
+
+  // 斜め駐車ベイ(2列×4区画。列ごとに逆向きの角度をつけて向かい合わせに配置)
+  const lineMat = new THREE.MeshBasicMaterial({ color: 0xe8e8e8 });
+  const SKEW = (24 * Math.PI) / 180;
+  const bays = [];
+  for (const row of [-1, 1]) {
+    const rowX = row * (lotW / 4 + 2);
+    for (let i = 0; i < 4; i++) {
+      bays.push({ x: rowX, z: -lotD / 2 + 12 + i * 11.2, ry: row * SKEW });
+    }
+  }
+  for (const bay of bays) {
+    const grp = new THREE.Group();
+    grp.position.set(bay.x, 0, bay.z);
+    grp.rotation.y = bay.ry;
+    for (const side of [-1, 1]) {
+      const stripe = new THREE.Mesh(new THREE.PlaneGeometry(0.15, 12), lineMat);
+      stripe.rotation.x = -Math.PI / 2;
+      stripe.position.set(side * 1.7, 0.03, 0);
+      grp.add(stripe);
+    }
+    g.add(grp);
+  }
+
+  // 駐機バス(各列2台ずつ、計4台)
+  for (const bay of [bays[0], bays[1], bays[4], bays[5]]) {
+    const bus = makeParkedBus();
+    bus.position.set(bay.x, 0, bay.z);
+    bus.rotation.y = bay.ry;
+    g.add(bus);
+  }
+
+  scene.add(g);
+  return { x: a.x, z: a.z, r: Math.hypot(lotW, lotD) / 2 + 6 };
+}
+
 /** すべてのランドマークを配置し、建物生成の除外域リストを返す */
 export function buildLandmarks(scene, path) {
   return [
     buildToji(scene, path),
     buildNijoStation(scene, path),
     buildAquarium(scene, path),
-    buildRajomon(scene, path),
     buildKyotoTower(scene, path),
     ...buildRiverIndustries(scene, path),
     ...buildKugaIndustries(scene, path),
     buildTerminus(scene, path),
+    buildMibuDepot(scene, path),
   ];
 }

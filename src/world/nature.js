@@ -73,8 +73,10 @@ export function buildNature(scene, path) {
       g.add(rail);
     }
 
-    // 川の上には建物を置かない
-    exclusions.push({ x: px, z: pz, r: 340 });
+    // 川の上・土手には建物を置かない(半径は実際の川幅+土手ぶんに比例。
+    // 以前は全橋一律340mで、実際の川幅(例: 小枝橋51m)よりはるかに広い範囲を
+    // 建物禁止にしてしまい、小枝橋以南〜赤池の建物配置を妨げていた)
+    exclusions.push({ x: px, z: pz, r: w / 2 + 24 });
   }
 
   // ---- 遠景の山(北・東・西 — 京都盆地) ----
@@ -122,25 +124,27 @@ export function buildNature(scene, path) {
       items.push([x, z]);
     }
   }
-  // ---- 鳥羽離宮(城南宮道バス停の東側に木を密に植えて表現) ----
+  // ---- 鳥羽離宮跡公園(OSM実測: way 341709499「鳥羽離宮跡公園」の敷地形状に合わせて木を配置) ----
+  // 実測ポリゴン(約130m×154mの矩形)の重心を経路へ投影した結果: 城南宮道停留所の67m先・
+  // 進行方向左へ71mの位置。以前は停留所+90m・半径190mの粗い円で過大に除外していたため、
+  // 実際の公園より外側の区画にも建物が置けないままになっていた。
   const tobaStop = route.stops.find((st) => st.name === '城南宮道');
   if (tobaStop) {
-    // 城南宮周辺には建物を置かず木のみにする(実建物はここから離れているため、
-    // 「城南宮道」停留所周辺の沿道一帯を神社の参道・杜として扱う)
-    const [exX, exZ] = path.getPoint(Math.min(path.length, tobaStop.s + 90));
-    exclusions.push({ x: exX, z: exZ, r: 190 });
+    const anchorS = Math.min(path.length, tobaStop.s + 67);
+    const [apx, apz] = path.getPoint(anchorS);
+    const [atx, atz] = path.getTangent(anchorS);
+    const anx = -atz, anz = atx;
+    const [cx, cz] = [apx + anx * -71, apz + anz * -71];
+    const halfW = 68, halfD = 80; // 実測バウンディングボックス(約130m×154m)+若干の余白
+    exclusions.push({ x: cx, z: cz, r: Math.hypot(halfW, halfD) + 5 });
     let seed = 9001;
     const rndSeeded = () => {
       seed = (seed * 1103515245 + 12345) & 0x7fffffff;
       return seed / 0x7fffffff;
     };
     for (let i = 0; i < 150; i++) {
-      const s = tobaStop.s - 60 + rndSeeded() * 300;
-      const lat = -(9 + rndSeeded() * 24); // 進行方向左(東側)の沿道すぐに密集させる
-      const ss = Math.max(0, Math.min(path.length, s));
-      const [px, pz] = path.getPoint(ss);
-      const [tx, tz] = path.getTangent(ss);
-      const x = px + -tz * lat, z = pz + tx * lat;
+      const x = cx + (rndSeeded() - 0.5) * 2 * halfW;
+      const z = cz + (rndSeeded() - 0.5) * 2 * halfD;
       if (turnZones.some((e) => (x - e.x) ** 2 + (z - e.z) ** 2 < e.r * e.r)) continue;
       items.push([x, z]);
     }
