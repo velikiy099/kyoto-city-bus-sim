@@ -4,6 +4,7 @@ let available = false;
 let currentUtterance = null;
 let pendingTimer = null;
 let lastCancelAt = -Infinity;
+let queued = null; // 発話中に来た「割り込まず後で流す」アナウンス(最新の1件のみ保持)
 
 // Chrome では cancel() の処理が非同期で、直後(同一タスク内)に speak() すると
 // その発話ごと破棄される。cancel 後はこの時間だけ speak を遅延させる。
@@ -38,8 +39,17 @@ function utter(text, retried = false) {
     u.rate = 1.02;
     u.pitch = 1.05;
     u.volume = 0.9;
-    u.onend = () => { if (currentUtterance === u) currentUtterance = null; };
-    u.onerror = () => { if (currentUtterance === u) currentUtterance = null; };
+    const onDone = () => {
+      if (currentUtterance !== u) return;
+      currentUtterance = null;
+      if (queued != null) {
+        const next = queued;
+        queued = null;
+        utter(next);
+      }
+    };
+    u.onend = onDone;
+    u.onerror = onDone;
     currentUtterance = u; // GC で発話が途切れないよう参照を保持
     speechSynthesis.speak(u);
     if (!retried) {
@@ -54,9 +64,15 @@ function utter(text, retried = false) {
   }
 }
 
-function speak(text) {
+function speak(text, { queueIfBusy = false } = {}) {
   if (!available) return;
   try {
+    // 発話中/待機中で、割り込ませたくない場合はキューに積んで終了を待つ(最新の1件のみ保持)
+    if (queueIfBusy && (currentUtterance || speechSynthesis.speaking || speechSynthesis.pending)) {
+      queued = text;
+      return;
+    }
+    queued = null;
     clearTimeout(pendingTimer);
     pendingTimer = null;
     if (speechSynthesis.speaking || speechSynthesis.pending) {
@@ -81,8 +97,10 @@ export function announceNext(stopName) {
   speak(`次は、${stopName}、${stopName}です。`);
 }
 
-export function announceApproach(stopName) {
-  speak(`まもなく、${stopName}です。お降りの方は、お近くの降車ボタンを押してください。`);
+/** 降車ボタン押下相当(次停に降車客がいて接近した)時のアナウンス。
+ * 「次は、〇〇です」発話中に鳴った場合は、その発話が終わるまで割り込まず待つ。 */
+export function announceStopping() {
+  speak('次止まります。危険ですのでバスが停車してから席をお立ちください。', { queueIfBusy: true });
 }
 
 export function announceTerminal() {

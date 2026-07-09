@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { lambertize } from '../util/lambertize.js';
-import { route, elevationAt, gradeAt, lanesAt, halfWidthAt, laneCenterAt, speedLimitAt } from '../route/routeData.js';
+import { route, elevationAt, gradeAt, lanesAt, halfWidthAt, laneCenterAt, speedLimitAt, fwdLanesAt, backLanesAt, leftWidthAt, rightWidthAt } from '../route/routeData.js';
 
 const mat = (color) => new THREE.MeshLambertMaterial({ color });
 const signalMat = (color) => new THREE.MeshBasicMaterial({ color });
@@ -64,21 +64,24 @@ function makeOncomingBus() {
     // bus.glb は原点=後軸中心(車体 z -2.6..8.9)なので車体中心を holder 原点へ
     node.position.set(0, 0, -3.15);
     holder.add(node);
-    // 方向幕: 北行き「18 二条駅西口」
+    // 方向幕: 北行き「二条駅西口 | 18」。系統番号は右端の水色矩形に白字。
     const cv = document.createElement('canvas');
     cv.width = 512;
     cv.height = 128;
     const c2 = cv.getContext('2d');
     c2.fillStyle = '#0d1116';
     c2.fillRect(0, 0, 512, 128);
+    const numBoxX = 392;
+    c2.fillStyle = '#3fa9dc';
+    c2.fillRect(numBoxX, 0, 512 - numBoxX, 128);
     c2.fillStyle = '#ffffff';
-    c2.font = 'bold 92px sans-serif';
     c2.textBaseline = 'middle';
-    c2.fillText('18', 28, 70);
+    c2.textAlign = 'center';
+    c2.font = 'bold 78px sans-serif';
+    c2.fillText('18', numBoxX + (512 - numBoxX) / 2, 68);
     c2.fillStyle = '#ffb43c';
     c2.font = 'bold 52px sans-serif';
-    c2.textAlign = 'center';
-    c2.fillText('二条駅西口', 330, 64);
+    c2.fillText('二条駅西口', 196, 64);
     const tex = new THREE.CanvasTexture(cv);
     tex.colorSpace = THREE.SRGBColorSpace;
     const sign = new THREE.Mesh(
@@ -213,20 +216,50 @@ export function buildTraffic(scene, path, events = {}) {
   // ================= 車両 =================
   /** dir: +1=同方向(道路左側) / -1=対向(右側)。laneIdx: 0=センター寄り, 1=外側 */
   function laneLat(s, dir, laneIdx = 0) {
-    const lanes = lanesAt(s);
-    const HW = halfWidthAt(s);
-    const half = Math.max(1, Math.floor(lanes / 2));
-    const usable = HW - 0.55;
-    const li = Math.min(laneIdx, half - 1);
-    const mag = (usable * (li + 0.5)) / half;
-    if (dir === 1) return -mag;
+    if (dir === 1) {
+      const n = fwdLanesAt(s);
+      const li = Math.min(laneIdx, n - 1);
+      if (backLanesAt(s) === 0) {
+        // 一方通行: 道路全幅を n 車線で使う(1車線なら中央)
+        const wL = leftWidthAt(s), wR = rightWidthAt(s);
+        return -wL + 0.55 + ((wL + wR - 1.1) * (li + 0.5)) / n;
+      }
+      return -(((leftWidthAt(s) - 0.55) * (li + 0.5)) / n);
+    }
+    const nB = backLanesAt(s);
+    if (nB === 0) return null; // 一方通行区間に対向車は入れない
+    const li = Math.min(laneIdx, nB - 1);
+    const mag = ((rightWidthAt(s) - 0.55) * (li + 0.5)) / nB;
     // 対向車はやや外側に寄せる(狭い2車線での自車とのすれ違い余裕)。急カーブではさらに外へ
     const curveOut = Math.min(0.9, Math.abs(path.curvatureAt(s)) * 22);
     return mag + 0.4 + curveOut;
   }
 
+  // 区間境界(車線数・幅員の変化点)をまたぐ際、laneLat の目標横位置が瞬時に切り替わって
+  // 車が横揺れして見えるのを防ぐため、境界前後 LANE_BLEND [m] で前後区間の値を線形補間する
+  // (千本三条 s≈726.2 の3→1車線への合流など、短距離に複数の境界が連続する箇所で特に有効)。
+  const LANE_BLEND = 20;
+  const SECTION_BOUNDARIES = (route.roadSections ?? [])
+    .map((sec) => sec.to)
+    .filter((b) => b > 0 && b < path.length);
+  function smoothLaneLat(s, dir, laneIdx) {
+    for (const b of SECTION_BOUNDARIES) {
+      if (s <= b - LANE_BLEND || s >= b + LANE_BLEND) continue;
+      const before = laneLat(b - LANE_BLEND - 0.1, dir, laneIdx);
+      const after = laneLat(b + LANE_BLEND + 0.1, dir, laneIdx);
+      if (before == null || after == null) break; // 一方通行境界等は従来ロジックへ委譲
+      const t = Math.min(1, Math.max(0, (s - (b - LANE_BLEND)) / (2 * LANE_BLEND)));
+      return before + (after - before) * t;
+    }
+    return laneLat(s, dir, laneIdx);
+  }
+
   // 二条駅前ロータリー(急カーブ・狭隘)には一般車を入れない
   const TRAFFIC_MIN_S = 360;
+
+  // 対向車(北行き)はこの2交差点(府道201号線・(34.9554,135.7422)地点)を越えて北上せず、
+  // 西へ左折して経路上から消える(=この地点より北側には南から来た対向車が現れない)
+  const TURNOFF_S = [6598.7, 7672.5];
 
   // 右左折交差点の交錯ゾーン(近接ターンは連結: 狭隘路のS字ジョグ等)
   const turnZones = [];
@@ -236,7 +269,7 @@ export function buildTraffic(scene, path, events = {}) {
     else turnZones.push({ from: t.sIn, to: t.sOut });
   }
 
-  const ONCOMING_DEFS = [
+  const ONCOMING_BASE = [
     { make: () => makeCar(0xd8dde2), hitR: 2.0, vMax: 11 },
     { make: () => makeCar(0x7a1f24), hitR: 2.0, vMax: 11.5 },
     { make: () => makeTruck(0x2e5e8c), hitR: 2.35, vMax: 10 },
@@ -250,7 +283,7 @@ export function buildTraffic(scene, path, events = {}) {
     { make: () => makeTruck(0xd8d8d2), hitR: 2.35, vMax: 10 },
     { make: () => makeCar(0x6f8091), hitR: 2.0, vMax: 12 },
   ];
-  const SAME_DEFS = [
+  const SAME_BASE = [
     { make: () => makeCar(0xe2e4e6), hitR: 2.0, vMax: 11 },
     { make: () => makeCar(0x3f5e48), hitR: 2.0, vMax: 10.5 },
     { make: () => makeTruck(0x7d8288), hitR: 2.35, vMax: 9.5 },
@@ -258,14 +291,32 @@ export function buildTraffic(scene, path, events = {}) {
     { make: () => makeCar(0xcfc4a2), hitR: 2.0, vMax: 10.5 },
     { make: () => makeTruck(0x8c3a2e), hitR: 2.35, vMax: 9.5 },
   ];
+  // 片側2車線以上の区間では対向車・同行車を5倍の体感密度にするため、車種バリエーションを
+  // 使い回しつつプールを拡張する(リスポーン位置は多車線区間へ寄せる。1車線区間は従来並み)。
+  const DENSITY_FACTOR = 5;
+  const expandDefs = (base) => Array.from({ length: base.length * DENSITY_FACTOR }, (_, i) => base[i % base.length]);
+  const ONCOMING_DEFS = expandDefs(ONCOMING_BASE);
+  const SAME_DEFS = expandDefs(SAME_BASE);
+
+  // sBase 付近(±searchRange)で片側2車線以上の区間があればそこへ寄せたsを返す
+  function nearMultiLane(sBase, searchRange = 500, step = 25) {
+    const qualifies = (s) => s >= 0 && s <= path.length && fwdLanesAt(s) >= 2 && backLanesAt(s) >= 2;
+    if (qualifies(sBase)) return sBase;
+    for (let d = step; d <= searchRange; d += step) {
+      if (qualifies(sBase + d)) return sBase + d;
+      if (qualifies(sBase - d)) return sBase - d;
+    }
+    return sBase; // 近傍に多車線区間が無ければそのまま(1車線区間は疎らな密度を維持)
+  }
 
   const cars = [];
   ONCOMING_DEFS.forEach((def, i) => {
-    cars.push(spawnCar(def, -1, ((i + 1) / (ONCOMING_DEFS.length + 1)) * path.length, i % 2));
+    const sBase = ((i + 1) / (ONCOMING_DEFS.length + 1)) * path.length;
+    cars.push(spawnCar(def, -1, nearMultiLane(sBase), i % 2));
   });
   SAME_DEFS.forEach((def, i) => {
     // 自車(始発)の前方に並べる。走行中はリスポーンで前後に維持される
-    cars.push(spawnCar(def, 1, 400 + i * 180, i % 2));
+    cars.push(spawnCar(def, 1, nearMultiLane(400 + i * 180), i % 2));
   });
 
   function spawnCar(def, dir, s, laneIdx) {
@@ -279,8 +330,43 @@ export function buildTraffic(scene, path, events = {}) {
       s: Math.max(360, Math.min(path.length - 15, s)),
       v: 6,
       latCur: null,
-      passTimer: 0,
     };
+  }
+
+  // ================= 交差点(自ルート外の交差道路)を横切る他車 =================
+  // route.intersections(信号との対応)を利用し、交差する道路上にも信号に従う他車を走らせる。
+  // 交差道路自体の実ジオメトリは持たないため、交差点中心(path.getPoint(ix.s))を基準に
+  // ix.heading 方向の直線上を往復させる簡易表現(スタブ道路の長さの範囲内)。
+  const CROSS_DEFS = [
+    () => makeCar(0xb9bec4),
+    () => makeCar(0x5b3a3a),
+    () => makeTruck(0x7d8288),
+    () => makeCar(0x33465e),
+    () => makeCar(0xc8c0a8),
+  ];
+  const crossCars = [];
+  function spawnCrossCar(ix, sig, dir) {
+    const inner = CROSS_DEFS[crossCars.length % CROSS_DEFS.length]();
+    const outer = new THREE.Group();
+    outer.add(inner);
+    g.add(outer);
+    const range = Math.max(16, Math.min(60, (ix.length ?? 40) / 2 - 4));
+    return {
+      ix, sig, dir, range,
+      off: (Math.random() * 1.6 - 0.8) * range,
+      v: 6, vMax: 7 + Math.random() * 3,
+      outer, inner,
+    };
+  }
+  for (const sig of signals) {
+    let nearestIx = null, bestD = 28;
+    for (const ix of route.intersections ?? []) {
+      const d = Math.abs(ix.s - sig.s);
+      if (d < bestD) { bestD = d; nearestIx = ix; }
+    }
+    if (!nearestIx) continue;
+    crossCars.push(spawnCrossCar(nearestIx, sig, 1));
+    crossCars.push(spawnCrossCar(nearestIx, sig, -1));
   }
 
   let collisionCooldown = 0;
@@ -335,7 +421,13 @@ export function buildTraffic(scene, path, events = {}) {
         }
 
         // 同行車: 自車(プレイヤーのバス)との車間・追い越し
-        let latT = laneLat(c.s, c.dir, c.laneIdx);
+        let latT = smoothLaneLat(c.s, c.dir, c.laneIdx);
+        const inOneway = latT == null; // 対向車が一方通行区間に入った → 実在しないのでリスポーン
+        if (inOneway) latT = c.latCur ?? 2.5;
+        // 対向車: 府道201号線・(34.9554,...)地点で西へ左折させる(その交差点通過時のみ)。
+        // th以下すべてで真にすると北側の対向車が全滅するので、交差点手前60m以内の帯域に限定する。
+        const turnedOff = c.dir === -1 && TURNOFF_S.some((th) => c.s <= th && c.s > th - 60);
+        if (turnedOff) latT = c.latCur ?? 2.5;
         // 対向車: 狭い2車線でバスと接近したら減速して外側に待避(狭隘路の譲り合い)
         if (c.dir === -1 && lanesAt(c.s) <= 2) {
           const ahead = c.s - busS; // すれ違い前は正
@@ -358,17 +450,9 @@ export function buildTraffic(scene, path, events = {}) {
         if (c.dir === 1) {
           const gapBus = busS - c.s;
           const sameLane = Math.abs((c.latCur ?? latT) - laneLat(c.s, 1, 1)) < 2.2 || lanesAt(c.s) <= 2;
-          if (gapBus > -16 && gapBus < 55 && sameLane) {
-            if (gapBus > 0 && busV < 1.5 && !busHeldAtSignal && lanesAt(c.s) <= 2 && gapBus < 30) {
-              c.passTimer = 5; // バスが客扱い等で停車中 → 対向車線側から追い越す
-            }
-            if (c.passTimer <= 0 && gapBus > 0) {
-              vT = Math.min(vT, Math.max(0, (gapBus - 11) * 0.55)); // 車間維持
-            }
-          }
-          if (c.passTimer > 0) {
-            c.passTimer -= dt;
-            if (gapBus > -16) latT = laneLat(c.s, 1, 0) + 3.3; // はみ出して通過
+          // 1車線(片道1車線)の道ではバスが停車中でも追い越さず、そのまま後ろで待つ
+          if (gapBus > -16 && gapBus < 55 && sameLane && gapBus > 0) {
+            vT = Math.min(vT, Math.max(0, (gapBus - 11) * 0.55)); // 車間維持
           }
         }
 
@@ -377,17 +461,24 @@ export function buildTraffic(scene, path, events = {}) {
         c.v += (vT - c.v) * Math.min(1, dt * rate);
         c.s += c.v * dt * c.dir;
 
-        // リスポーン: 経路端・駅前ロータリー・自車から離れすぎ → 自車の周辺へ(同行車は前後に混ぜる)
+        // リスポーン: 経路端・駅前ロータリー・自車から離れすぎ・一方通行進入・左折地点通過 → 自車の周辺へ
         const rel = (c.s - busS) * 1;
-        if (c.s < TRAFFIC_MIN_S || c.s > path.length - 15 || Math.abs(rel) > 1800) {
+        if (c.s < TRAFFIC_MIN_S || c.s > path.length - 15 || Math.abs(rel) > 1800 || inOneway || turnedOff) {
           if (c.dir === 1) {
             const behind = Math.random() < 0.4;
             const off = behind ? -(160 + Math.random() * 380) : 250 + Math.random() * 900;
-            c.s = Math.max(TRAFFIC_MIN_S, Math.min(path.length - 15, busS + off));
-          } else c.s = Math.max(TRAFFIC_MIN_S, Math.min(path.length - 15, busS + 400 + Math.random() * 1200));
+            const s1 = Math.max(TRAFFIC_MIN_S, Math.min(path.length - 15, busS + off));
+            c.s = nearMultiLane(s1, 300); // 片側2車線以上の区間があれば近傍で密度を上げる
+          } else {
+            // 対向車は一方通行(対向車線なし)の区間を避け、片側2車線以上の区間に寄せて配置
+            let s2 = nearMultiLane(Math.max(TRAFFIC_MIN_S, Math.min(path.length - 15, busS + 400 + Math.random() * 1200)), 300);
+            for (let k = 0; k < 40 && backLanesAt(s2) === 0; k++) s2 = Math.min(path.length - 15, s2 + 60);
+            if (backLanesAt(s2) === 0) s2 = Math.max(TRAFFIC_MIN_S, busS - 300); // 前方に空きがなければ後方
+            c.s = s2;
+          }
           c.v = 6;
-          c.passTimer = 0;
           c.latCur = null;
+          latT = laneLat(c.s, c.dir, c.laneIdx) ?? 0;
         }
 
         // 横位置(レーンチェンジは滑らかに)
@@ -411,6 +502,27 @@ export function buildTraffic(scene, path, events = {}) {
         }
       }
       collisionCooldown = Math.max(0, collisionCooldown - dt);
+
+      // ---- 交差点(自ルート外)の他車: 信号(交差方向)に従って往復 ----
+      for (const cc of crossCars) {
+        let vT = cc.vMax;
+        const distToLine = -cc.off * cc.dir; // 交差点中心までの残距離(正=未到達)
+        if (cc.sig.crossState !== 'green' && distToLine > 1 && distToLine < 20) {
+          vT = Math.min(vT, Math.max(0, Math.sqrt(Math.max(0, 2 * 1.8 * (distToLine - 3)))));
+        }
+        cc.v += (vT - cc.v) * Math.min(1, dt * 2.2);
+        cc.off += cc.v * dt * cc.dir;
+        if (cc.off > cc.range || cc.off < -cc.range) {
+          cc.off = -Math.sign(cc.dir) * cc.range;
+          cc.v = 6;
+        }
+        const s = Math.max(0, Math.min(path.length, cc.ix.s));
+        const [px, pz] = path.getPoint(s);
+        const hx = Math.sin(cc.ix.heading), hz = Math.cos(cc.ix.heading);
+        const laneOff = 2.6 * (cc.dir > 0 ? 1 : -1); // 左側通行(進行方向の左に寄せる)
+        cc.outer.position.set(px + hx * cc.off + hz * laneOff, elevationAt(s), pz + hz * cc.off - hx * laneOff);
+        cc.outer.rotation.y = cc.dir > 0 ? cc.ix.heading : cc.ix.heading + Math.PI;
+      }
     },
     /** autoDrive 用: 前方の同方向車(同一レーン近傍)までの車間 [m](なければ null) */
     leadGapAhead(busS, busLat, maxDist = 60) {

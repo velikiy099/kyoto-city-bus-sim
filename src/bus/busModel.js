@@ -53,7 +53,7 @@ export function createBusModel() {
     (err) => console.error('bus.glb の読み込みに失敗', err)
   );
 
-  // 方向幕(前面・側面): 「18 横大路 久我石原町」Canvasテクスチャ
+  // 方向幕(前面・側面): 「横大路 久我石原町 | 18」Canvasテクスチャ。系統番号は右端の水色矩形。
   function addSigns(parent) {
     const cv = document.createElement('canvas');
     cv.width = 512;
@@ -61,16 +61,20 @@ export function createBusModel() {
     const cx2 = cv.getContext('2d');
     cx2.fillStyle = '#0d1116';
     cx2.fillRect(0, 0, 512, 128);
+    const numBoxX = 392;
+    cx2.fillStyle = '#3fa9dc';
+    cx2.fillRect(numBoxX, 0, 512 - numBoxX, 128);
     cx2.fillStyle = '#ffffff';
-    cx2.font = 'bold 92px sans-serif';
     cx2.textBaseline = 'middle';
-    cx2.fillText('18', 28, 70);
+    cx2.textAlign = 'center';
+    cx2.font = 'bold 78px sans-serif';
+    cx2.fillText('18', numBoxX + (512 - numBoxX) / 2, 68);
     cx2.font = 'bold 15px sans-serif';
     cx2.fillStyle = '#ffb43c';
-    cx2.textAlign = 'center';
-    cx2.fillText('横 大 路', 330, 30);
-    cx2.font = 'bold 52px sans-serif';
-    cx2.fillText('久我石原町', 330, 82);
+    cx2.fillText('横 大 路', 196, 30);
+    cx2.fillStyle = '#ffffff';
+    cx2.font = 'bold 48px sans-serif';
+    cx2.fillText('久我石原町', 196, 82);
     const signTex = new THREE.CanvasTexture(cv);
     signTex.colorSpace = THREE.SRGBColorSpace;
     const headsign = new THREE.Mesh(

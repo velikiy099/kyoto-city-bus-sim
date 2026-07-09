@@ -66,13 +66,26 @@ function projectPoint(pt) {
   return { s: bs, dist: Math.sqrt(bd) };
 }
 
-// roadSections から半幅(routeData.halfWidthAt と同式)
-const hwAt = (s) => {
+// roadSections から左右幅(routeData.sectionAt と同式。旧形式にもフォールバック)
+const secAt = (s) => {
   for (const sec of data.roadSections ?? []) {
-    if (s >= sec.from && s < sec.to) return Math.max(4.0, Math.max(2, sec.lanes || 2) * 1.6 + 0.8);
+    if (s >= sec.from && s < sec.to) {
+      const hw = Math.max(4.0, Math.max(2, sec.lanes || 2) * 1.6 + 0.8);
+      return { wL: sec.wL ?? hw, wR: sec.wR ?? hw, center: sec.center ?? 'line', lanesB: sec.lanesB ?? 1 };
+    }
   }
-  return 4.0;
+  return { wL: 4.0, wR: 4.0, center: 'line', lanesB: 1 };
 };
+const hwAt = (s) => Math.max(secAt(s).wL, secAt(s).wR);
+/** 点の経路に対する符号付き横位置(右=正)とその側の路面幅 */
+function sideWidthAt(pt) {
+  const proj = projectPoint(pt);
+  const [qx, qz] = pointAt(proj.s);
+  const h = headingAt(proj.s);
+  const lat = (pt[0] - qx) * -Math.cos(h) + (pt[1] - qz) * Math.sin(h);
+  const sec = secAt(proj.s);
+  return { s: proj.s, dist: proj.dist, need: lat < 0 ? sec.wL : sec.wR };
+}
 
 const STUB_LEN = 42; // road.js の addTurnIntersections と同値
 
@@ -107,9 +120,9 @@ if (CHECK) {
     if (!sig.heads?.length) { report('WARN', `信号 s=${sig.s} に heads がない`); continue; }
     for (const h of sig.heads) {
       const p = h.pole;
-      const proj = projectPoint(p);
-      if (proj.dist < hwAt(proj.s) - 0.3) {
-        report('FAIL', `信号柱が本線路面上: s=${sig.s} ${h.kind} pole=(${p[0]}, ${p[1]}) 路面中心まで${proj.dist.toFixed(1)}m < 半幅${hwAt(proj.s)}`);
+      const proj = sideWidthAt(p);
+      if (proj.dist < proj.need - 0.3) {
+        report('FAIL', `信号柱が本線路面上: s=${sig.s} ${h.kind} pole=(${p[0]}, ${p[1]}) 路面中心まで${proj.dist.toFixed(1)}m < 幅${proj.need}`);
       }
       for (const arm of arms) {
         if (inArm(p, arm, -0.3)) {
@@ -204,22 +217,33 @@ for (const t of data.turnIntersections ?? []) {
   for (const arm of turnArms(t)) poly(rectPts(arm.cx, arm.cz, arm.heading, arm.from, arm.to, arm.hw), '#4a4f55');
 }
 
-// ---- 本線路面(区間ごとに幅を変えて描く) ----
+// ---- 本線路面(区間ごとに左右非対称の帯ポリゴンで描く) ----
+function offsetPt(s, lat) {
+  const [px, pz] = pointAt(s);
+  const h = headingAt(s);
+  return [px + -Math.cos(h) * lat, pz + Math.sin(h) * lat];
+}
 for (const sec of data.roadSections ?? [{ from: 0, to: totalLength, lanes: 2 }]) {
   const from = Math.max(sec.from, S_FROM - 60), to = Math.min(sec.to, S_TO === Infinity ? totalLength : S_TO + 60);
   if (to <= from) continue;
-  const hw = Math.max(4.0, Math.max(2, sec.lanes || 2) * 1.6 + 0.8);
+  const { wL, wR } = secAt((from + to) / 2);
+  const left = [], right = [];
+  for (let s = from; s <= to; s += 4) {
+    left.push(offsetPt(Math.min(s, to), -wL));
+    right.push(offsetPt(Math.min(s, to), wR));
+  }
+  poly([...left, ...right.reverse()], '#4a4f55');
+}
+// センターライン(センターラインなし・一方通行区間は破線色を変えて示す)
+for (const sec of data.roadSections ?? [{ from: 0, to: totalLength, lanes: 2 }]) {
+  const from = Math.max(sec.from, S_FROM - 60), to = Math.min(sec.to, S_TO === Infinity ? totalLength : S_TO + 60);
+  if (to <= from) continue;
+  const spec = secAt((from + to) / 2);
   const pts = [];
   for (let s = from; s < to; s += 4) pts.push(pointAt(s));
   pts.push(pointAt(to));
-  el.push(`<polyline points="${pts.map((p) => `${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(' ')}" fill="none" stroke="#4a4f55" stroke-width="${(hw * 2).toFixed(1)}" stroke-linejoin="round" stroke-linecap="butt"/>`);
-}
-// センターライン
-{
-  const from = Math.max(0, S_FROM - 60), to = Math.min(totalLength, S_TO === Infinity ? totalLength : S_TO + 60);
-  const pts = [];
-  for (let s = from; s < to; s += 4) pts.push(pointAt(s));
-  el.push(`<polyline points="${pts.map((p) => `${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(' ')}" fill="none" stroke="#d8a017" stroke-width="0.4"/>`);
+  const hasCenter = spec.lanesB > 0 && spec.center !== 'none';
+  el.push(`<polyline points="${pts.map((p) => `${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(' ')}" fill="none" stroke="${hasCenter ? '#d8a017' : '#8a8f94'}" stroke-width="0.4" ${hasCenter ? '' : 'stroke-dasharray="3,3"'}/>`);
 }
 
 // ---- 線路 ----

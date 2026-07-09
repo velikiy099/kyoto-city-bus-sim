@@ -23,7 +23,10 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const CACHE = join(ROOT, 'tools', 'cache');
 const OUT = join(ROOT, 'src', 'data', 'route18.json');
 const RELATION_ID = 13027168;
-const OVERPASS = 'https://overpass-api.de/api/interpreter';
+const OVERPASS_ENDPOINTS = [
+  'https://overpass-api.de/api/interpreter',
+  'https://overpass.kumi.systems/api/interpreter',
+];
 
 // 距離スケール: 実距離に乗算。1.0 で OSM 実距離どおり。
 const SCALE = 1.0;
@@ -39,6 +42,9 @@ const BUILDINGS_PER_BIN = 15;
 const MAX_BUILDINGS = 1400;
 const RAILWAY_BBOX = [34.982, 135.744, 34.9895, 135.752]; // 七条大宮〜東寺東門前のJR線群
 const ROAD_TYPES = ['primary', 'secondary', 'tertiary', 'unclassified', 'residential', 'service'];
+// DETOUR_SOUTHBOUND(小枝橋→城南宮道→赤池→塔ノ森)はハードコード座標のため routeNodesQuery
+// の「経路ノード周辺」取得に乗らず、周辺道路・建物が一切取れない。bboxで直接補う。
+const DETOUR_BBOX = [34.9430, 135.7350, 34.9560, 135.7460]; // [south, west, north, east]
 
 // 南行きの公式停留所順(京都市交通局 時刻表より、城南宮道経由・全区間便)
 const STOP_ORDER = [
@@ -58,11 +64,44 @@ const EXTRA_STOPS = {
   '赤池': [34.9473836, 135.7430396],     // node 8955892665
 };
 
-// 南行き専用区間(小枝橋→上鳥羽塔ノ森): 千本通の実 way 形状
-// way 621847400(逆順) + way 217638202(逆順) + 交差点接続
+// 南行きと北行きで停車位置(道)が異なる停留所: 南行きプラットフォームのOSM実測座標で上書き
+const SOUTHBOUND_STOP_OVERRIDES = {
+  '千本十条': [34.973279, 135.7422175],       // node 8955892643(十条通 南側)
+  '五丁橋': [34.9705886, 135.7426048],        // node 8955892645(旧千本通)
+  '上ノ町': [34.9673125, 135.7425638],        // node 8955892647(旧千本通)
+  '上鳥羽村山町': [34.96565, 135.74247],      // 北行きのみ停車。データ整合のため旧千本通上へ射影
+  '上鳥羽小学校前': [34.9643776, 135.7424912], // node 8955892650
+  '地蔵前': [34.9585329, 135.7430509],        // node 8955892656(一方通行南行き側)
+  '奈須野': [34.9561146, 135.7425598],        // node 8955892658(一方通行南行き側)
+  '小枝橋': [34.9540361, 135.7415567],        // node 8955892661
+};
+
+// 南行き専用区間1(十条新千本→十条通を東進→十条旧千本→旧千本通を南進)
+// 北行きは新千本通を通るため、南行きの実経路を way 実形状で差し替える。
+// way ID を南行きの通過順に列挙(向きは連結時に自動判定)
+const JUJO_WAY_IDS = [
+  968070106, // 十条通り: 新千本通交点 → 東
+  968070105, // 十条通り: → 旧千本通交点(十条旧千本)
+  27211283,  // 千本通(旧): 十条旧千本 → 南(一方通行)
+  1061759843, // 千本通: → 中山稲荷線(府道201)
+  968070098, // 千本通: 府道201 → 南(2車線・センターラインなし)
+  63124503,  // 千本通: → 地蔵前手前交差点
+  116803173, // 千本通: 一方通行区間(地蔵前手前 → 34.9554 の合流部)
+];
+const JUJO_FROM = [34.9736, 135.7414];  // 差し替え開始: 新千本通・十条通の手前
+const JUJO_TO = [34.9554039, 135.7421815]; // 差し替え終了: 一方通行南端の合流点
+
+// 南行き専用区間(千本通西側→小枝橋(鴨川)→城南宮道→赤池→上鳥羽塔ノ森): 実 way 形状
+// 小枝橋(man_made=bridge, name=小枝橋)の実位置は lat≈34.9511 で、停留所(lat≈34.9541)
+// から更に南下した地点(千本通西側の way 1061759795 終点)にある。旧データはこれを
+// 停留所直近(lat 34.9528)と誤認し、橋の手前約330mを直線でショートカットしていた。
+// way 621847405(小枝橋・実走行方向) + way 621847400(逆順) + way 217638202(逆順)
+// + 伏見向日線(968070101→27829717→27829722→27829721→968070099、赤池〜塔ノ森)
 const DETOUR_SOUTHBOUND = [
-  [34.95280, 135.74240],   // 小枝橋から城南宮道への接続部
-  [34.951343, 135.742935], // 以下 way 621847400 逆順
+  [34.9511124, 135.7413116], // 千本通(西側)から小枝橋(鴨川)西詰への連結点
+  [34.9511333, 135.7414445], // 以下 小枝橋(way 621847405)
+  [34.9513353, 135.7427624], // 橋東詰
+  [34.951343, 135.742935],   // 以下 way 621847400 逆順
   [34.9512693, 135.7429352],
   [34.9512193, 135.7429323],
   [34.9506648, 135.7427628],
@@ -81,16 +120,29 @@ const DETOUR_SOUTHBOUND = [
   [34.946756, 135.7429658],
   [34.9465764, 135.7429866],
   [34.9464497, 135.7430095], // 赤池交差点
-  [34.94655, 135.74200],     // 西進して上鳥羽塔ノ森へ
-  [34.94670, 135.73950],
+  [34.9464652, 135.7413228], // 以下 伏見向日線(実 way 形状)を西進して上鳥羽塔ノ森へ
+  [34.9464362, 135.7399997],
+  [34.9464338, 135.7398396],
+  [34.9464276, 135.7392257],
 ];
-const DETOUR_FROM = [34.9543, 135.7417]; // 差し替え開始: 小枝橋停留所付近
-const DETOUR_TO = [34.94648, 135.73915]; // 差し替え終了: 塔ノ森南の合流点
+const DETOUR_FROM = [34.9511124, 135.7413116]; // 差し替え開始: 千本通(西側)・小枝橋西詰
+const DETOUR_TO = [34.9464291, 135.7391553]; // 差し替え終了: 伏見向日線・塔ノ森手前の合流点
 
 // 橋(名称, 実座標アンカー, 実長[m]) — s値はスクリプトが経路射影で算出
+// アンカーは各河川(OSM waterway)の実ポリラインと経路の交点を実測して求めた値。
 const BRIDGES = [
-  { name: '小枝橋(鴨川)', anchor: [34.9553, 135.7420], realLength: 60 },
-  { name: '久我橋(桂川)', anchor: [34.9459, 135.7358], realLength: 340 },
+  { name: '小枝橋(鴨川)', anchor: [34.95120, 135.74216], realLength: 60 },
+  { name: '京川橋(鴨川)', anchor: [34.94664, 135.74047], realLength: 46 },
+  { name: '天神橋(西高瀬川)', anchor: [34.94668, 135.73948], realLength: 18 },
+  { name: '久我橋(桂川)', anchor: [34.94570, 135.73607], realLength: 340 },
+];
+
+// 名神高速道路の高架(片道3車線)。アンカーは実際の名神ルート(OSM)と経路の交点。
+// 見出しは経路接線に直交させる(名神自体はほぼ直線だが、経路側のカーブにより実測角度
+// (-65°付近)をそのまま使うと片方の交差点で浅くなるため、立体交差として自然な直交で描く)。
+const HIGHWAY_CROSSINGS = [
+  { name: '名神高速道路(鴨川・小枝橋付近)', anchor: [34.95228, 135.74118] },
+  { name: '名神高速道路(桂川・菱妻神社付近)', anchor: [34.94773, 135.72919] },
 ];
 
 // 制限速度ゾーン(停留所名アンカー、[km/h])
@@ -102,22 +154,79 @@ const SPEED_ZONES = [
   { fromStop: '久我', toStop: null, limit: 40 },             // 久我地区
 ];
 
+// ---------------- 車線プラン(実走調査による手動定義) ----------------
+// 南行き=F(バス進行方向)、北行き=B。B=0 は一方通行。center:'none' はセンターラインなし。
+// to: 区間終端の実座標アンカー。null は路線終端まで。区間はルート順。
+const LANE_PLAN = [
+  { to: '三条通', F: 2, B: 2, name: '千本通(三条以北)' },
+  { to: '四条通', F: 1, B: 1, name: '千本通・後院通(三条〜四条大宮)' },
+  { to: '七条通', F: 2, B: 2, name: '大宮通(四条〜七条)' },
+  { to: [34.97938, 135.74931], F: 3, B: 3, name: '大宮通(七条〜九条・跨線橋)' },
+  { to: [34.97880, 135.74145], F: 2, B: 2, name: '九条通' },
+  { to: [34.97340, 135.74140], F: 1, B: 1, name: '新千本通' },
+  { to: [34.97335, 135.74254], F: 2, B: 2, name: '十条通' },
+  { to: [34.96477, 135.74247], F: 1, B: 0, sidewalk: 'none', name: '旧千本通(十条旧千本〜府道201・一方通行)' },
+  { to: [34.95866, 135.74266], F: 1, B: 1, center: 'none', sidewalk: 'none', name: '旧千本通(府道201〜地蔵前手前)' },
+  { to: [34.95540, 135.74218], F: 1, B: 0, sidewalk: 'none', name: '旧千本通(地蔵前手前〜合流・一方通行)' },
+  { to: [34.95066, 135.74276], F: 1, B: 1, center: 'none', name: '鳥羽街道(〜羽束師墨染線)' },
+  { to: [34.95055, 135.74315], F: 2, B: 2, name: '羽束師墨染線(ジョグ)' },
+  { to: [34.94645, 135.74301], F: 1, B: 1, name: '城南宮道通り(〜赤池)' },
+  { to: null, F: 1, B: 1, name: '府道202(赤池〜久我石原町)' },
+];
+const LANE_W = 3.2; // 1車線幅 [m]
+
+// 右折車線ゾーン: 範囲内の信号交差点の進入方向に+1車線(千本通北部=計5、府道202=計3 等)
+const APPROACH_ZONES = [
+  { from: [35.01170, 135.74250], to: '三条通', len: 65, name: '千本三条以北' },
+  { from: [34.97938, 135.74931], to: [34.97880, 135.74145], len: 65, name: '九条通' },
+  { from: [34.94645, 135.74301], to: [34.94570, 135.73270], len: 55, name: '府道202(久我以東)' },
+];
+
+// 交差道路の実勢オーバーライド(交差点スタブの幅・車線数を交通量調査どおりに)
+const INTERSECTION_OVERRIDES = [
+  { name: '四条通', lanes: 5, width: 17.6 },                                // 片道2+右折で計5
+  { name: '五条大宮', label: '五条通', lanes: 9, width: 30.8, median: 1 },   // 片道4+中央分離帯、交差点付近計9
+  { name: '七条通', lanes: 4, width: 14.4 },                                // 片道2
+  { name: '壬生通', label: '京阪国道口(国道1号)', lanes: 5, width: 17.6 },  // 北行1+南行2+右折で計5
+];
+
+// 右左折交差点の脚オーバーライド(vertex 近傍の実座標でマッチ)
+const TURN_OVERRIDES = [
+  { anchor: [34.97938, 135.74931], stubInHw: 4.0, crossWidth: 8.0, crossLanes: 2 }, // 九条大宮: 大宮通(九条以南)は片道1
+  { anchor: [34.95066, 135.74276], crossWidth: 17.6, crossLanes: 5 }, // 羽束師墨染線(西側)片道2+右折
+  { anchor: [34.95055, 135.74315], crossWidth: 17.6, crossLanes: 5 }, // 羽束師墨染線(南側)
+];
+
 // ---------------------------------------------------------------- utilities
 
-async function fetchJson(url, body) {
-  const res = await fetch(url, {
-    method: body ? 'POST' : 'GET',
-    headers: {
-      Accept: 'application/json',
-      'User-Agent': 'cc-sample-game-route-builder/0.1 (OpenStreetMap data refresh)',
-    },
-    body: body ? new URLSearchParams({ data: body }) : undefined,
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(`HTTP ${res.status} for ${url}${text ? `: ${text.slice(0, 500)}` : ''}`);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Overpass はレート制限(429)が頻発するためミラー横断+バックオフで再試行する
+async function fetchJson(_url, body) {
+  let lastErr = null;
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const url = OVERPASS_ENDPOINTS[attempt % OVERPASS_ENDPOINTS.length];
+    try {
+      const res = await fetch(url, {
+        method: body ? 'POST' : 'GET',
+        headers: {
+          Accept: 'application/json',
+          'User-Agent': 'cc-sample-game-route-builder/0.1 (OpenStreetMap data refresh)',
+        },
+        body: body ? new URLSearchParams({ data: body }) : undefined,
+      });
+      if (res.ok) return res.json();
+      const text = await res.text().catch(() => '');
+      lastErr = new Error(`HTTP ${res.status} for ${url}${text ? `: ${text.slice(0, 300)}` : ''}`);
+      if (res.status !== 429 && res.status !== 504) throw lastErr;
+    } catch (e) {
+      lastErr = e;
+    }
+    const wait = 8000 * (attempt + 1);
+    console.log(`  retry in ${wait / 1000}s (${lastErr.message.slice(0, 80)})`);
+    await sleep(wait);
   }
-  return res.json();
+  throw lastErr;
 }
 
 function loadCachedOrFetch(file, query) {
@@ -127,7 +236,7 @@ function loadCachedOrFetch(file, query) {
     return Promise.resolve(JSON.parse(readFileSync(path, 'utf8')));
   }
   console.log(`  fetching from Overpass: ${file} ...`);
-  return fetchJson(OVERPASS, query).then((data) => {
+  return fetchJson(null, query).then((data) => {
     mkdirSync(CACHE, { recursive: true });
     writeFileSync(path, JSON.stringify(data));
     return data;
@@ -187,6 +296,27 @@ function connectWays(ways) {
     throw new Error(`way連結失敗: ${used.size}/${segs.length} 本のみ連結`);
   }
   return line;
+}
+
+/** way を指定順に連結(各 way の向きは前の終端との距離で自動判定) */
+function chainOrderedWays(ways, entry) {
+  let line = [];
+  let cursor = entry;
+  for (const w of ways) {
+    let seg = w.geometry.map((p) => [p.lat, p.lon]);
+    if (dist2(seg.at(-1), cursor) < dist2(seg[0], cursor)) seg = [...seg].reverse();
+    line = line.concat(line.length ? seg.slice(1) : seg);
+    cursor = line.at(-1);
+  }
+  return line;
+}
+
+/** line の from〜to 区間を detour で差し替える */
+function spliceDetour(line, detour, from, to, label) {
+  const iFrom = nearestIndex(line, from);
+  const iTo = nearestIndex(line, to);
+  if (!(iFrom < iTo)) throw new Error(`差し替え区間の探索失敗(${label}) iFrom=${iFrom} iTo=${iTo}`);
+  return [...line.slice(0, iFrom + 1), ...detour, ...line.slice(iTo)];
 }
 
 const nearestIndex = (line, pt) => {
@@ -397,39 +527,103 @@ function routeHeadingAt(path, cumLen, s) {
   return Math.atan2(b[0] - a[0], b[1] - a[1]);
 }
 
+// 区間の左右幅(センター〜路端)。一方通行は経路=道路中心なので左右等分
+function sectionWidths(sec) {
+  if (!sec.lanesB) {
+    const w = (sec.lanesF * LANE_W + 2.8) / 2;
+    return { wL: +w.toFixed(2), wR: +w.toFixed(2) };
+  }
+  return {
+    wL: +(sec.lanesF * LANE_W + 0.8).toFixed(2),
+    wR: +(sec.lanesB * LANE_W + 0.8).toFixed(2),
+  };
+}
+
+/** sections の [from,to] 部分だけ mut を適用(必要に応じて区間分割) */
+function overlayLanes(sections, from, to, mut) {
+  if (to - from < 4) return sections;
+  const out = [];
+  for (const sec of sections) {
+    const a = Math.max(sec.from, from), b = Math.min(sec.to, to);
+    if (b - a < 0.5) { out.push(sec); continue; }
+    if (sec.from < a - 0.01) out.push({ ...sec, to: a });
+    out.push(mut({ ...sec, from: a, to: b }));
+    if (b < sec.to - 0.01) out.push({ ...sec, from: b, to: sec.to });
+  }
+  return out;
+}
+
+/** LANE_PLAN と右折車線ゾーンから roadSections を生成 */
+function buildLaneSections(path, cumLen, origin, signals, turnSpans, intersections, elevations = []) {
+  const toS = (anchor, fromS = 0) => {
+    if (typeof anchor === 'string') {
+      const ix = intersections.find((i) => i.name === anchor && i.s >= fromS - 5);
+      if (!ix) throw new Error(`車線プラン境界の交差点が見つからない: ${anchor}`);
+      return ix.s;
+    }
+    const pt = project([anchor], origin)[0].map((v) => v * SCALE);
+    const hit = projectToPath(path, cumLen, pt, fromS);
+    if (hit.dist > 60) console.warn(`  警告: 車線プラン境界の射影誤差 ${hit.dist.toFixed(0)}m @ [${anchor}]`);
+    return hit.s;
+  };
+  let sections = [];
+  let from = 0, cursor = 0;
+  for (const seg of LANE_PLAN) {
+    const end = seg.to ? toS(seg.to, cursor) : cumLen.at(-1);
+    sections.push({
+      from, to: end, lanesF: seg.F, lanesB: seg.B,
+      center: seg.center ?? (seg.B ? 'line' : 'none'),
+      sidewalk: seg.sidewalk ?? 'line',
+    });
+    cursor = end;
+    from = end;
+  }
+  // 右折車線: 信号交差点の進入方向に+1車線(右左折交差点の円弧内はクランプ)
+  for (const zone of APPROACH_ZONES) {
+    const z0 = toS(zone.from), z1 = toS(zone.to, z0);
+    for (const sig of signals) {
+      if (sig.s < z0 - 2 || sig.s > z1 + 2) continue;
+      const t = turnSpans.find((tt) => sig.s > tt.sIn - 30 && sig.s < tt.sOut + 30);
+      const f0 = Math.max(sig.s - zone.len, z0);
+      const f1 = Math.min(sig.s, t ? t.sIn - 2 : Infinity, z1);
+      if (f1 > f0) sections = overlayLanes(sections, f0, f1, (sec) => ({ ...sec, lanesF: sec.lanesF + 1 }));
+      const b0 = Math.max(sig.s, t ? t.sOut + 2 : -Infinity, z0);
+      const b1 = Math.min(sig.s + zone.len, z1);
+      if (b1 > b0) sections = overlayLanes(sections, b0, b1, (sec) => ({ ...sec, lanesB: sec.lanesB + 1 }));
+    }
+  }
+  // 跨線橋区間: 高架デッキは中央の片道2車線のみ(両脇の地上1車線は railways.js が側道として描く)
+  // laneOverride が付いた elevations のみ対象(河川の小さな盛土は車線数を変えない)
+  for (const e of elevations) {
+    if (!e.laneOverride) continue;
+    sections = overlayLanes(
+      sections,
+      e.from - (e.approachIn ?? 50),
+      e.to + (e.approachOut ?? 50),
+      (sec) => ({ ...sec, lanesF: 2, lanesB: 2, bridge: 1 })
+    );
+  }
+  return sections
+    .filter((sec) => sec.to - sec.from > 0.5)
+    .map((sec) => ({
+      from: +sec.from.toFixed(1),
+      to: +sec.to.toFixed(1),
+      lanes: sec.lanesF + sec.lanesB,
+      lanesF: sec.lanesF,
+      lanesB: sec.lanesB,
+      center: sec.center,
+      ...(sec.sidewalk === 'none' ? { sidewalk: 'none' } : {}),
+      ...(sec.bridge ? { bridge: 1 } : {}),
+      ...sectionWidths(sec),
+    }));
+}
+
 function roadMetadata(path, cumLen, origin, roads, signalNodes) {
   const projectedRoads = roads.map((road) => ({
     id: road.id,
     tags: road.tags ?? {},
     pts: project(road.geometry.map((p) => [p.lat, p.lon]), origin).map(([x, z]) => [x * SCALE, z * SCALE]),
   })).filter((r) => r.pts.length > 1);
-
-  const samples = [];
-  for (let s = 0; s <= cumLen.at(-1); s += 70) {
-    const [px, pz] = pointAtPath(path, cumLen, s);
-    const routeH = routeHeadingAt(path, cumLen, s);
-    let best = null;
-    for (const road of projectedRoads) {
-      for (let i = 0; i < road.pts.length - 1; i++) {
-        const a = road.pts[i], b = road.pts[i + 1];
-        const segH = Math.atan2(b[0] - a[0], b[1] - a[1]);
-        const aligned = Math.min(angleDiff(routeH, segH), angleDiff(routeH, segH + Math.PI));
-        if (aligned > 0.55) continue;
-        const hit = pointSegDistance([px, pz], a, b);
-        if (hit.d > 10) continue;
-        if (!best || hit.d < best.d) best = { d: hit.d, tags: road.tags };
-      }
-    }
-    samples.push({ s, lanes: best ? laneCount(best.tags) : 2 });
-  }
-  if (samples.at(-1)?.s < cumLen.at(-1)) samples.push({ s: cumLen.at(-1), lanes: samples.at(-1)?.lanes ?? 2 });
-  const roadSections = [];
-  for (let i = 0; i < samples.length - 1; i++) {
-    const cur = samples[i], next = samples[i + 1];
-    const last = roadSections.at(-1);
-    if (last && last.lanes === cur.lanes) last.to = +next.s.toFixed(1);
-    else roadSections.push({ from: +cur.s.toFixed(1), to: +next.s.toFixed(1), lanes: cur.lanes });
-  }
 
   const intersectionCandidates = [];
   for (const road of projectedRoads) {
@@ -498,7 +692,19 @@ function roadMetadata(path, cumLen, origin, roads, signalNodes) {
   }
   intersections.sort((a, b) => a.s - b.s || a.dist - b.dist);
 
-  return { roadSections, intersections, signals };
+  // 交差道路の実勢オーバーライド(五条通=計9・四条通=計5 等)
+  for (const ov of INTERSECTION_OVERRIDES) {
+    for (const ix of intersections) {
+      if (ix.name !== ov.name) continue;
+      ix.width = ov.width;
+      ix.lanes = ov.lanes;
+      ix.length = +Math.max(34, ov.width * 7).toFixed(1);
+      if (ov.median) ix.median = 1;
+      if (ov.label) ix.name = ov.label;
+    }
+  }
+
+  return { intersections, signals };
 }
 
 function buildingHeight(tags = {}, s, routeLength, id) {
@@ -638,7 +844,8 @@ function railwayMetadata(path, cumLen, origin, railWays, sFrom, sTo) {
  * 通常交差点ではルート接線基準・従道柱は交差道路の幅の外側。
  * head: {kind:'main'|'cross', face, pole:[x,z], head:[x,z], arm?, hoods?}
  */
-function placeSignalHeads(sig, turns, intersections, path, cumLen, hwAt, laneCenterAt) {
+function placeSignalHeads(sig, turns, intersections, path, cumLen, widths) {
+  const { hwAt, wLAt, wRAt, laneCenterAt, oppLaneCenterAt } = widths;
   const round = (p) => [+p[0].toFixed(2), +p[1].toFixed(2)];
   // 柱の退避対象となる舗装矩形: 近傍の交差道路スタブ + 右左折交差点の腕
   const rects = [
@@ -657,13 +864,15 @@ function placeSignalHeads(sig, turns, intersections, path, cumLen, hwAt, laneCen
     for (let iter = 0; iter < 3; iter++) {
       let moved = false;
       const { s, dist } = projectToPath(path, cumLen, p, 0);
-      const need = hwAt(s) + 1.2;
+      const [qx, qz] = pointAtPath(path, cumLen, s);
+      const h = routeHeadingAt(path, cumLen, s);
+      // 進行右方向の法線 (-cos h, sin h) との内積で左右を判定し、その側の幅で退避
+      const latSign = (p[0] - qx) * -Math.cos(h) + (p[1] - qz) * Math.sin(h);
+      const need = (latSign < 0 ? wLAt(s) : wRAt(s)) + 1.2;
       if (dist < need) {
-        const [qx, qz] = pointAtPath(path, cumLen, s);
         let ux = p[0] - qx, uz = p[1] - qz;
         const len = Math.hypot(ux, uz);
         if (len < 0.5) {
-          const h = routeHeadingAt(path, cumLen, s);
           ux = -Math.cos(h); // ほぼ路面中心に居る場合は経路の右法線方向へ
           uz = Math.sin(h);
         } else {
@@ -707,9 +916,12 @@ function placeSignalHeads(sig, turns, intersections, path, cumLen, hwAt, laneCen
     const boxB = Math.max(t.d, t.hwIn) + 2.6;  // 退出側ボックス端(円弧終了より先)
 
     // 進入路(バス)向き: ボックス手前・左路端の柱からアームで自車線上へ
-    push('main', t.headingIn, ptA(-boxA, -(t.hwIn + 1.85)), ptA(-boxA, laneCenterAt(t.sIn) - 0.2), { arm: 1, hoods: 1 });
-    // 退出路の対向車向き: ボックスの先・ルート右側の柱、対向車線上へ
-    push('main', t.headingOut + Math.PI, ptB(boxB, t.hwOut + 1.85), ptB(boxB, -laneCenterAt(t.sOut) + 0.2), { arm: 1 });
+    push('main', t.headingIn, ptA(-boxA, -(wLAt(Math.max(0, t.sIn - 1)) + 1.85)), ptA(-boxA, laneCenterAt(t.sIn) - 0.2), { arm: 1, hoods: 1 });
+    // 退出路の対向車向き: ボックスの先・ルート右側の柱、対向車線上へ(一方通行なら省略)
+    const oppOut = oppLaneCenterAt(t.sOut + 1);
+    if (oppOut != null) {
+      push('main', t.headingOut + Math.PI, ptB(boxB, wRAt(t.sOut + 1) + 1.85), ptB(boxB, oppOut + 0.2), { arm: 1 });
+    }
     // 従道向き(交差点内連動): 両道路の路端が交わる歩道角に柱を置く(柱直付け)
     // p·nA = a, p·nB = b の連立解(nA/nB は各道路軸の左法線)
     const nA = [Math.cos(t.headingIn), -Math.sin(t.headingIn)];
@@ -753,8 +965,11 @@ function placeSignalHeads(sig, turns, intersections, path, cumLen, hwAt, laneCen
   const crossAngle = Math.min(angleDiff(theta, ch), angleDiff(theta, ch + Math.PI));
   const ahead = Math.min(16, Math.max(5.2, (crossHalf + 2.2) / Math.max(0.45, Math.sin(crossAngle))));
   const at = (lat, d) => [px + nx * lat + tx * d, pz + nz * lat + tz * d];
-  push('main', theta, at(-(HW + 1.7), -ahead), at(laneCenterAt(sig.s) - 0.2, -ahead), { arm: 1, hoods: 1 });
-  push('main', theta + Math.PI, at(HW + 1.7, ahead), at(-laneCenterAt(sig.s) + 0.2, ahead), { arm: 1 });
+  push('main', theta, at(-(wLAt(sig.s) + 1.7), -ahead), at(laneCenterAt(sig.s) - 0.2, -ahead), { arm: 1, hoods: 1 });
+  const opp = oppLaneCenterAt(sig.s);
+  if (opp != null) {
+    push('main', theta + Math.PI, at(wRAt(sig.s) + 1.7, ahead), at(opp + 0.2, ahead), { arm: 1 });
+  }
   const cd = [Math.sin(ch), Math.cos(ch)];
   for (const dir of [1, -1]) {
     // 柱は主道の路端(HW+2.2)より先・交差道路の路端(crossHalf+1.6)の外側
@@ -791,12 +1006,16 @@ async function buildFromOSM() {
   );
 
   const rel = relData.elements.find((e) => e.type === 'relation');
+  // 経路ノード = 北行きリレーションの way + 南行き専用区間(十条〜旧千本通)の way
+  const routeNodesQuery = `rel(${RELATION_ID})->.routeRel;
+way(r.routeRel)->.relWays;
+way(id:${JUJO_WAY_IDS.join(',')})->.jujoWays;
+(.relWays; .jujoWays;)->.routeWays;
+node(w.routeWays)->.routeNodes;`;
   const roadData = await loadCachedOrFetch(
-    'route18_roads_wide.json',
+    'route18_roads_wide2.json',
     `[out:json][timeout:90];
-rel(${RELATION_ID})->.routeRel;
-way(r.routeRel)->.routeWays;
-node(w.routeWays)->.routeNodes;
+${routeNodesQuery}
 (
   .routeWays;
   ${ROAD_TYPES.map((type) => `way(around.routeNodes:${ROAD_AROUND_RADIUS})["highway"="${type}"];`).join('\n  ')}
@@ -805,14 +1024,32 @@ node(w.routeWays)->.routeNodes;
 out body geom;`
   );
   const buildingData = await loadCachedOrFetch(
-    'route18_buildings.json',
+    'route18_buildings2.json',
     `[out:json][timeout:120];
-rel(${RELATION_ID})->.routeRel;
-way(r.routeRel)->.routeWays;
-node(w.routeWays)->.routeNodes;
+${routeNodesQuery}
 (
   way(around.routeNodes:${BUILDING_AROUND_RADIUS})["building"];
 );
+out body geom;`
+  );
+  const jujoData = await loadCachedOrFetch(
+    'route18_jujo_southbound.json',
+    `[out:json][timeout:60];way(id:${JUJO_WAY_IDS.join(',')});out body geom;`
+  );
+  const [detourSouth, detourWest, detourNorth, detourEast] = DETOUR_BBOX;
+  const detourRoadData = await loadCachedOrFetch(
+    'route18_detour_roads.json',
+    `[out:json][timeout:90];
+(
+  ${ROAD_TYPES.map((type) => `way["highway"="${type}"](${detourSouth},${detourWest},${detourNorth},${detourEast});`).join('\n  ')}
+  node["highway"="traffic_signals"](${detourSouth},${detourWest},${detourNorth},${detourEast});
+);
+out body geom;`
+  );
+  const detourBuildingData = await loadCachedOrFetch(
+    'route18_detour_buildings.json',
+    `[out:json][timeout:120];
+way["building"](${detourSouth},${detourWest},${detourNorth},${detourEast});
 out body geom;`
   );
   const [railSouth, railWest, railNorth, railEast] = RAILWAY_BBOX;
@@ -838,10 +1075,15 @@ out body geom;`
   if (line[0][0] < line.at(-1)[0]) line.reverse(); // 先頭の緯度が小さい(南)なら反転して北始まりに
   // ここで line = 南行き(二条駅西口 → 久我石原町)
 
-  const iFrom = nearestIndex(line, DETOUR_FROM);
-  const iTo = nearestIndex(line, DETOUR_TO);
-  if (!(iFrom < iTo)) throw new Error(`差し替え区間の探索失敗 iFrom=${iFrom} iTo=${iTo}`);
-  line = [...line.slice(0, iFrom + 1), ...DETOUR_SOUTHBOUND, ...line.slice(iTo)];
+  // 南行き専用区間1: 十条新千本→十条通→十条旧千本→旧千本通(北行きは新千本通経由のため)
+  const jujoWays = JUJO_WAY_IDS.map((id) => {
+    const w = jujoData.elements.find((e) => e.type === 'way' && e.id === id);
+    if (!w?.geometry?.length) throw new Error(`十条南行き way が見つからない: ${id}`);
+    return w;
+  });
+  line = spliceDetour(line, chainOrderedWays(jujoWays, JUJO_FROM), JUJO_FROM, JUJO_TO, '十条南行き');
+  // 南行き専用区間2: 小枝橋→城南宮道→赤池→上鳥羽塔ノ森
+  line = spliceDetour(line, DETOUR_SOUTHBOUND, DETOUR_FROM, DETOUR_TO, '城南宮道');
 
   console.log('[3/5] 停留所を南行き順に整列');
   // 北行きの platform 順(久我石原町→二条駅西口)を逆転し、南行き専用停を挿入
@@ -851,15 +1093,32 @@ out body geom;`
     .map((n) => ({ name: NAME_ALIAS[n.tags?.name] ?? n.tags?.name, latlon: [n.lat, n.lon] }))
     .reverse();
   for (const [name, latlon] of Object.entries(EXTRA_STOPS)) osmStops.push({ name, latlon });
+  for (const st of osmStops) {
+    if (SOUTHBOUND_STOP_OVERRIDES[st.name]) st.latlon = SOUTHBOUND_STOP_OVERRIDES[st.name];
+  }
   const stopsLL = STOP_ORDER.map((name) => {
     const hit = osmStops.find((s) => s.name === name);
     if (!hit) throw new Error(`停留所がOSMデータに見つからない: ${name}`);
     return { name, latlon: hit.latlon };
   });
 
-  const roads = roadData.elements.filter((e) => e.type === 'way' && isMajorRoad(e.tags) && e.geometry?.length > 1);
-  const signalNodes = roadData.elements.filter((e) => e.type === 'node' && e.tags?.highway === 'traffic_signals');
-  const buildings = buildingData.elements.filter((e) => e.type === 'way' && e.tags?.building && e.geometry?.length > 2);
+  // way ID で重複排除しつつ、detour bbox 由来の道路・建物・信号をマージ
+  const byId = (arr) => {
+    const seen = new Set();
+    return arr.filter((e) => (seen.has(e.id) ? false : (seen.add(e.id), true)));
+  };
+  const roads = byId([
+    ...roadData.elements.filter((e) => e.type === 'way' && isMajorRoad(e.tags) && e.geometry?.length > 1),
+    ...detourRoadData.elements.filter((e) => e.type === 'way' && isMajorRoad(e.tags) && e.geometry?.length > 1),
+  ]);
+  const signalNodes = byId([
+    ...roadData.elements.filter((e) => e.type === 'node' && e.tags?.highway === 'traffic_signals'),
+    ...detourRoadData.elements.filter((e) => e.type === 'node' && e.tags?.highway === 'traffic_signals'),
+  ]);
+  const buildings = byId([
+    ...buildingData.elements.filter((e) => e.type === 'way' && e.tags?.building && e.geometry?.length > 2),
+    ...detourBuildingData.elements.filter((e) => e.type === 'way' && e.tags?.building && e.geometry?.length > 2),
+  ]);
   const railways = railwayData.elements.filter((e) => e.type === 'way' && e.tags?.railway && e.geometry?.length > 1);
 
   return { line, stopsLL, roads, signalNodes, buildings, railways, source: `OpenStreetMap relation ${RELATION_ID} © OpenStreetMap contributors (ODbL)` };
@@ -876,11 +1135,11 @@ function buildFallback() {
     '七条大宮・京都水族館前': [34.9884228, 135.7490843], '東寺東門前': [34.9823598, 135.7491945],
     '九条大宮': [34.9801091, 135.7491864], '東寺南門前': [34.9793729, 135.7469272],
     '羅城門': [34.97912, 135.7429916], '唐戸町': [34.9760434, 135.7413693],
-    '千本十条': [34.972717, 135.7411332], '五丁橋': [34.9702057, 135.7410436],
-    '上ノ町': [34.9684134, 135.7409965], '上鳥羽村山町': [34.9663379, 135.740911],
-    '上鳥羽小学校前': [34.9640204, 135.7424117], '城ケ前町': [34.9626138, 135.7424736],
-    '岩ノ本町': [34.9607101, 135.7425161], '地蔵前': [34.9580168, 135.7424495],
-    '奈須野': [34.9563035, 135.7419988], '小枝橋': [34.9541881, 135.741534],
+    '千本十条': SOUTHBOUND_STOP_OVERRIDES['千本十条'], '五丁橋': SOUTHBOUND_STOP_OVERRIDES['五丁橋'],
+    '上ノ町': SOUTHBOUND_STOP_OVERRIDES['上ノ町'], '上鳥羽村山町': SOUTHBOUND_STOP_OVERRIDES['上鳥羽村山町'],
+    '上鳥羽小学校前': SOUTHBOUND_STOP_OVERRIDES['上鳥羽小学校前'], '城ケ前町': [34.9626138, 135.7424736],
+    '岩ノ本町': [34.9607101, 135.7425161], '地蔵前': SOUTHBOUND_STOP_OVERRIDES['地蔵前'],
+    '奈須野': SOUTHBOUND_STOP_OVERRIDES['奈須野'], '小枝橋': SOUTHBOUND_STOP_OVERRIDES['小枝橋'],
     '城南宮道': EXTRA_STOPS['城南宮道'], '赤池': EXTRA_STOPS['赤池'],
     '上鳥羽塔ノ森': [34.9467722, 135.7391107], '久我': [34.945528, 135.7342175],
     '菱妻神社前': [34.94775, 135.7293566], '久我石原町': [34.9476875, 135.7248118],
@@ -929,37 +1188,129 @@ async function main() {
     return { name, s: +s.toFixed(1), projDist: +dist.toFixed(1) };
   });
 
-  const bridges = BRIDGES.map(({ name, anchor, realLength }) => {
-    const pt = project([anchor], origin)[0].map((v) => v * SCALE);
-    const { s } = projectToPath(path, cumLen, pt, 0);
-    return { name, s: +s.toFixed(1), length: +(realLength * SCALE).toFixed(1) };
-  });
-
   const stopS = (name) => stops.find((st) => st.name === name).s;
   const speedZones = SPEED_ZONES.map((z) => ({
     from: z.fromStop ? stopS(z.fromStop) : 0,
     to: z.toStop ? stopS(z.toStop) : +totalLength.toFixed(1),
     limit: z.limit,
   }));
-  const { roadSections, intersections, signals } = roadMetadata(path, cumLen, origin, roads, signalNodes);
+  const { intersections, signals: signalsRaw } = roadMetadata(path, cumLen, origin, roads, signalNodes);
 
-  // ゲーム内道路半幅・車線中心(routeData.js の halfWidthAt / laneCenterAt と同式)
-  const lanesAtS = (s) => {
-    for (const sec of roadSections) if (s >= sec.from && s < sec.to) return Math.max(2, sec.lanes || 2);
-    return 2;
-  };
-  const hwAtS = (s) => Math.max(4.0, lanesAtS(s) * 1.6 + 0.8);
+  const railStructures = railwayMetadata(
+    path,
+    cumLen,
+    origin,
+    railways,
+    stopS('七条大宮・京都水族館前'),
+    stopS('東寺東門前')
+  );
+
+  // 大宮跨線橋: JR在来線を跨ぎ、八条通も高架のまま跨いで東寺道交差点の手前約100mで着地。
+  // 高架は中央の片道2車線のみ(roadSections を橋区間だけ F2/B2 に上書き)。両脇の1車線は
+  // 地上の側道として railways.js が描画する。
+  const elevations = [];
+  const railJR = railStructures.find((r) => r.kind === 'conventional-underpass');
+  if (railJR) {
+    // 東寺前交差点(東寺道)の手前約100mで完全に地上(高さ0)に降りる。八条通はデッキの下をくぐる。
+    // elevationAt() の "to" は下り勾配の開始点(まだ全高)なので、接地点(groundS)から
+    // approachOut を差し引いた点を渡す。
+    const APPROACH_IN = 50, APPROACH_OUT = 90;
+    const tojimae = intersections.find((ix) => ix.name === '東寺道' && ix.s > railJR.s);
+    const from = railJR.fromS;
+    const groundS = tojimae ? +(tojimae.s - 100).toFixed(1) : railJR.toS + 90;
+    const to = +(groundS - APPROACH_OUT).toFixed(1);
+    Object.assign(railJR, { bridgeFromS: from, bridgeToS: to, approachIn: APPROACH_IN, approachOut: APPROACH_OUT, deckHalf: 7.2 });
+    elevations.push({ name: '大宮跨線橋', from, to, height: 4, approachIn: APPROACH_IN, approachOut: APPROACH_OUT, laneOverride: 1 });
+    for (const ix of intersections) {
+      if (ix.s > from - 20 && ix.s < groundS + 20) ix.under = 1; // 八条通など高架下の交差道路は地上のまま
+    }
+    // 東寺東門前停留所: 東寺道交差点の約20m先(南)に実際の停留所がある
+    const tojimonStop = stops.find((st) => st.name === '東寺東門前');
+    if (tojimae && tojimonStop) tojimonStop.s = +(tojimae.s + 20).toFixed(1);
+  }
+  // 鴨川(小枝橋)・名神高速道路が近接して交差する地点: 川岸なので道路をわずかに高く、
+  // 川を低く見せる(river-crossing elevation。車線数は変えない = laneOverride なし)
+  const bridges = BRIDGES.map(({ name, anchor, realLength }) => {
+    const pt = project([anchor], origin)[0].map((v) => v * SCALE);
+    const { s } = projectToPath(path, cumLen, pt, 0);
+    return { name, s: +s.toFixed(1), length: +(realLength * SCALE).toFixed(1) };
+  });
+  const koedaBridge = bridges.find((b) => b.name === '小枝橋(鴨川)');
+  if (koedaBridge) {
+    elevations.push({
+      name: '小枝橋(river valley)',
+      from: koedaBridge.s - 12,
+      to: koedaBridge.s + 12,
+      height: 2.6,
+      approachIn: 26,
+      approachOut: 26,
+    });
+  }
+  // 他の河川橋(京川橋・天神橋・久我橋)にも控えめな盛土を付け、地面側の掘り下げ(buildGround の
+  // 川沿いディップ)との間に不自然な段差・宙に浮いた橋桁が生じないようにする。
+  for (const b of bridges) {
+    if (b.name === '小枝橋(鴨川)') continue;
+    elevations.push({
+      name: `${b.name}(river valley)`,
+      from: b.s - 9,
+      to: b.s + 9,
+      height: 1.8,
+      approachIn: 22,
+      approachOut: 22,
+    });
+  }
+
+  // 名神高速道路の高架(片道3車線)。JR/新幹線と同じ railStructures 配列に載せ、
+  // railways.js の同一ループで描画する(main.js 側の配線変更が不要)。
+  for (const hc of HIGHWAY_CROSSINGS) {
+    const pt = project([hc.anchor], origin)[0].map((v) => v * SCALE);
+    const { s, dist } = projectToPath(path, cumLen, pt, 0);
+    if (dist > 60) { console.warn(`  警告: 名神高速クロッシングの射影誤差 ${dist.toFixed(0)}m @ ${hc.name}`); continue; }
+    railStructures.push({
+      kind: 'expressway-viaduct',
+      name: hc.name,
+      s: +s.toFixed(1),
+      heading: +(routeHeadingAt(path, cumLen, s) + Math.PI / 2).toFixed(4),
+      length: 210,
+      width: 27,
+      lanesEachWay: 3,
+      layer: 2,
+    });
+  }
+  railStructures.sort((a, b) => a.s - b.s);
+
+  // 高架上の信号は存在しない(高架下の信号は自車に無関係)ので除外
+  const signals = signalsRaw.filter(
+    (sig) => !elevations.some((e) => sig.s > e.from - e.approachIn + 5 && sig.s < e.to + e.approachOut - 5)
+  );
+
+  // 右左折交差点の弧長スパン(右折車線を円弧内に食い込ませないためのクランプ)
+  const turnSpans = turnCorners.map((c) => {
+    const sIn = projectToPath(path, cumLen, c.t1, 0).s;
+    return { sIn, sOut: projectToPath(path, cumLen, c.t2, sIn).s, corner: c };
+  });
+  const roadSections = buildLaneSections(path, cumLen, origin, signals, turnSpans, intersections, elevations);
+
+  // ゲーム内道路幅・車線中心(routeData.js と同式)
+  const secAt = (s) => roadSections.find((x) => s >= x.from && s < x.to) ?? roadSections.at(-1);
+  const wLAtS = (s) => secAt(s).wL;
+  const wRAtS = (s) => secAt(s).wR;
+  const hwAtS = (s) => Math.max(secAt(s).wL, secAt(s).wR);
   const laneCenterAtS = (s) => {
-    const lanes = lanesAtS(s);
-    const left = Math.max(1, Math.floor(lanes / 2));
-    return -(((hwAtS(s) - 0.55) * (left - 0.5)) / left);
+    const sec = secAt(s);
+    if (!sec.lanesB) return 0; // 一方通行: 道路中央を走る
+    return -(((sec.wL - 0.55) * (sec.lanesF - 0.5)) / sec.lanesF);
   };
+  const oppLaneCenterAtS = (s) => {
+    const sec = secAt(s);
+    if (!sec.lanesB) return null; // 対向車線なし
+    return ((sec.wR - 0.55) * (sec.lanesB - 0.5)) / sec.lanesB;
+  };
+  const widths = { hwAt: hwAtS, wLAt: wLAtS, wRAt: wRAtS, laneCenterAt: laneCenterAtS, oppLaneCenterAt: oppLaneCenterAtS };
 
   // 右左折交差点: フィレット記録を弧長に射影し、交差道路名を intersections からマッチ
   // (マッチしたエントリは削除 — 旧スタブとの二重描画防止)
-  const turnIntersections = turnCorners.map((c) => {
-    const sIn = projectToPath(path, cumLen, c.t1, 0).s;
-    const sOut = projectToPath(path, cumLen, c.t2, sIn).s;
+  const turnIntersections = turnSpans.map(({ sIn, sOut, corner: c }) => {
     const sMid = projectToPath(path, cumLen, c.vertex, sIn).s;
     let cross = null;
     for (const ix of intersections) {
@@ -984,21 +1335,30 @@ async function main() {
     };
   });
 
+  // 右左折交差点の脚オーバーライド(九条大宮の大宮通=片道1、羽束師墨染線=計5 等)
+  for (const ov of TURN_OVERRIDES) {
+    const pt = project([ov.anchor], origin)[0].map((v) => v * SCALE);
+    let best = null;
+    for (const t of turnIntersections) {
+      const d = Math.hypot(t.x - pt[0], t.z - pt[1]);
+      if (d < 45 && (!best || d < best.d)) best = { t, d };
+    }
+    if (!best) {
+      console.warn(`  警告: TURN_OVERRIDES のアンカーに一致する右左折交差点がない: [${ov.anchor}]`);
+      continue;
+    }
+    if (ov.stubInHw != null) best.t.stubInHw = ov.stubInHw;
+    if (ov.crossWidth != null) best.t.crossWidth = ov.crossWidth;
+    if (ov.crossLanes != null) best.t.crossLanes = ov.crossLanes;
+  }
+
   // 信号の柱・灯器の設置座標を計算して埋め込む(交差点内の路上に立てない)
   const signalsOut = signals.map((sig) => ({
     ...sig,
-    heads: placeSignalHeads(sig, turnIntersections, intersections, path, cumLen, hwAtS, laneCenterAtS),
+    heads: placeSignalHeads(sig, turnIntersections, intersections, path, cumLen, widths),
   }));
 
   const buildings = buildingMetadata(path, cumLen, origin, buildingWays);
-  const railStructures = railwayMetadata(
-    path,
-    cumLen,
-    origin,
-    railways,
-    stopS('七条大宮・京都水族館前'),
-    stopS('東寺東門前')
-  );
 
   const out = {
     routeName: '18号系統',
@@ -1008,6 +1368,7 @@ async function main() {
     source,
     generatedAt: new Date().toISOString(),
     scale: SCALE,
+    projOrigin: [+origin[0].toFixed(7), +origin[1].toFixed(7)], // 投影原点 [lat, lon](座標変換用)
     totalLength: +totalLength.toFixed(1),
     path,
     stops: stops.map(({ name, s }) => ({ name, s })),
@@ -1019,6 +1380,7 @@ async function main() {
     signals: signalsOut,
     buildings,
     railStructures,
+    elevations,
   };
   writeFileSync(OUT, JSON.stringify(out));
 

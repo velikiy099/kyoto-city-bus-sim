@@ -27,16 +27,15 @@ export const CFG = {
   },
   // --- 運行 ---
   ops: {
-    doorTime: 1.2, // ドア開閉アニメ [s]
-    boardInterval: 0.7, // 乗車1人あたり [s]
-    alightInterval: 0.8, // 降車1人あたり [s]
+    doorTime: 1.8, // ドア開閉アニメ [s]
+    boardInterval: 1.1, // 乗車1人あたり [s]
+    alightInterval: 1.3, // 降車1人あたり [s]
     fare: 230, // 大人運賃 [円]
     stopWindow: 3.0, // 停止線からこの距離以内でドア開可 [m]
     perfectWindow: 1.0, // 正着判定 [m]
     curbWindow: 0.8, // 縁石からの許容ギャップ [m]
     departEarlyGrace: 5, // 早発猶予 [s]
     // ダイヤは timetable.js の固定時刻表(9:56 発〜10:44 着)を使用
-    approachDist: 120, // 「まもなく」アナウンス距離 [m]
   },
   // --- スコア ---
   score: {
@@ -61,8 +60,8 @@ export const CFG = {
   },
   // --- 乗客 ---
   passengers: {
-    initialBoard: 6, // 始発乗車
-    waitLambda: 1.0, // 各停留所の待ち人数 Poisson λ
+    initialBoard: 12, // 始発乗車
+    waitLambda: 2.0, // 各停留所の待ち人数 Poisson λ
     alightGeomP: 0.22, // 降車停留所の幾何分布パラメータ
   },
   // --- 色 ---
