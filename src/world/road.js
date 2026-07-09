@@ -125,7 +125,10 @@ function addIntersections(g, path, intersections, turns = [], routeHwAt = null) 
         const armW = arm.width ?? width;
         const off = (arm.side * arm.length) / 2;
         const mat = arm.pedestrian ? pedMat : roadMat;
-        const stub = new THREE.Mesh(new THREE.PlaneGeometry(arm.length, armW), mat);
+        // PlaneGeometry の第1引数は rotation.x(-90°)+rotation.z(-heading) の合成後、
+        // heading の「垂直」方向に対応する(第2引数が heading 方向)。ここでは
+        // 腕の長さ(arm.length)を heading 方向へ伸ばしたいので第2引数に入れる。
+        const stub = new THREE.Mesh(new THREE.PlaneGeometry(armW, arm.length), mat);
         stub.rotation.x = -Math.PI / 2;
         stub.rotation.z = -(ix.heading ?? 0);
         stub.position.set(
@@ -139,8 +142,9 @@ function addIntersections(g, path, intersections, turns = [], routeHwAt = null) 
         }
       }
     } else {
+      // 旧形式データへのフォールバック(現行データは常に arms を持つため通常は通らない)
       const length = Math.max(28, ix.length ?? 54);
-      const stub = new THREE.Mesh(new THREE.PlaneGeometry(length, width), roadMat);
+      const stub = new THREE.Mesh(new THREE.PlaneGeometry(width, length), roadMat);
       stub.rotation.x = -Math.PI / 2;
       stub.rotation.z = -(ix.heading ?? 0);
       stub.position.set(px, 0.006 + elev, pz);

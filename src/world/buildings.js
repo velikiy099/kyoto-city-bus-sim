@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { CFG } from '../config.js';
-import { route, leftWidthAt, rightWidthAt } from '../route/routeData.js';
+import { route, leftWidthAt, rightWidthAt, halfWidthAt } from '../route/routeData.js';
 
 // ---- InstancedMesh 構築(色付き)。複数の関数から共用 ----
 function makeInstanced(scene, geo, list, getMatrix) {
@@ -255,8 +255,11 @@ function buildCrossStreetResidential(scene, path, exclusions, osmBuildings) {
     exclusions.some((e) => (x - e.x) ** 2 + (z - e.z) ** 2 < e.r * e.r) ||
     obCenters.some((c) => (x - c[0]) ** 2 + (z - c[1]) ** 2 < 121);
 
-  // cx,cz を起点に heading*side 方向へ dMin〜armLen の範囲で建物を並べる
-  const scatterArm = (cx, cz, heading, side, armLen, halfW, dMin) => {
+  // cx,cz を起点に heading*side 方向へ dMin〜armLen の範囲で建物を並べる。
+  // d/lat の単純な軸分解だけでは(交差角が90°ちょうどでない、経路が近くでカーブしている等)
+  // 本線の実舗装との距離を正しく見積もれないことがあるため、path.closestS で実距離を
+  // 直接測って本線に食い込む候補は必ず除外する(sHint は探索を軽くするための目安)。
+  const scatterArm = (cx, cz, heading, side, armLen, halfW, dMin, sHint) => {
     const dx = Math.sin(heading) * side, dz = Math.cos(heading) * side;
     const nx = Math.cos(heading), nz = -Math.sin(heading);
     const ry = heading + (side > 0 ? 0 : Math.PI);
@@ -269,6 +272,8 @@ function buildCrossStreetResidential(scene, path, exclusions, osmBuildings) {
         const x = cx + dx * d + nx * lat;
         const z = cz + dz * d + nz * lat;
         if (isExcluded(x, z)) continue;
+        const hit = path.closestS([x, z], sHint, 220);
+        if (hit.dist < halfWidthAt(hit.s) + 3) continue; // 本線の実舗装に近すぎる候補は除外
         items.push({ x, z, ry: ry + (rand() - 0.5) * 0.08, w, h, d: dep, color: palettes[(rand() * palettes.length) | 0] });
         if (rand() < 0.8) {
           roofItems.push({ x, z, ry, w: w + 1, h: 0.5, d: dep + 1, y: h, color: roofPalettes[(rand() * roofPalettes.length) | 0] });
@@ -284,14 +289,14 @@ function buildCrossStreetResidential(scene, path, exclusions, osmBuildings) {
     const halfW = (ix.width ?? 8) / 2;
     for (const arm of ix.arms) {
       if (!arm.exists || arm.length <= 0) continue;
-      scatterArm(cx, cz, ix.heading, arm.side, arm.length, halfW, Math.max(14, halfW + 6));
+      scatterArm(cx, cz, ix.heading, arm.side, arm.length, halfW, Math.max(14, halfW + 6), s);
     }
   }
   const TURN_STUB_LEN = 42, TURN_ARM_LEN = 100;
   for (const t of route.turnIntersections ?? []) {
     if (!t.crossName) continue; // 交差道路名が無い(=経路自身の折れのみ)場合は対象外
-    scatterArm(t.x, t.z, t.headingIn, 1, TURN_ARM_LEN, t.hwIn ?? 6, TURN_STUB_LEN + 3);
-    scatterArm(t.x, t.z, t.headingOut, -1, TURN_ARM_LEN, t.hwOut ?? 6, TURN_STUB_LEN + 3);
+    scatterArm(t.x, t.z, t.headingIn, 1, TURN_ARM_LEN, t.hwIn ?? 6, TURN_STUB_LEN + 3, t.sIn);
+    scatterArm(t.x, t.z, t.headingOut, -1, TURN_ARM_LEN, t.hwOut ?? 6, TURN_STUB_LEN + 3, t.sOut);
   }
 
   makeInstanced(scene, boxGeo, items, (it, v, e, sc) => {
