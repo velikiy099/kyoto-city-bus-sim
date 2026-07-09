@@ -152,23 +152,28 @@ function addTurnIntersections(g, path, turns) {
     // stubInHw: 直進スタブ(交差点の先の道)の幅がルートと異なる場合(九条大宮の大宮通=片道1 等)
     const stubIn = t.stubInHw ?? hwIn;
     const splitIn = Math.abs(stubIn - hwIn) > 0.3;
+    // 経路終端(=久我石原町終点のような行き止まり)近傍のターンは、その先に実在しない
+    // 「直進する交差道路」のスタブを描かない(実際には交差点ではなく敷地への引き込み路のため)
+    const isDeadEnd = path.length - t.sOut < STUB_LEN + 15;
+    const stubFwd = isDeadEnd ? Math.max(hwOut + 3, 6) : STUB_LEN;
+    const stubBack = isDeadEnd ? Math.max(hwIn + 3, 6) : STUB_LEN;
     const arms = [
       {
         heading: t.headingIn, hw: hwIn,
-        zSpan: [-(dIn + 2), splitIn ? hwOut + 2.4 : STUB_LEN],
-        furniture: splitIn ? [] : [[hwOut + 2, STUB_LEN - 1]],
+        zSpan: [-(dIn + 2), splitIn ? hwOut + 2.4 : stubFwd],
+        furniture: splitIn ? [] : [[hwOut + 2, stubFwd - 1]],
         crosswalks: splitIn ? [-(hwOut + 3.6)] : [hwOut + 3.6, -(hwOut + 3.6)],
       },
       ...(splitIn ? [{
         heading: t.headingIn, hw: stubIn,
-        zSpan: [hwOut + 2.4, STUB_LEN],
-        furniture: [[hwOut + 2.6, STUB_LEN - 1]],
+        zSpan: [hwOut + 2.4, stubFwd],
+        furniture: [[hwOut + 2.6, stubFwd - 1]],
         crosswalks: [hwOut + 3.6],
       }] : []),
       {
         heading: t.headingOut, hw: hwOut,
-        zSpan: [-STUB_LEN, dOut + 2],
-        furniture: [[-(STUB_LEN - 1), -(hwIn + 2)]],
+        zSpan: [-stubBack, dOut + 2],
+        furniture: [[-(stubBack - 1), -(hwIn + 2)]],
         crosswalks: [hwIn + 3.6, -(hwIn + 3.6)],
       },
     ];
@@ -286,8 +291,10 @@ export function buildRoad(path, route = null) {
   return g;
 }
 
-/** 地面(経路バウンディングボックス+マージンの1枚板) */
-export function buildGround(path) {
+/** 地面(経路バウンディングボックス+マージンの1枚板)。
+ * route.bridges を渡すと、川(nature.js の水面・土手)周辺の地面をなだらかに沈めて掘り下げ、
+ * 単一の平らな地面が水面・土手を覆い隠してしまうのを防ぐ。 */
+export function buildGround(path, bridges = []) {
   let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
   for (const [x, z] of path.points) {
     minX = Math.min(minX, x); maxX = Math.max(maxX, x);
@@ -295,9 +302,46 @@ export function buildGround(path) {
   }
   const m = 600;
   const w = maxX - minX + m * 2, h = maxZ - minZ + m * 2;
-  const geo = new THREE.PlaneGeometry(w, h);
+  const cx = (minX + maxX) / 2, cz = (minZ + maxZ) / 2;
+
+  // nature.js の水面・土手は道路点から左右に(340m沿道×w川幅)の帯状に置かれる。
+  // 道路直近(帯の内側)は沈めず、その帯の実効範囲だけをなだらかに沈める。
+  const smoothstep = (t) => t * t * (3 - 2 * t);
+  const clamp01 = (t) => Math.max(0, Math.min(1, t));
+  const smoothBand = (x, lo, hi, margin) => {
+    const rise = smoothstep(clamp01((x - lo) / margin));
+    const fall = smoothstep(clamp01((hi - x) / margin));
+    return Math.min(rise, fall);
+  };
+  const dips = bridges.map((br) => {
+    const [px, pz] = path.getPoint(br.s);
+    const [tx, tz] = path.getTangent(br.s);
+    const riverW = Math.max(18, br.length * 0.85);
+    return { px, pz, tx, tz, nx: -tz, nz: tx, halfLen: 175, innerV: riverW / 2, outerV: 340 / 2 + 7 + 15 };
+  });
+  const DIP_DEPTH = 3.4; // RIVER_DEPTH(3.2)よりわずかに深く沈め、土手最下段を隠さない
+  const segX = dips.length ? Math.min(220, Math.max(40, Math.round(w / 40))) : 1;
+  const segZ = dips.length ? Math.min(220, Math.max(40, Math.round(h / 40))) : 1;
+  const geo = new THREE.PlaneGeometry(w, h, segX, segZ);
+  if (dips.length) {
+    const pos = geo.attributes.position;
+    for (let i = 0; i < pos.count; i++) {
+      const wx = cx + pos.getX(i), wz = cz - pos.getY(i);
+      let dip = 0;
+      for (const d of dips) {
+        const dx = wx - d.px, dz = wz - d.pz;
+        const u = dx * d.tx + dz * d.tz;
+        const v = Math.abs(dx * d.nx + dz * d.nz);
+        const band = smoothBand(u, -d.halfLen, d.halfLen, 30) * smoothBand(v, d.innerV, d.outerV, 15);
+        dip = Math.max(dip, band);
+      }
+      if (dip > 0) pos.setZ(i, -dip * DIP_DEPTH);
+    }
+    pos.needsUpdate = true;
+    geo.computeVertexNormals();
+  }
   const mesh = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ color: CFG.colors.ground }));
   mesh.rotation.x = -Math.PI / 2;
-  mesh.position.set((minX + maxX) / 2, -0.05, (minZ + maxZ) / 2);
+  mesh.position.set(cx, -0.05, cz);
   return mesh;
 }

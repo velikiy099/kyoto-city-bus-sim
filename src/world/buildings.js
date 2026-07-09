@@ -166,12 +166,12 @@ export function buildBuildings(scene, path, exclusions = [], osmBuildings = []) 
 }
 
 // 実際の道路(OSMデータで沿道建物が疎な区間)に手動で密な2階建て住宅を補う区間。
-// 九条新千本〜小枝橋手前、城南宮道〜赤池(鴨川と反対の東側=negative lateralのみ)、
-// 桂川(久我橋)以西〜菱妻神社工場群の手前。
+// 九条新千本〜小枝橋手前、鳥羽離宮の木の帯を過ぎた先(赤池付近、s値は小枝橋detourの
+// 実ジオメトリ化に伴い前区間より約164m後ろへシフト済み)、桂川(久我橋)以西〜菱妻神社工場群の手前。
 const DENSE_RESIDENTIAL_ZONES = [
   { from: 4933, to: 7773 },
-  { from: 8306.9, to: 8617.5, sides: [-1] },
-  { from: 9372, to: 10080 },
+  { from: 8710.9, to: 8880, sides: [-1] }, // 川(鴨川)と反対の東側のみ
+  { from: 9533, to: 10233 },
 ];
 const zoneAt = (s) => DENSE_RESIDENTIAL_ZONES.find((z) => s >= z.from && s < z.to);
 

@@ -63,10 +63,11 @@ function buildConventionalUnderpass(scene, path, spec) {
   const aIn = spec.approachIn ?? 52;
   const aOut = spec.approachOut ?? 52;
   const deckHalf = (spec.deckHalf ?? 7.2) + 3.4; // 車道+橋上歩道の外縁
-  // デッキ・欄干(makeRibbon が標高追従するので路面と一緒に持ち上がる)
+  // デッキ・欄干(makeRibbon が標高追従するので路面と一緒に持ち上がる)。
+  // 欄干は車線と車線の間の仕切り程度の幅(0.2m)に抑える。
   scene.add(new THREE.Mesh(makeRibbon(path, -deckHalf, deckHalf, 0.22, sFrom, sTo, 2), deckMat));
-  scene.add(new THREE.Mesh(makeRibbon(path, -(deckHalf + 0.25), -(deckHalf - 0.25), 0.92, sFrom - aIn, sTo + aOut, 2), mat(0xc8ced2)));
-  scene.add(new THREE.Mesh(makeRibbon(path, deckHalf - 0.25, deckHalf + 0.25, 0.92, sFrom - aIn, sTo + aOut, 2), mat(0xc8ced2)));
+  scene.add(new THREE.Mesh(makeRibbon(path, -(deckHalf + 0.1), -(deckHalf - 0.1), 0.6, sFrom - aIn, sTo + aOut, 2), mat(0xc8ced2)));
+  scene.add(new THREE.Mesh(makeRibbon(path, deckHalf - 0.1, deckHalf + 0.1, 0.6, sFrom - aIn, sTo + aOut, 2), mat(0xc8ced2)));
 
   // 道路が持ち上がる場合(跨線橋): 桁とアプローチ擁壁で下部を埋める
   if ((spec.roadLayer ?? 0) > 0) {

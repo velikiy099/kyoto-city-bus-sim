@@ -36,7 +36,6 @@ export const CFG = {
     curbWindow: 0.8, // 縁石からの許容ギャップ [m]
     departEarlyGrace: 5, // 早発猶予 [s]
     // ダイヤは timetable.js の固定時刻表(9:56 発〜10:44 着)を使用
-    approachDist: 120, // 「まもなく」アナウンス距離 [m]
   },
   // --- スコア ---
   score: {

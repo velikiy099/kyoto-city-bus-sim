@@ -22,7 +22,7 @@ import { buildRailways } from './world/railways.js';
 import { buildExtraRoads } from './world/extraRoads.js';
 import { buildTraffic } from './world/traffic.js';
 import * as sfx from './audio/sfx.js';
-import { initAnnouncements, announceNext, announceApproach, announceTerminal, announceStart } from './audio/announcements.js';
+import { initAnnouncements, announceNext, announceStopping, announceTerminal, announceStart } from './audio/announcements.js';
 
 const STEP = 1 / 60;
 const DOOR_OFFSET = CFG.bus.wheelbase + 1.2; // 後軸→前扉
@@ -44,7 +44,7 @@ const sun = new THREE.DirectionalLight(0xfff2dd, 1.1);
 sun.position.set(-300, 400, -200);
 scene.add(sun);
 
-scene.add(buildGround(path));
+scene.add(buildGround(path, route.bridges));
 scene.add(buildRoad(path, route));
 buildExtraRoads(scene); // 千本通北側(二条駅前交差点)などルート外の道路
 buildRailways(scene, path, route.railStructures);
@@ -84,8 +84,6 @@ const traffic = buildTraffic(scene, path, {
     scoring.add(CFG.score.redLight, '信号無視!');
   },
 });
-// 始発は停止線に着けた状態で開始するため接近アナウンスは済扱い(「乗務開始」を打ち消さない)
-let approachAnnounced = true;
 const ops = createOps({
   bus,
   route,
@@ -97,9 +95,8 @@ const ops = createOps({
     onDoorOpen: () => sfx.doorAir(),
     onDoorClose: () => sfx.doorAir(),
     onFare: () => sfx.coin(),
-    onBuzzer: () => sfx.buzzer(),
+    onBuzzer: () => { sfx.buzzer(); announceStopping(); },
     onDepart() {
-      approachAnnounced = false;
       const next = route.stops[state.nextStopIndex];
       if (next) announceNext(next.name);
     },
@@ -239,13 +236,6 @@ function tick(dt, ePressed) {
   const [bfx, bfz] = bus.forward;
   traffic.update(dt, state.s, [bus.x + bfx * 3.15, bus.z + bfz * 3.15], bus.v);
   stopsView.updateWalkers(dt);
-
-  // 「まもなく」アナウンス(次停留所の 120m 手前)
-  const ns = route.stops[state.nextStopIndex];
-  if (ns && !approachAnnounced && !state.waitingDepart && ns.s - state.s < CFG.ops.approachDist) {
-    approachAnnounced = true;
-    if (mustStopAt(state.nextStopIndex)) announceApproach(ns.name);
-  }
 }
 
 // ---------------------------------------------------------------- frame loop

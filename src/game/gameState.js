@@ -88,6 +88,8 @@ export function createOps(ctx) {
     buzzerAnnounced = false;
     state.nextStopIndex++;
     waitingDepart = false;
+    // 停車せず通過した場合も、通常の発車時と同様に次停アナウンス等のフックを発火させる
+    events.onDepart?.(state.nextStopIndex - 1);
   }
 
   function complete() {

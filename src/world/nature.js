@@ -125,6 +125,10 @@ export function buildNature(scene, path) {
   // ---- 鳥羽離宮(城南宮道バス停の東側に木を密に植えて表現) ----
   const tobaStop = route.stops.find((st) => st.name === '城南宮道');
   if (tobaStop) {
+    // 城南宮周辺には建物を置かず木のみにする(実建物はここから離れているため、
+    // 「城南宮道」停留所周辺の沿道一帯を神社の参道・杜として扱う)
+    const [exX, exZ] = path.getPoint(Math.min(path.length, tobaStop.s + 90));
+    exclusions.push({ x: exX, z: exZ, r: 190 });
     let seed = 9001;
     const rndSeeded = () => {
       seed = (seed * 1103515245 + 12345) & 0x7fffffff;

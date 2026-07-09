@@ -34,7 +34,9 @@ function buildToji(scene, path) {
   // 東端: 大宮通(九条大宮進入直前)の西側路端(東寺は大宮通の西側にある。センターラインではなく
   // 実際の舗装外側+歩道分。西側=positive lateral=rightWidthAt が管轄)
   const eastX = turn.x - rightWidthAt((tojiDo.s + turn.s) / 2) - 2.5;
-  const southZ = turn.z;                       // 南端: 九条通(九条大宮)の緯度
+  // 南端: 九条通(九条大宮交差点)の進入側路端。turn.z(交差点中心)をそのまま使うと
+  // 九条通の舗装に食い込むため、進入側道路半幅(turn.hwIn)+余白ぶん北へ後退させる。
+  const southZ = turn.z - turn.hwIn - 2.5;
   const [westX] = path.getPoint(keihan.s);      // 西端: 京阪国道口交差点の経度
   const w = eastX - westX;
   const d = southZ - northZ;
@@ -56,8 +58,15 @@ function buildToji(scene, path) {
   }
 
   // 五重塔(境内の南東寄り = 九条大宮交差点の北西方向。実際の伽藍配置と同じ)
+  // 元々の相対位置(南壁修正前の southZ=turn.z 基準)から、九条大宮交差点(turn)に向けて10m近づける。
   const pagoda = new THREE.Group();
-  pagoda.position.set(eastX - cx - 65, 0, southZ - cz - 55);
+  const pagodaVecX = eastX - 65 - turn.x;
+  const pagodaVecZ = -55;
+  const pagodaDist = Math.hypot(pagodaVecX, pagodaVecZ);
+  const pagodaScale = Math.max(0, (pagodaDist - 10) / pagodaDist);
+  const pagodaWorldX = turn.x + pagodaVecX * pagodaScale;
+  const pagodaWorldZ = turn.z + pagodaVecZ * pagodaScale;
+  pagoda.position.set(pagodaWorldX - cx, 0, pagodaWorldZ - cz);
   let y = 0;
   for (let i = 0; i < 5; i++) {
     const bw = 12.5 - i * 1.7;
@@ -288,7 +297,9 @@ function buildTerminus(scene, path) {
   if (!stop) return { x: 0, z: 0, r: 0 };
 
   // 敷地の舗装(バス駐車スペース)。local X=道路と直交(奥行き)・local Z=道路沿い(長さ)
-  const lotW = 26, lotD = 28; // lotW: 道路からの奥行き, lotD: 道路沿いの長さ
+  // 実際の引き込み路(府道202号線→終点)はごく短い(約15m)ため、敷地もそれに合わせて
+  // ターン頂点(≒府道202号線)のすぐ先にコンパクトに収める。
+  const lotW = 22, lotD = 18; // lotW: 道路からの奥行き, lotD: 道路沿いの長さ
 
   const turn = route.turnIntersections.find((t) => Math.abs(t.s - stop.s) < 60);
   const availFrom = turn ? turn.sOut + 2 : Math.max(0, stop.s - lotD / 2);
@@ -308,7 +319,7 @@ function buildTerminus(scene, path) {
 
   // 駐車区画の白線(道路沿いに2台分・各区画は道路と直交する線で仕切る)
   const lineMat = new THREE.MeshBasicMaterial({ color: 0xe8e8e8 });
-  for (const zBay of [-9, 0, 9]) {
+  for (const zBay of [-(lotD / 2 - 3), 0, lotD / 2 - 3]) {
     const line = new THREE.Mesh(new THREE.PlaneGeometry(lotW - 4, 0.18), lineMat);
     line.rotation.x = -Math.PI / 2;
     line.position.set(2, 0.03, zBay);
