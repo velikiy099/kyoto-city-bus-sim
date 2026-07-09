@@ -7,7 +7,7 @@ export function showTitle(onStart) {
   div.className = "screen";
   div.innerHTML = `
     <div class="card">
-      <div class="headsign"><span class="num">18</span><span class="dest">横大路 久我石原町</span></div>
+      <div class="headsign"><span class="num">18</span><span class="dest">大宮通 久我石原町</span></div>
       <h1>京都市バス 18号系統 運転シミュレーター</h1>
       <h2>二条駅西口 → 久我石原町(全${route.stops.length}停留所・上鳥羽線)</h2>
       <div class="controls">

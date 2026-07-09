@@ -1998,7 +1998,7 @@ async function main() {
   const out = {
     routeName: "18号系統",
     operator: "京都市交通局(横大路営業所)",
-    destination: "横大路 久我石原町",
+    destination: "大宮通 久我石原町",
     origin: "二条駅西口",
     source,
     generatedAt: new Date().toISOString(),
