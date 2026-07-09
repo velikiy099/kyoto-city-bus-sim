@@ -1,9 +1,14 @@
-import { CFG } from '../config.js';
-import { leftWidthAt } from '../route/routeData.js';
-import { schedule, fmtTime, delayInfo } from './timetable.js';
-import { setPrompt, setDoorStatus, showToast } from '../ui/hud.js';
+import { CFG } from "../config.js";
+import { leftWidthAt } from "../route/routeData.js";
+import { schedule, fmtTime, delayInfo } from "./timetable.js";
+import { setPrompt, setDoorStatus, showToast } from "../ui/hud.js";
 
-export const DOOR = { CLOSED: 'CLOSED', OPENING: 'OPENING', OPEN: 'OPEN', CLOSING: 'CLOSING' };
+export const DOOR = {
+  CLOSED: "CLOSED",
+  OPENING: "OPENING",
+  OPEN: "OPEN",
+  CLOSING: "CLOSING",
+};
 
 /**
  * 停車業務の中枢: ドア開閉・正着判定・乗降・発車条件・通過違反
@@ -31,16 +36,18 @@ export function createOps(ctx) {
   /** 前扉の弧長位置(後軸 s + 前扉オフセット) */
   const doorS = () => state.s + CFG.bus.wheelbase + 1.2;
   /** 縁石ギャップ [m](車体左側面とその地点の実効縁石の距離。複数車線区間は路肩基準) */
-  const curbGap = () => state.lateral - CFG.bus.width / 2 + leftWidthAt(state.s);
+  const curbGap = () =>
+    state.lateral - CFG.bus.width / 2 + leftWidthAt(state.s);
 
   function openDoor() {
     const stop = route.stops[state.nextStopIndex];
     const err = Math.abs(doorS() - stop.s);
     const gap = curbGap();
-    if (err <= O.perfectWindow && gap <= 0.5) scoring.add(S.perfectStop, '正着!');
-    else if (err <= 3.0) scoring.add(S.goodStop, '停車OK');
-    else scoring.add(S.okStop, '停車');
-    if (recentMinAccel > -3.2) scoring.add(S.smoothStop, 'スムーズ停車');
+    if (err <= O.perfectWindow && gap <= 0.5)
+      scoring.add(S.perfectStop, "正着!");
+    else if (err <= 3.0) scoring.add(S.goodStop, "停車OK");
+    else scoring.add(S.okStop, "停車");
+    if (recentMinAccel > -3.2) scoring.add(S.smoothStop, "スムーズ停車");
     state.doorState = DOOR.OPENING;
     doorT = 0;
     bus.throttleLocked = true;
@@ -68,7 +75,7 @@ export function createOps(ctx) {
     const sched = schedule[i];
     if (!early && sched.checkpoint) {
       const d = state.clock - sched.time;
-      if (d >= 0 && d <= 30) scoring.add(S.onTimeDepart, '定時発車');
+      if (d >= 0 && d <= 30) scoring.add(S.onTimeDepart, "定時発車");
     }
     waitingDepart = false;
     buzzerAnnounced = false;
@@ -78,11 +85,11 @@ export function createOps(ctx) {
 
   function advancePassed(mustStop) {
     if (mustStop) {
-      scoring.add(S.skipStop, '停車違反(通過)');
+      scoring.add(S.skipStop, "停車違反(通過)");
       // 乗れなかった客は消える(苦情)
       stopsView.setWaiting(state.nextStopIndex, 0);
     } else {
-      showToast('通過(乗降なし)', 'good');
+      showToast("通過(乗降なし)", "good");
     }
     state.buzzer = false;
     buzzerAnnounced = false;
@@ -93,12 +100,14 @@ export function createOps(ctx) {
   }
 
   function complete() {
-    scoring.add(S.complete, '完走ボーナス');
+    scoring.add(S.complete, "完走ボーナス");
     events.onComplete?.();
   }
 
   return {
-    get doorState() { return state.doorState; },
+    get doorState() {
+      return state.doorState;
+    },
     /** teleport 用: 業務状態を指定停留所の手前走行中に合わせる */
     resetTo(stopIndex) {
       state.nextStopIndex = stopIndex;
@@ -132,7 +141,8 @@ export function createOps(ctx) {
 
       // ---- ドア状態機械 ----
       bus.throttleLocked = state.doorState !== DOOR.CLOSED;
-      let prompt = null, promptWarn = false;
+      let prompt = null,
+        promptWarn = false;
 
       switch (state.doorState) {
         case DOOR.CLOSED: {
@@ -144,7 +154,7 @@ export function createOps(ctx) {
               prompt = `発車時刻 ${fmtTime(sched.time)} まで待機 (あと${Math.ceil(untilDepart)}秒)`;
               promptWarn = true;
               if (bus.v > 0.5) {
-                scoring.add(S.earlyDepart, '早発!');
+                scoring.add(S.earlyDepart, "早発!");
                 depart(true);
               }
             } else if (bus.v > 0.5) {
@@ -154,15 +164,22 @@ export function createOps(ctx) {
           }
           if (last) break;
           const dS = doorS();
-          const inZone = Math.abs(dS - stop.s) <= O.stopWindow * 2 && curbGap() <= O.curbWindow + 1.2;
+          const inZone =
+            Math.abs(dS - stop.s) <= O.stopWindow * 2 &&
+            curbGap() <= O.curbWindow + 1.2;
           if (Math.abs(bus.v) < 0.1 && inZone) {
             const err = dS - stop.s;
             if (Math.abs(err) <= O.stopWindow * 2) {
-              prompt = 'E : ドア開(乗降)';
-              if (Math.abs(err) > 3) prompt += `  [停止線まで ${err > 0 ? '下がる' : '進む'} ${Math.abs(err).toFixed(1)}m]`;
+              prompt = "E : ドア開(乗降)";
+              if (Math.abs(err) > 3)
+                prompt += `  [停止線まで ${err > 0 ? "下がる" : "進む"} ${Math.abs(err).toFixed(1)}m]`;
               if (ePressed) openDoor();
             }
-          } else if (Math.abs(bus.v) < 0.1 && Math.abs(dS - stop.s) <= O.stopWindow * 2 && curbGap() > O.curbWindow + 1.2) {
+          } else if (
+            Math.abs(bus.v) < 0.1 &&
+            Math.abs(dS - stop.s) <= O.stopWindow * 2 &&
+            curbGap() > O.curbWindow + 1.2
+          ) {
             // 位置は合っているが寄せ不足
             prompt = `左に寄せて停車してください(縁石との間隔 ${curbGap().toFixed(1)}m)`;
             promptWarn = true;
@@ -175,7 +192,7 @@ export function createOps(ctx) {
         }
         case DOOR.OPENING: {
           doorT += dt;
-          prompt = 'ドア開放中…';
+          prompt = "ドア開放中…";
           if (doorT >= O.doorTime) {
             state.doorState = DOOR.OPEN;
             startBoarding();
@@ -206,10 +223,10 @@ export function createOps(ctx) {
           }
           const busy = b.alightLeft > 0 || b.boardLeft > 0;
           setDoorStatus(
-            `降車 のこり${b.alightLeft}人 ・ 乗車 のこり${b.boardLeft}人<br>運賃箱 ¥${state.fareTotal.toLocaleString()}`
+            `降車 のこり${b.alightLeft}人 ・ 乗車 のこり${b.boardLeft}人<br>運賃箱 ¥${state.fareTotal.toLocaleString()}`,
           );
           if (!busy) {
-            prompt = 'E : ドア閉';
+            prompt = "E : ドア閉";
             if (ePressed) {
               state.doorState = DOOR.CLOSING;
               doorT = 0;
@@ -221,7 +238,7 @@ export function createOps(ctx) {
         }
         case DOOR.CLOSING: {
           doorT += dt;
-          prompt = 'ドア閉鎖中…';
+          prompt = "ドア閉鎖中…";
           if (doorT >= O.doorTime) {
             state.doorState = DOOR.CLOSED;
             if (state.nextStopIndex === route.stops.length - 1) {

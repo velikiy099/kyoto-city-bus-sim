@@ -1,5 +1,5 @@
-import raw from '../data/route18.json';
-import { RoutePath } from './path.js';
+import raw from "../data/route18.json";
+import { RoutePath } from "./path.js";
 
 /** 路線データ一式(経路・停留所・橋・速度ゾーン) */
 export const route = {
@@ -11,7 +11,7 @@ export const route = {
   scale: raw.scale,
   path: new RoutePath(raw.path),
   // 上鳥羽村山町は北行きのみ停車(南行きは通過)のため除外
-  stops: raw.stops.filter((st) => st.name !== '上鳥羽村山町'), // [{name, s}]
+  stops: raw.stops.filter((st) => st.name !== "上鳥羽村山町"), // [{name, s}]
   bridges: raw.bridges, // [{name, s, length}]
   speedZones: raw.speedZones, // [{from, to, limit(km/h)}]
   roadSections: raw.roadSections ?? [], // [{from, to, lanes}]
@@ -25,7 +25,16 @@ export const route = {
 
 // ---- 車線構成(roadSections 由来。build-route-data.mjs の LANE_PLAN が生成) ----
 // {from, to, lanesF(進行方向), lanesB(対向。0=一方通行), wL(左幅), wR(右幅), center:'line'|'none'}
-const FALLBACK_SECTION = { from: 0, to: Infinity, lanes: 2, lanesF: 1, lanesB: 1, wL: 4.0, wR: 4.0, center: 'line' };
+const FALLBACK_SECTION = {
+  from: 0,
+  to: Infinity,
+  lanes: 2,
+  lanesF: 1,
+  lanesB: 1,
+  wL: 4.0,
+  wR: 4.0,
+  center: "line",
+};
 const sections = raw.roadSections?.length
   ? raw.roadSections.map((sec) => ({
       ...FALLBACK_SECTION,
@@ -104,14 +113,19 @@ export function turnExclusions() {
   for (const t of route.turnIntersections) {
     const hwIn = halfWidthAt(t.sIn);
     const hwOut = halfWidthAt(t.sOut);
-    out.push({ x: t.x, z: t.z, r: Math.max(hwIn, hwOut) + (t.crossWidth ?? 8) / 2 + 3 });
+    out.push({
+      x: t.x,
+      z: t.z,
+      r: Math.max(hwIn, hwOut) + (t.crossWidth ?? 8) / 2 + 3,
+    });
     // 直進スタブ(headingIn 前方)と退出道路の後方延長に沿って円を並べる
     const arms = [
       [Math.sin(t.headingIn), Math.cos(t.headingIn), hwIn],
       [-Math.sin(t.headingOut), -Math.cos(t.headingOut), hwOut],
     ];
     for (const [dx, dz, hw] of arms) {
-      for (const d of [14, 27, 40]) out.push({ x: t.x + dx * d, z: t.z + dz * d, r: hw + 3.5 });
+      for (const d of [14, 27, 40])
+        out.push({ x: t.x + dx * d, z: t.z + dz * d, r: hw + 3.5 });
     }
   }
   return out;
@@ -125,7 +139,9 @@ const APPROACH_LEN = 50;
 const elevSrc = raw.elevations?.length
   ? raw.elevations
   : (raw.railStructures ?? [])
-      .filter((r) => r.kind === 'conventional-underpass' && (r.roadLayer ?? 0) > 0)
+      .filter(
+        (r) => r.kind === "conventional-underpass" && (r.roadLayer ?? 0) > 0,
+      )
       .map((r) => ({ from: r.fromS, to: r.toS, height: 4.0 }));
 const elevRamps = elevSrc.map((r) => ({
   a0: r.from - (r.approachIn ?? APPROACH_LEN),

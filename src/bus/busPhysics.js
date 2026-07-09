@@ -1,4 +1,4 @@
-import { CFG } from '../config.js';
+import { CFG } from "../config.js";
 
 /**
  * 前輪操舵の自転車(kinematic bicycle)モデル。後軸中心が基準点。
@@ -21,7 +21,11 @@ export class BusPhysics {
 
   get maxSteer() {
     const B = CFG.bus;
-    return (B.maxSteerDeg * Math.PI) / 180 / (1 + Math.abs(this.v) / B.steerSpeedFactor);
+    return (
+      (B.maxSteerDeg * Math.PI) /
+      180 /
+      (1 + Math.abs(this.v) / B.steerSpeedFactor)
+    );
   }
 
   get forward() {
@@ -45,7 +49,8 @@ export class BusPhysics {
     this.delta += Math.sign(dDelta) * Math.min(Math.abs(dDelta), rate * dt);
 
     // --- 縦方向 ---
-    this.throttleState += ((throttle - this.throttleState) / B.throttleTau) * dt;
+    this.throttleState +=
+      ((throttle - this.throttleState) / B.throttleTau) * dt;
     let a = 0;
     if (this.v > 0.05) {
       // 前進中

@@ -1,13 +1,32 @@
-* { margin: 0; padding: 0; box-sizing: border-box; }
-html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+html,
 body {
-  font-family: "Hiragino Kaku Gothic ProN", "Hiragino Sans", "Noto Sans JP", "Yu Gothic", sans-serif;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #000;
+}
+body {
+  font-family:
+    "Hiragino Kaku Gothic ProN", "Hiragino Sans", "Noto Sans JP", "Yu Gothic",
+    sans-serif;
   user-select: none;
 }
-#app canvas { display: block; }
+#app canvas {
+  display: block;
+}
 
 /* ---------- HUD ---------- */
-#hud { position: fixed; inset: 0; pointer-events: none; color: #fff; }
+#hud {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  color: #fff;
+}
 
 .hud-panel {
   position: absolute;
@@ -20,106 +39,288 @@ body {
 
 /* 次停留所 LED 表示(上中央) */
 #next-stop {
-  top: 12px; left: 50%; transform: translateX(-50%);
-  min-width: 340px; text-align: center;
-  background: #0d1526; border-color: #2a3a5a;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  min-width: 340px;
+  text-align: center;
+  background: #0d1526;
+  border-color: #2a3a5a;
 }
-#next-stop .label { font-size: 11px; color: #8fa3c8; letter-spacing: 2px; }
+#next-stop .label {
+  font-size: 11px;
+  color: #8fa3c8;
+  letter-spacing: 2px;
+}
 #next-stop .name {
-  font-size: 26px; font-weight: 700; color: #ffb43c;
+  font-size: 26px;
+  font-weight: 700;
+  color: #ffb43c;
   text-shadow: 0 0 8px rgba(255, 180, 60, 0.6);
-  line-height: 1.3; min-height: 34px;
+  line-height: 1.3;
+  min-height: 34px;
 }
-#next-stop .sub { font-size: 12px; color: #9db4d8; min-height: 16px; }
+#next-stop .sub {
+  font-size: 12px;
+  color: #9db4d8;
+  min-height: 16px;
+}
 
 /* 速度計(右下) */
 #speedo {
-  right: 16px; bottom: 16px; text-align: center; min-width: 130px;
+  right: 16px;
+  bottom: 16px;
+  text-align: center;
+  min-width: 130px;
 }
-#speedo .kmh { font-size: 44px; font-weight: 800; font-variant-numeric: tabular-nums; line-height: 1; }
-#speedo .unit { font-size: 12px; color: #aab; }
+#speedo .kmh {
+  font-size: 44px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+#speedo .unit {
+  font-size: 12px;
+  color: #aab;
+}
 #speedo .limit {
-  margin-top: 6px; display: inline-block; width: 44px; height: 44px; border-radius: 50%;
-  background: #fff; border: 5px solid #d33; color: #111;
-  font-size: 19px; font-weight: 800; line-height: 34px;
+  margin-top: 6px;
+  display: inline-block;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: #fff;
+  border: 5px solid #d33;
+  color: #111;
+  font-size: 19px;
+  font-weight: 800;
+  line-height: 34px;
 }
-#speedo .over { color: #ff5544; }
+#speedo .over {
+  color: #ff5544;
+}
 
 /* 運行情報(左上): 時計・遅延・乗客・運賃 */
-#ops { left: 16px; top: 12px; font-size: 14px; line-height: 1.7; min-width: 190px; }
-#ops .clock { font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; }
-#ops .delay-ontime { color: #7fe0a0; }
-#ops .delay-late { color: #ffd25e; }
-#ops .delay-early { color: #ff6655; animation: blink 0.8s infinite; }
-@keyframes blink { 50% { opacity: 0.35; } }
+#ops {
+  left: 16px;
+  top: 12px;
+  font-size: 14px;
+  line-height: 1.7;
+  min-width: 190px;
+}
+#ops .clock {
+  font-size: 24px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+#ops .delay-ontime {
+  color: #7fe0a0;
+}
+#ops .delay-late {
+  color: #ffd25e;
+}
+#ops .delay-early {
+  color: #ff6655;
+  animation: blink 0.8s infinite;
+}
+@keyframes blink {
+  50% {
+    opacity: 0.35;
+  }
+}
 
 /* スコア(右上) */
-#score-panel { right: 16px; top: 12px; text-align: right; font-size: 14px; }
-#score-panel .score { font-size: 26px; font-weight: 800; font-variant-numeric: tabular-nums; }
+#score-panel {
+  right: 16px;
+  top: 12px;
+  text-align: right;
+  font-size: 14px;
+}
+#score-panel .score {
+  font-size: 26px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
 
 /* 操作プロンプト(下中央) */
 #prompt {
-  bottom: 90px; left: 50%; transform: translateX(-50%);
-  font-size: 17px; font-weight: 700; padding: 10px 22px;
-  background: rgba(20, 90, 50, 0.88); border-color: #3fae70;
+  bottom: 90px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 17px;
+  font-weight: 700;
+  padding: 10px 22px;
+  background: rgba(20, 90, 50, 0.88);
+  border-color: #3fae70;
   display: none;
 }
-#prompt.warn { background: rgba(140, 40, 30, 0.88); border-color: #d0604e; }
+#prompt.warn {
+  background: rgba(140, 40, 30, 0.88);
+  border-color: #d0604e;
+}
 
 /* トースト(中央上寄り) */
 #toasts {
-  position: absolute; top: 110px; left: 50%; transform: translateX(-50%);
-  display: flex; flex-direction: column; gap: 6px; align-items: center;
+  position: absolute;
+  top: 110px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: center;
 }
 .toast {
-  padding: 6px 16px; border-radius: 6px; font-size: 15px; font-weight: 700;
-  background: rgba(12, 20, 28, 0.85); border: 1px solid rgba(255,255,255,0.2);
+  padding: 6px 16px;
+  border-radius: 6px;
+  font-size: 15px;
+  font-weight: 700;
+  background: rgba(12, 20, 28, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.2);
   animation: fadeout 2.6s forwards;
 }
-.toast.good { color: #7fe0a0; border-color: #3fae70; }
-.toast.bad { color: #ff8877; border-color: #d0604e; }
-@keyframes fadeout { 0% { opacity: 0; transform: translateY(-6px); } 8% { opacity: 1; transform: none; } 78% { opacity: 1; } 100% { opacity: 0; } }
+.toast.good {
+  color: #7fe0a0;
+  border-color: #3fae70;
+}
+.toast.bad {
+  color: #ff8877;
+  border-color: #d0604e;
+}
+@keyframes fadeout {
+  0% {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  8% {
+    opacity: 1;
+    transform: none;
+  }
+  78% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
 
 /* ミニマップ(左下) */
 #minimap {
-  position: absolute; left: 16px; bottom: 16px;
+  position: absolute;
+  left: 16px;
+  bottom: 16px;
   background: rgba(12, 20, 28, 0.78);
-  border: 1px solid rgba(255, 255, 255, 0.18); border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
 }
 
 /* 乗降状況(下中央・小) */
 #door-status {
-  bottom: 16px; left: 50%; transform: translateX(-50%);
-  font-size: 13px; color: #cdd; display: none; text-align: center;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 13px;
+  color: #cdd;
+  display: none;
+  text-align: center;
 }
 
 /* ---------- タイトル / リザルト ---------- */
 .screen {
-  position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
-  background: rgba(8, 14, 20, 0.82); z-index: 10; pointer-events: auto;
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(8, 14, 20, 0.82);
+  z-index: 10;
+  pointer-events: auto;
 }
 .screen .card {
-  background: #101c28; border: 1px solid #2c4258; border-radius: 14px;
-  padding: 34px 44px; max-width: 620px; text-align: center; color: #e8f0f8;
+  background: #101c28;
+  border: 1px solid #2c4258;
+  border-radius: 14px;
+  padding: 34px 44px;
+  max-width: 620px;
+  text-align: center;
+  color: #e8f0f8;
   box-shadow: 0 12px 60px rgba(0, 0, 0, 0.6);
 }
-.screen h1 { font-size: 26px; margin-bottom: 4px; }
-.screen h2 { font-size: 17px; color: #9db4d8; margin-bottom: 18px; font-weight: 500; }
-.screen .rank { font-size: 64px; font-weight: 900; margin: 8px 0; }
-.screen table { margin: 12px auto; border-collapse: collapse; font-size: 14px; }
-.screen td { padding: 3px 14px; text-align: left; }
-.screen td:last-child { text-align: right; font-variant-numeric: tabular-nums; }
-.screen .controls { text-align: left; font-size: 13.5px; line-height: 1.9; margin: 14px auto; display: inline-block; }
-.screen .controls b { display: inline-block; min-width: 108px; color: #ffd25e; }
+.screen h1 {
+  font-size: 26px;
+  margin-bottom: 4px;
+}
+.screen h2 {
+  font-size: 17px;
+  color: #9db4d8;
+  margin-bottom: 18px;
+  font-weight: 500;
+}
+.screen .rank {
+  font-size: 64px;
+  font-weight: 900;
+  margin: 8px 0;
+}
+.screen table {
+  margin: 12px auto;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+.screen td {
+  padding: 3px 14px;
+  text-align: left;
+}
+.screen td:last-child {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.screen .controls {
+  text-align: left;
+  font-size: 13.5px;
+  line-height: 1.9;
+  margin: 14px auto;
+  display: inline-block;
+}
+.screen .controls b {
+  display: inline-block;
+  min-width: 108px;
+  color: #ffd25e;
+}
 .screen button {
-  margin-top: 16px; font-size: 17px; font-weight: 700; padding: 12px 38px;
-  background: #1e7a4f; color: #fff; border: none; border-radius: 8px; cursor: pointer;
+  margin-top: 16px;
+  font-size: 17px;
+  font-weight: 700;
+  padding: 12px 38px;
+  background: #1e7a4f;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
 }
-.screen button:hover { background: #249660; }
-.screen .src { margin-top: 14px; font-size: 11px; color: #7a8ba0; }
+.screen button:hover {
+  background: #249660;
+}
+.screen .src {
+  margin-top: 14px;
+  font-size: 11px;
+  color: #7a8ba0;
+}
 .headsign {
-  display: inline-block; background: #0d1526; border: 2px solid #2a3a5a; border-radius: 6px;
-  padding: 6px 18px; margin-bottom: 12px;
+  display: inline-block;
+  background: #0d1526;
+  border: 2px solid #2a3a5a;
+  border-radius: 6px;
+  padding: 6px 18px;
+  margin-bottom: 12px;
 }
-.headsign .num { color: #fff; font-size: 26px; font-weight: 900; margin-right: 14px; }
-.headsign .dest { color: #ffb43c; font-size: 20px; font-weight: 700; }
+.headsign .num {
+  color: #fff;
+  font-size: 26px;
+  font-weight: 900;
+  margin-right: 14px;
+}
+.headsign .dest {
+  color: #ffb43c;
+  font-size: 20px;
+  font-weight: 700;
+}

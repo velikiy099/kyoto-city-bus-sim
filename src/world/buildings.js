@@ -1,11 +1,20 @@
-import * as THREE from 'three';
-import { CFG } from '../config.js';
-import { route, leftWidthAt, rightWidthAt, halfWidthAt } from '../route/routeData.js';
+import * as THREE from "three";
+import { CFG } from "../config.js";
+import {
+  route,
+  leftWidthAt,
+  rightWidthAt,
+  halfWidthAt,
+} from "../route/routeData.js";
 
 // ---- InstancedMesh 構築(色付き)。複数の関数から共用 ----
 function makeInstanced(scene, geo, list, getMatrix) {
   if (!list.length) return null;
-  const mesh = new THREE.InstancedMesh(geo, new THREE.MeshLambertMaterial(), list.length);
+  const mesh = new THREE.InstancedMesh(
+    geo,
+    new THREE.MeshLambertMaterial(),
+    list.length,
+  );
   const m = new THREE.Matrix4();
   const q = new THREE.Quaternion();
   const e = new THREE.Euler();
@@ -27,7 +36,8 @@ function makeInstanced(scene, geo, list, getMatrix) {
 function mulberry32(seed) {
   let a = seed >>> 0;
   return () => {
-    a |= 0; a = (a + 0x6d2b79f5) | 0;
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
     let t = Math.imul(a ^ (a >>> 15), 1 | a);
     t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
@@ -49,23 +59,30 @@ function footprintGeometry(footprint, height) {
     indices.push(i, j, j + n, i, j + n, i + n);
   }
   const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
   geo.setIndex(indices);
   geo.computeVertexNormals();
   return geo;
 }
 
 function buildOsmBuildings(scene, buildings, exclusions) {
-  const isExcluded = (x, z) => exclusions.some((e) => (x - e.x) ** 2 + (z - e.z) ** 2 < e.r * e.r);
+  const isExcluded = (x, z) =>
+    exclusions.some((e) => (x - e.x) ** 2 + (z - e.z) ** 2 < e.r * e.r);
   const materials = new Map();
   let count = 0;
   for (const b of buildings ?? []) {
     if (!b.footprint?.length || b.footprint.length < 3) continue;
-    const center = b.footprint.reduce((acc, p) => [acc[0] + p[0], acc[1] + p[1]], [0, 0]).map((v) => v / b.footprint.length);
+    const center = b.footprint
+      .reduce((acc, p) => [acc[0] + p[0], acc[1] + p[1]], [0, 0])
+      .map((v) => v / b.footprint.length);
     if (isExcluded(center[0], center[1])) continue;
     const color = b.color ?? 0xcfc8ba;
-    if (!materials.has(color)) materials.set(color, new THREE.MeshLambertMaterial({ color }));
-    const mesh = new THREE.Mesh(footprintGeometry(b.footprint, Math.max(2.8, b.height ?? 6)), materials.get(color));
+    if (!materials.has(color))
+      materials.set(color, new THREE.MeshLambertMaterial({ color }));
+    const mesh = new THREE.Mesh(
+      footprintGeometry(b.footprint, Math.max(2.8, b.height ?? 6)),
+      materials.get(color),
+    );
     scene.add(mesh);
     count++;
   }
@@ -77,13 +94,28 @@ function buildOsmBuildings(scene, buildings, exclusions) {
  * 京都の景観: 市街地(二条〜九条)は中低層で高密、上鳥羽以南は低層+田畑。
  * ランドマーク周辺(landmarks.js の除外域)には置かない。
  */
-export function buildBuildings(scene, path, exclusions = [], osmBuildings = []) {
+export function buildBuildings(
+  scene,
+  path,
+  exclusions = [],
+  osmBuildings = [],
+) {
   if (osmBuildings.length) {
     const { count } = buildOsmBuildings(scene, osmBuildings, exclusions);
     // OSM建物データが疎い区間(南行き専用の迂回路沿い)は密な住宅を手動で補う
-    const denseCount = buildDenseResidential(scene, path, exclusions, osmBuildings);
+    const denseCount = buildDenseResidential(
+      scene,
+      path,
+      exclusions,
+      osmBuildings,
+    );
     // 交差点で交差する道路(自車が通らない側)沿いにも建物を並べる
-    const crossCount = buildCrossStreetResidential(scene, path, exclusions, osmBuildings);
+    const crossCount = buildCrossStreetResidential(
+      scene,
+      path,
+      exclusions,
+      osmBuildings,
+    );
     return { count: count + denseCount + crossCount };
   }
 
@@ -91,22 +123,28 @@ export function buildBuildings(scene, path, exclusions = [], osmBuildings = []) 
   const boxGeo = new THREE.BoxGeometry(1, 1, 1);
   boxGeo.translate(0, 0.5, 0); // 底面基準
 
-  const palettes = [0xd9d2c4, 0xcfc8ba, 0xbfb7a8, 0xa89f90, 0x8f8a80, 0xe2ddd2, 0x9aa0a8, 0x7f8891];
+  const palettes = [
+    0xd9d2c4, 0xcfc8ba, 0xbfb7a8, 0xa89f90, 0x8f8a80, 0xe2ddd2, 0x9aa0a8,
+    0x7f8891,
+  ];
   const roofPalettes = [0x4a4f55, 0x5d5348, 0x39424d, 0x6b625a];
 
   const items = []; // {x, z, ry, w, h, d, color}
   const roofItems = [];
   const L = path.length;
 
-  const isExcluded = (x, z) => exclusions.some((e) => (x - e.x) ** 2 + (z - e.z) ** 2 < e.r * e.r);
+  const isExcluded = (x, z) =>
+    exclusions.some((e) => (x - e.x) ** 2 + (z - e.z) ** 2 < e.r * e.r);
 
-  for (let s = 95; s < L - 10; s += 13 + rand() * 10) { // 二条駅西口の駅前広場(s<95)は空ける
+  for (let s = 95; s < L - 10; s += 13 + rand() * 10) {
+    // 二条駅西口の駅前広場(s<95)は空ける
     // 市街地係数: 路線北部(市街地)1.0 → 南部(郊外)へ緩やかに低下
     const t = s / L;
     const urban = t < 0.45 ? 1 : t < 0.62 ? 0.75 : 0.4;
     const [px, pz] = path.getPoint(s);
     const [tx, tz] = path.getTangent(s);
-    const nx = -tz, nz = tx;
+    const nx = -tz,
+      nz = tx;
     for (const side of [-1, 1]) {
       if (rand() > (side === -1 ? 0.92 : 0.9) * urban + 0.18) continue; // 郊外は歯抜け
       const setback = 8.2 + rand() * 7;
@@ -114,18 +152,43 @@ export function buildBuildings(scene, path, exclusions = [], osmBuildings = []) 
       const d = 6 + rand() * 8;
       let h;
       const r = rand();
-      if (urban > 0.9) h = r < 0.5 ? 6 + rand() * 6 : r < 0.85 ? 12 + rand() * 10 : 24 + rand() * 14;
+      if (urban > 0.9)
+        h =
+          r < 0.5
+            ? 6 + rand() * 6
+            : r < 0.85
+              ? 12 + rand() * 10
+              : 24 + rand() * 14;
       else if (urban > 0.6) h = r < 0.6 ? 5 + rand() * 5 : 9 + rand() * 8;
       else h = r < 0.75 ? 4 + rand() * 3 : 7 + rand() * 4;
-      const lat = side * ((side < 0 ? leftWidthAt(s) : rightWidthAt(s)) + setback + w / 2);
+      const lat =
+        side *
+        ((side < 0 ? leftWidthAt(s) : rightWidthAt(s)) + setback + w / 2);
       const x = px + nx * lat + tx * (rand() - 0.5) * 4;
       const z = pz + nz * lat + tz * (rand() - 0.5) * 4;
       if (isExcluded(x, z)) continue;
       const ry = Math.atan2(tx, tz) + (rand() - 0.5) * 0.08;
-      items.push({ x, z, ry, w, h, d, color: palettes[(rand() * palettes.length) | 0] });
+      items.push({
+        x,
+        z,
+        ry,
+        w,
+        h,
+        d,
+        color: palettes[(rand() * palettes.length) | 0],
+      });
       // 低層は瓦屋根風の薄い箱を載せる(京町家の雰囲気)
       if (h < 9 && rand() < 0.8) {
-        roofItems.push({ x, z, ry, w: w + 1.0, h: 0.5, d: d + 1.0, y: h, color: roofPalettes[(rand() * roofPalettes.length) | 0] });
+        roofItems.push({
+          x,
+          z,
+          ry,
+          w: w + 1.0,
+          h: 0.5,
+          d: d + 1.0,
+          y: h,
+          color: roofPalettes[(rand() * roofPalettes.length) | 0],
+        });
       }
     }
   }
@@ -137,13 +200,24 @@ export function buildBuildings(scene, path, exclusions = [], osmBuildings = []) 
   for (let s = L * 0.6; s < L - 20; s += 26 + rand() * 30) {
     const [px, pz] = path.getPoint(s);
     const [tx, tz] = path.getTangent(s);
-    const nx = -tz, nz = tx;
+    const nx = -tz,
+      nz = tx;
     for (const side of [-1, 1]) {
       if (rand() < 0.45) continue;
-      const lat = side * ((side < 0 ? leftWidthAt(s) : rightWidthAt(s)) + 14 + rand() * 26);
-      const x = px + nx * lat, z = pz + nz * lat;
+      const lat =
+        side *
+        ((side < 0 ? leftWidthAt(s) : rightWidthAt(s)) + 14 + rand() * 26);
+      const x = px + nx * lat,
+        z = pz + nz * lat;
       if (isExcluded(x, z)) continue;
-      fields.push({ x, z, w: 18 + rand() * 22, d: 14 + rand() * 16, ry: Math.atan2(tx, tz), color: fieldColors[(rand() * 4) | 0] });
+      fields.push({
+        x,
+        z,
+        w: 18 + rand() * 22,
+        d: 14 + rand() * 16,
+        ry: Math.atan2(tx, tz),
+        color: fieldColors[(rand() * 4) | 0],
+      });
     }
   }
 
@@ -176,7 +250,8 @@ const DENSE_RESIDENTIAL_ZONES = [
   { from: 8710.9, to: 8880, sides: [-1] }, // 川(鴨川)と反対の東側のみ
   { from: 9533, to: 10233 },
 ];
-const zoneAt = (s) => DENSE_RESIDENTIAL_ZONES.find((z) => s >= z.from && s < z.to);
+const zoneAt = (s) =>
+  DENSE_RESIDENTIAL_ZONES.find((z) => s >= z.from && s < z.to);
 
 /** 沿道の密な2階建て住宅(OSM建物の疎な区間を補う。実在建物とは重ねない) */
 function buildDenseResidential(scene, path, exclusions, osmBuildings) {
@@ -189,7 +264,10 @@ function buildDenseResidential(scene, path, exclusions, osmBuildings) {
   const roofItems = [];
 
   const obCenters = osmBuildings.map((b) => {
-    const c = b.footprint.reduce((acc, p) => [acc[0] + p[0], acc[1] + p[1]], [0, 0]);
+    const c = b.footprint.reduce(
+      (acc, p) => [acc[0] + p[0], acc[1] + p[1]],
+      [0, 0],
+    );
     return [c[0] / b.footprint.length, c[1] / b.footprint.length];
   });
   const isExcluded = (x, z) =>
@@ -202,20 +280,42 @@ function buildDenseResidential(scene, path, exclusions, osmBuildings) {
     if (!zone) continue;
     const [px, pz] = path.getPoint(s);
     const [tx, tz] = path.getTangent(s);
-    const nx = -tz, nz = tx;
+    const nx = -tz,
+      nz = tx;
     for (const side of [-1, 1]) {
       if (zone.sides && !zone.sides.includes(side)) continue; // 川側など片側のみ許可するゾーン
       if (rand() > 0.88) continue; // ほぼ隙間なく密集
       const setback = 5 + rand() * 3;
-      const w = 6 + rand() * 4, d = 6 + rand() * 5, h = 5.6 + rand() * 1.6; // 2階建て程度
-      const lat = side * ((side < 0 ? leftWidthAt(s) : rightWidthAt(s)) + setback + w / 2);
+      const w = 6 + rand() * 4,
+        d = 6 + rand() * 5,
+        h = 5.6 + rand() * 1.6; // 2階建て程度
+      const lat =
+        side *
+        ((side < 0 ? leftWidthAt(s) : rightWidthAt(s)) + setback + w / 2);
       const x = px + nx * lat + tx * (rand() - 0.5) * 3;
       const z = pz + nz * lat + tz * (rand() - 0.5) * 3;
       if (isExcluded(x, z)) continue;
       const ry = Math.atan2(tx, tz) + (rand() - 0.5) * 0.1;
-      items.push({ x, z, ry, w, h, d, color: palettes[(rand() * palettes.length) | 0] });
+      items.push({
+        x,
+        z,
+        ry,
+        w,
+        h,
+        d,
+        color: palettes[(rand() * palettes.length) | 0],
+      });
       if (rand() < 0.85) {
-        roofItems.push({ x, z, ry, w: w + 1, h: 0.5, d: d + 1, y: h, color: roofPalettes[(rand() * roofPalettes.length) | 0] });
+        roofItems.push({
+          x,
+          z,
+          ry,
+          w: w + 1,
+          h: 0.5,
+          d: d + 1,
+          y: h,
+          color: roofPalettes[(rand() * roofPalettes.length) | 0],
+        });
       }
     }
   }
@@ -248,7 +348,10 @@ function buildCrossStreetResidential(scene, path, exclusions, osmBuildings) {
   const roofItems = [];
 
   const obCenters = osmBuildings.map((b) => {
-    const c = b.footprint.reduce((acc, p) => [acc[0] + p[0], acc[1] + p[1]], [0, 0]);
+    const c = b.footprint.reduce(
+      (acc, p) => [acc[0] + p[0], acc[1] + p[1]],
+      [0, 0],
+    );
     return [c[0] / b.footprint.length, c[1] / b.footprint.length];
   });
   const isExcluded = (x, z) =>
@@ -260,23 +363,44 @@ function buildCrossStreetResidential(scene, path, exclusions, osmBuildings) {
   // 本線の実舗装との距離を正しく見積もれないことがあるため、path.closestS で実距離を
   // 直接測って本線に食い込む候補は必ず除外する(sHint は探索を軽くするための目安)。
   const scatterArm = (cx, cz, heading, side, armLen, halfW, dMin, sHint) => {
-    const dx = Math.sin(heading) * side, dz = Math.cos(heading) * side;
-    const nx = Math.cos(heading), nz = -Math.sin(heading);
+    const dx = Math.sin(heading) * side,
+      dz = Math.cos(heading) * side;
+    const nx = Math.cos(heading),
+      nz = -Math.sin(heading);
     const ry = heading + (side > 0 ? 0 : Math.PI);
     for (let d = dMin; d < armLen; d += 9 + rand() * 6) {
       for (const lSide of [-1, 1]) {
         if (rand() > 0.82) continue;
         const setback = halfW + 4 + rand() * 3;
-        const w = 6 + rand() * 4, dep = 6 + rand() * 5, h = 5.6 + rand() * 4.5;
+        const w = 6 + rand() * 4,
+          dep = 6 + rand() * 5,
+          h = 5.6 + rand() * 4.5;
         const lat = lSide * (setback + w / 2);
         const x = cx + dx * d + nx * lat;
         const z = cz + dz * d + nz * lat;
         if (isExcluded(x, z)) continue;
         const hit = path.closestS([x, z], sHint, 220);
         if (hit.dist < halfWidthAt(hit.s) + 3) continue; // 本線の実舗装に近すぎる候補は除外
-        items.push({ x, z, ry: ry + (rand() - 0.5) * 0.08, w, h, d: dep, color: palettes[(rand() * palettes.length) | 0] });
+        items.push({
+          x,
+          z,
+          ry: ry + (rand() - 0.5) * 0.08,
+          w,
+          h,
+          d: dep,
+          color: palettes[(rand() * palettes.length) | 0],
+        });
         if (rand() < 0.8) {
-          roofItems.push({ x, z, ry, w: w + 1, h: 0.5, d: dep + 1, y: h, color: roofPalettes[(rand() * roofPalettes.length) | 0] });
+          roofItems.push({
+            x,
+            z,
+            ry,
+            w: w + 1,
+            h: 0.5,
+            d: dep + 1,
+            y: h,
+            color: roofPalettes[(rand() * roofPalettes.length) | 0],
+          });
         }
       }
     }
@@ -289,14 +413,42 @@ function buildCrossStreetResidential(scene, path, exclusions, osmBuildings) {
     const halfW = (ix.width ?? 8) / 2;
     for (const arm of ix.arms) {
       if (!arm.exists || arm.length <= 0) continue;
-      scatterArm(cx, cz, ix.heading, arm.side, arm.length, halfW, Math.max(14, halfW + 6), s);
+      scatterArm(
+        cx,
+        cz,
+        ix.heading,
+        arm.side,
+        arm.length,
+        halfW,
+        Math.max(14, halfW + 6),
+        s,
+      );
     }
   }
-  const TURN_STUB_LEN = 42, TURN_ARM_LEN = 100;
+  const TURN_STUB_LEN = 42,
+    TURN_ARM_LEN = 100;
   for (const t of route.turnIntersections ?? []) {
     if (!t.crossName) continue; // 交差道路名が無い(=経路自身の折れのみ)場合は対象外
-    scatterArm(t.x, t.z, t.headingIn, 1, TURN_ARM_LEN, t.hwIn ?? 6, TURN_STUB_LEN + 3, t.sIn);
-    scatterArm(t.x, t.z, t.headingOut, -1, TURN_ARM_LEN, t.hwOut ?? 6, TURN_STUB_LEN + 3, t.sOut);
+    scatterArm(
+      t.x,
+      t.z,
+      t.headingIn,
+      1,
+      TURN_ARM_LEN,
+      t.hwIn ?? 6,
+      TURN_STUB_LEN + 3,
+      t.sIn,
+    );
+    scatterArm(
+      t.x,
+      t.z,
+      t.headingOut,
+      -1,
+      TURN_ARM_LEN,
+      t.hwOut ?? 6,
+      TURN_STUB_LEN + 3,
+      t.sOut,
+    );
   }
 
   makeInstanced(scene, boxGeo, items, (it, v, e, sc) => {

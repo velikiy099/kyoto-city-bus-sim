@@ -1,5 +1,5 @@
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { lambertize } from './lambertize.js';
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { lambertize } from "./lambertize.js";
 
 let promise = null;
 
@@ -7,13 +7,13 @@ let promise = null;
 export function loadProps() {
   promise ??= new Promise((resolve, reject) => {
     new GLTFLoader().load(
-      'models/props.glb',
+      "models/props.glb",
       (gltf) => {
         lambertize(gltf.scene);
         resolve(gltf.scene);
       },
       undefined,
-      reject
+      reject,
     );
   });
   return promise;

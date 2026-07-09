@@ -1,10 +1,10 @@
-import { route } from '../route/routeData.js';
-import { fmtTime, schedule } from '../game/timetable.js';
+import { route } from "../route/routeData.js";
+import { fmtTime, schedule } from "../game/timetable.js";
 
 /** タイトル画面 */
 export function showTitle(onStart) {
-  const div = document.createElement('div');
-  div.className = 'screen';
+  const div = document.createElement("div");
+  div.className = "screen";
   div.innerHTML = `
     <div class="card">
       <div class="headsign"><span class="num">18</span><span class="dest">横大路 久我石原町</span></div>
@@ -28,7 +28,7 @@ export function showTitle(onStart) {
     </div>
   `;
   document.body.appendChild(div);
-  div.querySelector('#start-btn').addEventListener('click', () => {
+  div.querySelector("#start-btn").addEventListener("click", () => {
     div.remove();
     onStart();
   });
@@ -36,23 +36,29 @@ export function showTitle(onStart) {
 
 /** リザルト画面 */
 export function showResult(stats) {
-  const div = document.createElement('div');
-  div.className = 'screen';
+  const div = document.createElement("div");
+  div.className = "screen";
   const rows = [
-    ['最終スコア', `${Math.round(stats.score)} 点`],
-    ['輸送人数', `${stats.carried} 人`],
-    ['収受運賃', `¥${stats.fare.toLocaleString()}`],
-    ['終点到着時刻', `${fmtTime(stats.clock)}(定刻 ${fmtTime(stats.schedArrival)})`],
-    ['最終遅延', stats.delayText],
+    ["最終スコア", `${Math.round(stats.score)} 点`],
+    ["輸送人数", `${stats.carried} 人`],
+    ["収受運賃", `¥${stats.fare.toLocaleString()}`],
+    [
+      "終点到着時刻",
+      `${fmtTime(stats.clock)}(定刻 ${fmtTime(stats.schedArrival)})`,
+    ],
+    ["最終遅延", stats.delayText],
   ];
   const detail = stats.breakdown
-    .map(([label, e]) => `<tr><td>${label} ×${e.count}</td><td>${e.total > 0 ? '+' : ''}${Math.round(e.total)}</td></tr>`)
-    .join('');
+    .map(
+      ([label, e]) =>
+        `<tr><td>${label} ×${e.count}</td><td>${e.total > 0 ? "+" : ""}${Math.round(e.total)}</td></tr>`,
+    )
+    .join("");
   div.innerHTML = `
     <div class="card">
       <h1>乗務終了 ── 久我石原町 到着</h1>
-      <div class="rank" style="color:${{ S: '#ffd700', A: '#7fe0a0', B: '#7fb8e0', C: '#d8c890', D: '#c08878' }[stats.rank]}">${stats.rank}</div>
-      <table>${rows.map(([a, b]) => `<tr><td>${a}</td><td>${b}</td></tr>`).join('')}</table>
+      <div class="rank" style="color:${{ S: "#ffd700", A: "#7fe0a0", B: "#7fb8e0", C: "#d8c890", D: "#c08878" }[stats.rank]}">${stats.rank}</div>
+      <table>${rows.map(([a, b]) => `<tr><td>${a}</td><td>${b}</td></tr>`).join("")}</table>
       <details style="font-size:13px;color:#9db4d8;margin-top:6px"><summary style="cursor:pointer">スコア内訳</summary>
         <table style="margin-top:6px">${detail}</table>
       </details>
@@ -60,5 +66,7 @@ export function showResult(stats) {
     </div>
   `;
   document.body.appendChild(div);
-  div.querySelector('#retry-btn').addEventListener('click', () => location.reload());
+  div
+    .querySelector("#retry-btn")
+    .addEventListener("click", () => location.reload());
 }

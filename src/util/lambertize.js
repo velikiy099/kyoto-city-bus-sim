@@ -1,4 +1,4 @@
-import * as THREE from 'three';
+import * as THREE from "three";
 
 /**
  * glTFのStandardマテリアルを世界観(Lambert)に合わせて変換する。
@@ -15,7 +15,11 @@ function convert(m) {
   if (cache.has(m.uuid)) return cache.get(m.uuid);
   const g = GLASS[m.name];
   const out = g
-    ? new THREE.MeshLambertMaterial({ color: g.color, transparent: true, opacity: g.opacity })
+    ? new THREE.MeshLambertMaterial({
+        color: g.color,
+        transparent: true,
+        opacity: g.opacity,
+      })
     : new THREE.MeshLambertMaterial({
         color: m.color,
         emissive: m.emissive ?? new THREE.Color(0x000000),
@@ -30,6 +34,8 @@ function convert(m) {
 export function lambertize(model) {
   model.traverse((o) => {
     if (!o.isMesh) return;
-    o.material = Array.isArray(o.material) ? o.material.map(convert) : convert(o.material);
+    o.material = Array.isArray(o.material)
+      ? o.material.map(convert)
+      : convert(o.material);
   });
 }

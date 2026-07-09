@@ -4,31 +4,35 @@ const pressedEdge = new Set(); // このフレームで押されたキー
 let override = null; // {throttle, brake, steer, door, ...} debug用
 
 const KEYMAP = {
-  KeyW: 'throttle', ArrowUp: 'throttle',
-  KeyS: 'brake', ArrowDown: 'brake',
-  KeyA: 'left', ArrowLeft: 'left',
-  KeyD: 'right', ArrowRight: 'right',
+  KeyW: "throttle",
+  ArrowUp: "throttle",
+  KeyS: "brake",
+  ArrowDown: "brake",
+  KeyA: "left",
+  ArrowLeft: "left",
+  KeyD: "right",
+  ArrowRight: "right",
 };
 
-window.addEventListener('keydown', (e) => {
+window.addEventListener("keydown", (e) => {
   if (e.repeat) return;
   keys.add(e.code);
   pressedEdge.add(e.code);
 });
-window.addEventListener('keyup', (e) => keys.delete(e.code));
-window.addEventListener('blur', () => keys.clear());
+window.addEventListener("keyup", (e) => keys.delete(e.code));
+window.addEventListener("blur", () => keys.clear());
 
 export const input = {
   /** 連続入力(毎フレーム) */
   axes() {
     const o = override ?? {};
     return {
-      throttle: o.throttle ?? (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0),
-      brake: o.brake ?? (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0),
+      throttle: o.throttle ?? (keys.has("KeyW") || keys.has("ArrowUp") ? 1 : 0),
+      brake: o.brake ?? (keys.has("KeyS") || keys.has("ArrowDown") ? 1 : 0),
       steer:
         o.steer ??
-        ((keys.has('KeyA') || keys.has('ArrowLeft') ? -1 : 0) +
-          (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0)),
+        (keys.has("KeyA") || keys.has("ArrowLeft") ? -1 : 0) +
+          (keys.has("KeyD") || keys.has("ArrowRight") ? 1 : 0),
     };
   },
   /** 押下エッジ(1フレームだけ true) */
