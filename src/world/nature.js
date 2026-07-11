@@ -7,6 +7,7 @@ import {
   elevationAt,
 } from "../route/routeData.js";
 import { loadProps } from "../util/propsLib.js";
+import { clippedRiverPoints } from "./road.js";
 
 const mat = (color, opts = {}) =>
   new THREE.MeshLambertMaterial({ color, ...opts });
@@ -18,6 +19,8 @@ const BANK_TIERS = [
   { h: 1.2, w: 6, color: 0x7ba15e }, // 上段: 芝の土手
   { h: RIVER_DEPTH - 1.2, w: 4.5, color: 0x9c9178 }, // 下段: 護岸(土)
 ];
+const BRIDGE_RAIL_CLEARANCE = 1.1; // 車道端から欄干中心まで [m]
+const RAIL_SEGMENT_LENGTH = 8; // 曲線区間でも道路から外れないよう分割描画 [m]
 
 /**
  * 川(鴨川・桂川・西高瀬川)・橋・遠景の山・街路樹
@@ -30,79 +33,152 @@ export function buildNature(scene, path) {
   const exclusions = [];
 
   // ---- 川と橋 ----
+  // 実測ポリライン(route.rivers。tools/build-route-data.mjs が OSM waterway から切り出し
+  // ゲーム座標へ投影済み)があればそれに沿ったリボンとして川を描く。
+  // 経路との交差角は橋によって様々で、4橋とも実際にはほぼ並走に近い浅い角度(-6°〜21°)
+  // でしか交差しない。旧実装は「橋の直交方向(across)に2枚を177mずつ離して置く」前提
+  // だったため、浅い角度の橋では水面が経路から100m以上離れた場所へ飛んでしまい、
+  // (1) 運転中は川が全く見えず、(2) その飛んだ水面・土手の巨大な板(340m×高々数m)が
+  // 遠景に不自然に突き刺さって見える、という2つの不具合が同時に起きていた。
+  // 経路直近に水面を1枚センターで置くリボン方式に置き換えることで両方を解消する。
+
+  /** points に沿った帯ジオメトリ(offFrom/offTo は各頂点の進行方向に対する左法線オフセット) */
+  function ribbonGeometry(points, offFrom, offTo, y) {
+    const positions = [];
+    const indices = [];
+    for (let i = 0; i < points.length; i++) {
+      const prev = points[Math.max(0, i - 1)];
+      const next = points[Math.min(points.length - 1, i + 1)];
+      const dx = next[0] - prev[0],
+        dz = next[1] - prev[1];
+      const l = Math.hypot(dx, dz) || 1e-9;
+      const nx = -dz / l,
+        nz = dx / l;
+      const p = points[i];
+      positions.push(p[0] + nx * offFrom, y, p[1] + nz * offFrom);
+      positions.push(p[0] + nx * offTo, y, p[1] + nz * offTo);
+      if (i > 0) {
+        const b = i * 2;
+        indices.push(b - 2, b - 1, b, b - 1, b + 1, b);
+      }
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute(
+      "position",
+      new THREE.Float32BufferAttribute(positions, 3),
+    );
+    geo.setIndex(indices);
+    geo.computeVertexNormals();
+    return geo;
+  }
+
+  /** 道路の曲線に追従する欄干を短い箱の連続として描く */
+  function addBridgeRail(side, fromS, toS) {
+    for (let s = fromS; s < toS; s += RAIL_SEGMENT_LENGTH) {
+      const nextS = Math.min(toS, s + RAIL_SEGMENT_LENGTH);
+      const midS = (s + nextS) / 2;
+      const [rx, rz] = path.getPoint(midS);
+      const [tx, tz] = path.getTangent(midS);
+      const nx = -tz,
+        nz = tx;
+      const roadEdge =
+        side < 0 ? leftWidthAt(midS) : rightWidthAt(midS);
+      const railOffset = roadEdge + BRIDGE_RAIL_CLEARANCE;
+      const rail = new THREE.Mesh(
+        new THREE.BoxGeometry(
+          0.35,
+          1.15,
+          Math.max(0.5, nextS - s + 0.2),
+        ),
+        mat(0xdfe3e6),
+      );
+      rail.position.set(
+        rx + nx * side * railOffset,
+        elevationAt(midS) + 0.85,
+        rz + nz * side * railOffset,
+      );
+      rail.rotation.y = Math.atan2(tx, tz);
+      g.add(rail);
+    }
+  }
+
   for (const br of route.bridges) {
     const [px, pz] = path.getPoint(br.s);
     const [tx, tz] = path.getTangent(br.s);
-    const across = Math.atan2(tx, tz); // 経路方位
+    const roadHeading = Math.atan2(tx, tz); // 経路方位(橋桁・欄干は道路に沿わせる)
     const w = Math.max(18, br.length * 0.85); // 川幅
+    const halfW = w / 2;
     const deckElev = elevationAt(br.s); // 跨線橋等と重なる場合は路面高さに追従
+    // 久我橋・天神橋は従来の「川幅+10m」を橋桁にも流用していたため、
+    // 端部の欄干が接続道路まで伸びていた。橋桁と欄干は実際の川幅相当の
+    // スパンに揃え、その他の橋の見た目は従来値を維持する。
+    const bridgeSpan =
+      br.name === "久我橋(桂川)" || br.name === "天神橋(西高瀬川)"
+        ? w
+        : w + 10;
 
-    // 川面(道路の左右に2枚 — 道路帯とは重ねない)。水面は地表より RIVER_DEPTH 低い。
-    const nx = -tz,
-      nz = tx; // 経路の横方向
-    for (const side of [-1, 1]) {
-      const water = new THREE.Mesh(
-        new THREE.PlaneGeometry(340, w),
+    // 実測ポリライン(同一河川の隣接橋まで届く分は road.js の clippedRiverPoints で
+    // 橋の直近だけに切り詰め済み)。buildGround(road.js)の地面沈み込みと必ず
+    // 同じ範囲を使うことで、水面・土手の見た目と地面の沈み込みを一致させる
+    // (切り詰めを両者で別々に行うと、一方だけ範囲が違って橋が実際より短く/
+    // 浮いて見える不整合が出ていた)。
+    const points = clippedRiverPoints(path, br, route.rivers);
+
+    // 水面(地表より RIVER_DEPTH 低い)
+    g.add(
+      new THREE.Mesh(
+        ribbonGeometry(points, -halfW, halfW, -RIVER_DEPTH + 0.05),
         mat(0x4fa8d8),
-      );
-      water.rotation.x = -Math.PI / 2;
-      water.rotation.z = -across;
-      const off = side * (340 / 2 + 7);
-      water.position.set(px + nx * off, -RIVER_DEPTH + 0.05, pz + nz * off);
-      g.add(water);
-
-      // 土手(地表→水面の段状斜面)。両岸(bankSide)・両段(BANK_TIERS)で計4段。
-      for (const bankSide of [-1, 1]) {
-        let yTop = 0,
-          distFromWater = w / 2;
-        for (const tier of BANK_TIERS) {
-          const yMid = yTop - tier.h / 2;
-          const bank = new THREE.Mesh(
-            new THREE.BoxGeometry(340, tier.h, tier.w),
+      ),
+    );
+    // 土手(地表→水面の段状斜面)。両岸・両段(BANK_TIERS)で計4本のリボン。
+    for (const bankSide of [-1, 1]) {
+      let yTop = 0,
+        distFromWater = halfW;
+      for (const tier of BANK_TIERS) {
+        const yMid = yTop - tier.h / 2;
+        const from = bankSide * distFromWater;
+        const to = bankSide * (distFromWater + tier.w);
+        g.add(
+          new THREE.Mesh(
+            ribbonGeometry(
+              points,
+              Math.min(from, to),
+              Math.max(from, to),
+              yMid,
+            ),
             mat(tier.color),
-          );
-          bank.rotation.y = across;
-          const d = distFromWater + tier.w / 2;
-          bank.position.set(
-            px + nx * off + tx * bankSide * d,
-            yMid,
-            pz + nz * off + tz * bankSide * d,
-          );
-          g.add(bank);
-          yTop -= tier.h;
-          distFromWater += tier.w;
-        }
+          ),
+        );
+        yTop -= tier.h;
+        distFromWater += tier.w;
       }
     }
+    // 川沿いには建物を置かない(ポリライン各点に沿って除外円を並べる)
+    for (const [rx, rz] of points)
+      exclusions.push({ x: rx, z: rz, r: halfW + 24 });
 
-    // 橋桁(路面 elevationAt(br.s) の下に確実に下げて z-fight を防ぐ)と欄干
-    const deck = new THREE.Mesh(
-      new THREE.BoxGeometry(11, 0.8, w + 10),
-      mat(0x8f9499),
-    );
-    deck.position.set(px, deckElev - 0.48, pz);
-    deck.rotation.y = across;
-    g.add(deck);
-    for (const side of [-1, 1]) {
-      const rail = new THREE.Mesh(
-        new THREE.BoxGeometry(0.35, 1.15, w + 10),
-        mat(0xdfe3e6),
+    // 小枝橋の路面は road.js の高架区間が正しい幅・標高で描いているため、
+    // ここで別のBoxGeometryを重ねない。重複した橋桁が視点によって板状に見える原因になる。
+    // その他の河川橋だけ薄い下部桁を残す。
+    if (br.name !== "小枝橋(鴨川)") {
+      const leftEdge = leftWidthAt(br.s) + BRIDGE_RAIL_CLEARANCE;
+      const rightEdge = rightWidthAt(br.s) + BRIDGE_RAIL_CLEARANCE;
+      const deck = new THREE.Mesh(
+        new THREE.BoxGeometry(leftEdge + rightEdge, 0.8, bridgeSpan),
+        mat(0x8f9499),
       );
-      const nx = -tz,
-        nz = tx;
-      rail.position.set(
-        px + nx * side * 5.1,
-        deckElev + 0.85,
-        pz + nz * side * 5.1,
-      );
-      rail.rotation.y = across;
-      g.add(rail);
+      const deckCenterLat = (rightEdge - leftEdge) / 2;
+      deck.position.set(px, deckElev - 0.48, pz);
+      deck.position.x += -tz * deckCenterLat;
+      deck.position.z += tx * deckCenterLat;
+      deck.rotation.y = roadHeading;
+      g.add(deck);
     }
-
-    // 川の上・土手には建物を置かない(半径は実際の川幅+土手ぶんに比例。
-    // 以前は全橋一律340mで、実際の川幅(例: 小枝橋51m)よりはるかに広い範囲を
-    // 建物禁止にしてしまい、小枝橋以南〜赤池の建物配置を妨げていた)
-    exclusions.push({ x: px, z: pz, r: w / 2 + 24 });
+    const railFrom = Math.max(0, br.s - bridgeSpan / 2);
+    const railTo = Math.min(path.length, br.s + bridgeSpan / 2);
+    for (const side of [-1, 1])
+      addBridgeRail(side, railFrom, railTo);
   }
 
   // ---- 遠景の山(北・東・西 — 京都盆地) ----
@@ -200,7 +276,112 @@ export function buildNature(scene, path) {
       const z = cz + (rndSeeded() - 0.5) * 2 * halfD;
       if (turnZones.some((e) => (x - e.x) ** 2 + (z - e.z) ** 2 < e.r * e.r))
         continue;
+      // 公園の矩形スキャッター範囲(anchorS±71m基準)が実際の道路帯にかかる区間があり
+      // (城南宮道停留所付近)、車道の真上に木が生えて見えていた。経路に近すぎる候補は除外する。
+      const { s: ts, lateral: tlat } = path.closestS([x, z]);
+      const roadHw = tlat < 0 ? leftWidthAt(ts) : rightWidthAt(ts);
+      if (Math.abs(tlat) < roadHw + 1.5) continue;
       items.push([x, z]);
+    }
+  }
+
+  // ---- 梅小路公園 (OSM実測) ----
+  if (route.umekojiTrees) {
+    // 道路・交差点・建物との衝突判定用ヘルパー
+    const isValidTreePos = (x, z) => {
+      if (turnZones.some((e) => (x - e.x) ** 2 + (z - e.z) ** 2 < e.r * e.r))
+        return false;
+      const { s: ts, lateral: tlat } = path.closestS([x, z]);
+      const roadHw = tlat < 0 ? leftWidthAt(ts) : rightWidthAt(ts);
+      if (Math.abs(tlat) < roadHw + 1.5) return false;
+      return true;
+    };
+
+    // 単木(trees)
+    for (const [x, z] of route.umekojiTrees.trees || []) {
+      if (isValidTreePos(x, z)) items.push([x, z]);
+    }
+
+    // 樹林(forests)
+    const polygonArea = (pts) => {
+      let a = 0;
+      for (let i = 0; i < pts.length; i++) {
+        const p = pts[i];
+        const q = pts[(i + 1) % pts.length];
+        a += p[0] * q[1] - q[0] * p[1];
+      }
+      return Math.abs(a / 2);
+    };
+    const pointInPolygon = (x, z, pts) => {
+      let inside = false;
+      for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+        const xi = pts[i][0],
+          zi = pts[i][1];
+        const xj = pts[j][0],
+          zj = pts[j][1];
+        const intersect =
+          zi > z !== zj > z && x < ((xj - xi) * (z - zi)) / (zj - zi) + xi;
+        if (intersect) inside = !inside;
+      }
+      return inside;
+    };
+
+    let forestSeed = 10001;
+    for (const forest of route.umekojiTrees.forests || []) {
+      if (forest.length < 3) continue;
+      let minX = Infinity,
+        maxX = -Infinity,
+        minZ = Infinity,
+        maxZ = -Infinity;
+      for (const p of forest) {
+        minX = Math.min(minX, p[0]);
+        maxX = Math.max(maxX, p[0]);
+        minZ = Math.min(minZ, p[1]);
+        maxZ = Math.max(maxZ, p[1]);
+      }
+
+      const area = polygonArea(forest);
+      const count = Math.min(400, Math.floor(area / 55));
+      const maxTries = count * 10;
+      let placed = 0;
+
+      let seed = forestSeed++;
+      const rndSeeded = () => {
+        seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+        return seed / 0x7fffffff;
+      };
+
+      for (let i = 0; i < maxTries && placed < count; i++) {
+        const tx = minX + rndSeeded() * (maxX - minX);
+        const tz = minZ + rndSeeded() * (maxZ - minZ);
+        if (pointInPolygon(tx, tz, forest) && isValidTreePos(tx, tz)) {
+          items.push([tx, tz]);
+          placed++;
+        }
+      }
+    }
+
+    // 並木列(treeRows)
+    for (const row of route.umekojiTrees.treeRows || []) {
+      for (let i = 0; i < row.length - 1; i++) {
+        const a = row[i];
+        const b = row[i + 1];
+        const dx = b[0] - a[0],
+          dz = b[1] - a[1];
+        const len = Math.hypot(dx, dz);
+        if (len < 1e-6) continue;
+        const count = Math.max(1, Math.floor(len / 7));
+        const stepX = dx / count;
+        const stepZ = dz / count;
+        for (let j = 0; j < count; j++) {
+          const tx = a[0] + stepX * j;
+          const tz = a[1] + stepZ * j;
+          if (isValidTreePos(tx, tz)) items.push([tx, tz]);
+        }
+        if (i === row.length - 2) {
+          if (isValidTreePos(b[0], b[1])) items.push([b[0], b[1]]);
+        }
+      }
     }
   }
 

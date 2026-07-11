@@ -20,7 +20,8 @@ export function makeRibbon(
   const positions = [];
   const indices = [];
   let row = 0;
-  for (let s = sFrom; s <= sTo + 0.001; s += sStep) {
+  // セクション終端まで必ず描く(端数で終端が落ちると境界に切れ目が出る)
+  for (let s = sFrom; ; s += sStep) {
     const ss = Math.min(s, sTo);
     const [px, pz] = path.getPoint(ss);
     const [tx, tz] = path.getTangent(ss);
@@ -294,12 +295,19 @@ function addTurnIntersections(g, path, turns) {
     // gap: 交差点ボックス縁(頂点からの距離)。ここから外側にのみ区画線・縁石・歩道を引く
     // stubInHw: 直進スタブ(交差点の先の道)の幅がルートと異なる場合(九条大宮の大宮通=片道1 等)
     const stubIn = t.stubInHw ?? hwIn;
-    const splitIn = Math.abs(stubIn - hwIn) > 0.3;
+    const splitIn = Math.abs(stubIn - hwIn) > 0.3 || t.stubInHeadingDeg != null;
     // 経路終端(=久我石原町終点のような行き止まり)近傍のターンは、その先に実在しない
     // 「直進する交差道路」のスタブを描かない(実際には交差点ではなく敷地への引き込み路のため)
     const isDeadEnd = path.length - t.sOut < STUB_LEN + 15;
-    const stubFwd = isDeadEnd ? Math.max(hwOut + 3, 6) : STUB_LEN;
-    const stubBack = isDeadEnd ? Math.max(hwIn + 3, 6) : STUB_LEN;
+    // stubInLen: 進入前の道路(headingIn)が交差点の先も実際にはもっと長く続く場合の
+    // 描画長さ override(既定 STUB_LEN=42m)。例: 小枝橋東詰〜千本通の分岐は、進入路
+    // (小枝橋側)がその先も約100m続く実景観に合わせる。
+    const stubFwd = isDeadEnd
+      ? Math.max(hwOut + 3, 6)
+      : (t.stubInLen ?? STUB_LEN);
+    const stubBack =
+      t.stubBackLen ?? (isDeadEnd ? Math.max(hwIn + 3, 6) : STUB_LEN);
+    const outBackMin = Math.min(-stubBack, -(hwIn + 3));
     const arms = [
       {
         heading: t.headingIn,
@@ -311,9 +319,15 @@ function addTurnIntersections(g, path, turns) {
       ...(splitIn
         ? [
             {
-              heading: t.headingIn,
+              heading:
+                t.stubInHeadingDeg != null
+                  ? (t.stubInHeadingDeg * Math.PI) / 180
+                  : t.headingIn,
               hw: stubIn,
-              zSpan: [hwOut + 2.4, stubFwd],
+              zSpan:
+                t.stubInHeadingDeg != null
+                  ? [hwOut, stubFwd]
+                  : [hwOut + 2.4, stubFwd],
               furniture: [[hwOut + 2.6, stubFwd - 1]],
               crosswalks: [hwOut + 3.6],
             },
@@ -322,9 +336,10 @@ function addTurnIntersections(g, path, turns) {
       {
         heading: t.headingOut,
         hw: hwOut,
-        zSpan: [-stubBack, dOut + 2],
-        furniture: [[-(stubBack - 1), -(hwIn + 2)]],
-        crosswalks: [hwIn + 3.6, -(hwIn + 3.6)],
+        zSpan: [outBackMin, dOut + 2],
+        furniture: stubBack < hwIn + 3 ? [] : [[-(stubBack - 1), -(hwIn + 2)]],
+        crosswalks:
+          stubBack < hwIn + 3.6 ? [hwIn + 3.6] : [hwIn + 3.6, -(hwIn + 3.6)],
       },
     ];
 
@@ -515,10 +530,91 @@ export function buildRoad(path, route = null) {
   return g;
 }
 
+/** 点から折れ線(ポリライン)への最短距離 */
+export function distToPolyline(px, pz, points) {
+  let best = Infinity;
+  for (let i = 0; i < points.length - 1; i++) {
+    const a = points[i],
+      b = points[i + 1];
+    const abx = b[0] - a[0],
+      abz = b[1] - a[1];
+    const ab2 = abx * abx + abz * abz || 1e-9;
+    let t = ((px - a[0]) * abx + (pz - a[1]) * abz) / ab2;
+    t = Math.max(0, Math.min(1, t));
+    const qx = a[0] + abx * t,
+      qz = a[1] + abz * t;
+    const d = Math.hypot(px - qx, pz - qz);
+    if (d < best) best = d;
+  }
+  return best;
+}
+
+// 同じ川が経路と2回交差する場合(小枝橋・京川橋の鴨川等)、川ポリラインを橋ごとに
+// 「その橋の直近」だけへ切り詰める際の到達距離。単独橋の河川はOSM抽出範囲を
+// そのまま使う。OSM抽出時の切り出し窓は隣の橋まで届くよう長め(片道560m)に
+// 取ってあるため、これをそのまま水面・地面沈み込みの対象にすると、無関係な場所まで
+// 川筋が伸びてしまう(道路を横切る板状の浮遊物、建物除外範囲の暴走、遠方での
+// 不要な地面沈み込み等の原因になる)。road.js(buildGround)・
+// nature.js(buildNature)の両方が必ずこの同じ切り詰め結果を使うことで、地面の沈み込みと
+// 水面・土手の見た目を一致させる。
+export const RIVER_LINE_REACH = 400;
+
+/**
+ * 実測 rivers ポリライン(またはフォールバックの直線)を取得し、
+ * 同一河川の隣接橋だけ重複調整する。
+ */
+export function clippedRiverPoints(path, br, rivers) {
+  const [px, pz] = path.getPoint(br.s);
+  const [tx, tz] = path.getTangent(br.s);
+  const across =
+    br.riverHeadingDeg != null
+      ? (br.riverHeadingDeg * Math.PI) / 180
+      : Math.atan2(tx, tz);
+  const line = (rivers ?? []).find((r) => r.bridgeName === br.name);
+  const full =
+    line?.points?.length >= 2
+      ? line.points
+      : [
+          [px - Math.sin(across) * 170, pz - Math.cos(across) * 170],
+          [px, pz],
+          [px + Math.sin(across) * 170, pz + Math.cos(across) * 170],
+        ];
+  const hasNeighborOnSameRiver =
+    line &&
+    (rivers ?? []).some(
+      (r) => r.bridgeName !== br.name && r.river === line.river,
+    );
+  if (!hasNeighborOnSameRiver) return full;
+  let anchorIdx = 0,
+    bestD = Infinity;
+  for (let i = 0; i < full.length; i++) {
+    const d = Math.hypot(full[i][0] - px, full[i][1] - pz);
+    if (d < bestD) {
+      bestD = d;
+      anchorIdx = i;
+    }
+  }
+  let lo = anchorIdx,
+    hi = anchorIdx;
+  while (
+    lo > 0 &&
+    Math.hypot(full[lo - 1][0] - px, full[lo - 1][1] - pz) < RIVER_LINE_REACH
+  )
+    lo--;
+  while (
+    hi < full.length - 1 &&
+    Math.hypot(full[hi + 1][0] - px, full[hi + 1][1] - pz) < RIVER_LINE_REACH
+  )
+    hi++;
+  return full.slice(lo, hi + 1);
+}
+
 /** 地面(経路バウンディングボックス+マージンの1枚板)。
- * route.bridges を渡すと、川(nature.js の水面・土手)周辺の地面をなだらかに沈めて掘り下げ、
- * 単一の平らな地面が水面・土手を覆い隠してしまうのを防ぐ。 */
-export function buildGround(path, bridges = []) {
+ * route.bridges(+実測 rivers ポリライン)を渡すと、川(nature.js の水面・土手)沿いの
+ * 地面をなだらかに沈めて掘り下げ、単一の平らな地面が水面・土手を覆い隠してしまうのを防ぐ。
+ * 沈み込みは橋の直交断面だけでなく、実際の川筋(ポリライン)全体に沿って追従する
+ * (経路とほぼ並走する川は、橋の直近だけ沈めても並走区間の水面が地面に埋もれて見えなくなるため)。 */
+export function buildGround(path, bridges = [], rivers = []) {
   let minX = Infinity,
     maxX = -Infinity,
     minZ = Infinity,
@@ -535,29 +631,30 @@ export function buildGround(path, bridges = []) {
   const cx = (minX + maxX) / 2,
     cz = (minZ + maxZ) / 2;
 
-  // nature.js の水面・土手は道路点から左右に(340m沿道×w川幅)の帯状に置かれる。
+  // nature.js の水面・土手は実測の川ポリライン(rivers)に沿ったリボンとして置かれる。
   // 道路直近(帯の内側)は沈めず、その帯の実効範囲だけをなだらかに沈める。
   const smoothstep = (t) => t * t * (3 - 2 * t);
   const clamp01 = (t) => Math.max(0, Math.min(1, t));
-  const smoothBand = (x, lo, hi, margin) => {
-    const rise = smoothstep(clamp01((x - lo) / margin));
-    const fall = smoothstep(clamp01((hi - x) / margin));
-    return Math.min(rise, fall);
-  };
   const dips = bridges.map((br) => {
-    const [px, pz] = path.getPoint(br.s);
-    const [tx, tz] = path.getTangent(br.s);
     const riverW = Math.max(18, br.length * 0.85);
+    // 沈み込みの範囲(川筋からの横距離)は実際の川幅(riverW)に比例させる。
+    // 以前は全橋一律 175m/192m で、小さな川(例: 天神橋18m)でも300m超にわたって
+    // 地面が沈み、遠く離れた交差点や建物まで「川に浮いている」ように見えていた。
+    const outerV = Math.max(55, Math.min(200, riverW / 2 + 35));
+    // nature.js と同じ切り詰め(RIVER_LINE_REACH)を必ず使う — ここだけ未切り詰めの
+    // ポリラインを使うと、水面・土手のリボンより地面の沈み込みが広範囲に(または逆に
+    // リボンの届く範囲より狭く)なり、橋が実際より短く/浮いて見える不整合が出ていた。
+    const points = clippedRiverPoints(path, br, rivers);
+    const xs = points.map((p) => p[0]),
+      zs = points.map((p) => p[1]);
     return {
-      px,
-      pz,
-      tx,
-      tz,
-      nx: -tz,
-      nz: tx,
-      halfLen: 175,
+      points,
       innerV: riverW / 2,
-      outerV: 340 / 2 + 7 + 15,
+      outerV,
+      bboxMinX: Math.min(...xs) - outerV,
+      bboxMaxX: Math.max(...xs) + outerV,
+      bboxMinZ: Math.min(...zs) - outerV,
+      bboxMaxZ: Math.max(...zs) + outerV,
     };
   });
   const DIP_DEPTH = 3.4; // RIVER_DEPTH(3.2)よりわずかに深く沈め、土手最下段を隠さない
@@ -575,14 +672,16 @@ export function buildGround(path, bridges = []) {
         wz = cz - pos.getY(i);
       let dip = 0;
       for (const d of dips) {
-        const dx = wx - d.px,
-          dz = wz - d.pz;
-        const u = dx * d.tx + dz * d.tz;
-        const v = Math.abs(dx * d.nx + dz * d.nz);
-        const band =
-          smoothBand(u, -d.halfLen, d.halfLen, 30) *
-          smoothBand(v, d.innerV, d.outerV, 15);
-        dip = Math.max(dip, band);
+        if (
+          wx < d.bboxMinX ||
+          wx > d.bboxMaxX ||
+          wz < d.bboxMinZ ||
+          wz > d.bboxMaxZ
+        )
+          continue;
+        const dist = distToPolyline(wx, wz, d.points);
+        const t = clamp01((d.outerV - dist) / (d.outerV - d.innerV));
+        dip = Math.max(dip, smoothstep(t));
       }
       if (dip > 0) pos.setZ(i, -dip * DIP_DEPTH);
     }

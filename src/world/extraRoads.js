@@ -1,66 +1,96 @@
 import * as THREE from "three";
 import { CFG } from "../config.js";
+import { route } from "../route/routeData.js";
 
 /**
- * ルート外の周辺道路(景観用)。heading は atan2(dx,dz) 規約(0=南北)。
- * 千本通北側(二条駅前交差点)は road.js の右左折交差点スタブ(turnIntersections)が
- * 描画するようになったため削除済み。追加したい景観道路があればここに定義する。
+ * 経路外のOSM実測道路。pointsはゲーム座標の折れ線で、各wayの実形状をそのまま描く。
+ * 交差点スタブと端部を重ねないため、道路を矩形へ簡略化しない。
  */
-const EXTRA_ROADS = [];
+const FALLBACK_ROADS = [
+  {
+    id: 621847402,
+    name: "小枝橋西行き車線橋",
+    points: [
+      [62.6, 2596.5],
+      [29.0, 2602.5],
+      [-69.4, 2618.8],
+    ],
+    width: 7.0,
+    lanes: 2,
+    oneway: true,
+    direction: "westbound",
+  },
+];
 
-export function buildExtraRoads(scene) {
-  const g = new THREE.Group();
-  scene.add(g);
-  for (const r of EXTRA_ROADS) {
-    const grp = new THREE.Group();
-    grp.position.set(r.x, 0, r.z);
-    grp.rotation.y = r.heading;
-    g.add(grp);
-
-    // 路面(ローカル z 軸=道路軸)
-    const surf = new THREE.Mesh(
-      new THREE.PlaneGeometry(r.width, r.length),
-      new THREE.MeshLambertMaterial({ color: CFG.colors.road }),
-    );
-    surf.rotation.x = -Math.PI / 2;
-    surf.position.y = 0.004;
-    grp.add(surf);
-
-    // 区画線(交差点の内側 24m には引かない)
-    const lineLen = r.length - 24;
-    const lineOff = -12; // 北へ寄せる(交差点は南端)
-    const center = new THREE.Mesh(
-      new THREE.PlaneGeometry(0.16, lineLen),
-      new THREE.MeshBasicMaterial({ color: 0xd8a017 }),
-    );
-    center.rotation.x = -Math.PI / 2;
-    center.position.set(0, 0.02, lineOff);
-    grp.add(center);
-    for (const side of [-1, 1]) {
-      const edge = new THREE.Mesh(
-        new THREE.PlaneGeometry(0.14, lineLen),
-        new THREE.MeshBasicMaterial({ color: 0xe8e8e8 }),
-      );
-      edge.rotation.x = -Math.PI / 2;
-      edge.position.set(side * (r.width / 2 - 0.45), 0.02, lineOff);
-      grp.add(edge);
-
-      // 縁石+歩道(交差点部は空ける)
-      const curb = new THREE.Mesh(
-        new THREE.PlaneGeometry(0.5, lineLen),
-        new THREE.MeshLambertMaterial({ color: CFG.colors.curb }),
-      );
-      curb.rotation.x = -Math.PI / 2;
-      curb.position.set(side * (r.width / 2 + 0.25), 0.13, lineOff);
-      grp.add(curb);
-      const walk = new THREE.Mesh(
-        new THREE.PlaneGeometry(2.6, lineLen),
-        new THREE.MeshLambertMaterial({ color: 0xcfd2cc }),
-      );
-      walk.rotation.x = -Math.PI / 2;
-      walk.position.set(side * (r.width / 2 + 1.8), 0.1, lineOff);
-      grp.add(walk);
+function polylineRibbon(points, from, to, y) {
+  const positions = [];
+  const indices = [];
+  for (let i = 0; i < points.length; i++) {
+    const prev = points[Math.max(0, i - 1)];
+    const next = points[Math.min(points.length - 1, i + 1)];
+    const dx = next[0] - prev[0];
+    const dz = next[1] - prev[1];
+    const len = Math.hypot(dx, dz) || 1;
+    const nx = -dz / len;
+    const nz = dx / len;
+    const [x, z] = points[i];
+    positions.push(x + nx * from, y, z + nz * from);
+    positions.push(x + nx * to, y, z + nz * to);
+    if (i > 0) {
+      const b = i * 2;
+      indices.push(b - 2, b - 1, b, b - 1, b + 1, b);
     }
   }
-  return g;
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+function addStrip(group, points, from, to, y, material) {
+  group.add(
+    new THREE.Mesh(
+      polylineRibbon(points, Math.min(from, to), Math.max(from, to), y),
+      material,
+    ),
+  );
+}
+
+function drawRoad(group, road) {
+  const points = road.points;
+  if (!points || points.length < 2) return;
+  const width = road.width ?? (road.lanes ?? 1) * 3.2;
+  const roadMat = new THREE.MeshLambertMaterial({ color: CFG.colors.road });
+  const lineMat = new THREE.MeshBasicMaterial({ color: CFG.colors.roadLine });
+  const curbMat = new THREE.MeshLambertMaterial({ color: CFG.colors.curb });
+  const walkMat = new THREE.MeshLambertMaterial({ color: 0xcfd2cc });
+
+  addStrip(group, points, -width / 2, width / 2, 0.006, roadMat);
+
+  // 片側1車線は中央線を引かず、2車線一方通行の小枝橋だけ車線境界を引く。
+  if ((road.lanes ?? 1) >= 2 && road.oneway)
+    addStrip(group, points, -0.045, 0.045, 0.026, lineMat);
+
+  for (const side of [-1, 1]) {
+    const edge = side * (width / 2 - 0.28);
+    addStrip(group, points, edge - 0.07, edge + 0.07, 0.025, lineMat);
+    const curb = side * (width / 2 + 0.15);
+    addStrip(group, points, curb - side * 0.25, curb + side * 0.25, 0.12, curbMat);
+
+    // 小枝橋の橋面では歩道を細くし、道路端の板状の張り出しを作らない。
+    const walk = side * (width / 2 + 0.9);
+    addStrip(group, points, walk - side * 0.65, walk + side * 0.65, 0.09, walkMat);
+  }
+}
+
+export function buildExtraRoads(scene) {
+  const group = new THREE.Group();
+  scene.add(group);
+  const roads = route.extraRoads?.length ? route.extraRoads : FALLBACK_ROADS;
+  for (const road of roads) drawRoad(group, road);
+
+  return {
+    trafficRoads: roads.filter((road) => road.direction === "northbound"),
+  };
 }

@@ -66,9 +66,9 @@ const sun = new THREE.DirectionalLight(0xfff2dd, 1.1);
 sun.position.set(-300, 400, -200);
 scene.add(sun);
 
-scene.add(buildGround(path, route.bridges));
+scene.add(buildGround(path, route.bridges, route.rivers));
 scene.add(buildRoad(path, route));
-buildExtraRoads(scene); // 千本通北側(二条駅前交差点)などルート外の道路
+const extraRoadTraffic = buildExtraRoads(scene); // OSM実測の並行道路・小枝橋西行き橋
 buildRailways(scene, path, route.railStructures);
 const exclusions = [
   ...buildLandmarks(scene, path),
@@ -102,6 +102,7 @@ const pax = createPassengers(route.stops.length);
 const stopsView = buildStops(scene, path, route.stops);
 const scoring = createScoring(state);
 const traffic = buildTraffic(scene, path, {
+  feederRoads: extraRoadTraffic.trafficRoads,
   onCollision() {
     scoring.add(CFG.score.collision, "対向車と接触!");
     (state.collisionLog ??= []).push(Math.round(state.s)); // 発生位置(デバッグ用)

@@ -1,7 +1,10 @@
 import * as THREE from "three";
 import { leftWidthAt } from "../route/routeData.js";
 import { loadProps } from "../util/propsLib.js";
-import { terminusLotAnchor } from "../world/landmarks.js";
+import {
+  terminusLotAnchor,
+  terminusStopAnchor,
+} from "../world/landmarks.js";
 
 /** 停留所名の看板テクスチャ */
 function makeSignTexture(name) {
@@ -65,19 +68,18 @@ export function buildStops(scene, path, stops) {
     if (stop.name === "久我石原町") {
       const lot = terminusLotAnchor(path);
       if (lot) {
-        const shelterX = lot.lotW / 2 - 4; // buildTerminus のシェルター位置と合わせる
-        const atLot = (lat, along = 0) => {
-          const lx = shelterX - lat;
-          return [
-            lot.x + lx * Math.cos(lot.ry) + along * Math.sin(lot.ry),
-            lot.z - lx * Math.sin(lot.ry) + along * Math.cos(lot.ry),
-          ];
-        };
+        // 敷地は世界座標軸に揃っている(landmarks.js buildTerminus と同じ規約)。
+        // バス停は敷地西端に置き、北向きのバスの東側(敷地内)で待てるようにする。
+        const terminal = terminusStopAnchor(lot);
+        const atLot = (lat, along = 0) => [
+          terminal.x - lat,
+          terminal.z + along,
+        ];
         waiting.push({
           at: atLot,
           HW: 1.4,
           meshes: [],
-          face: lot.ry + Math.PI / 2,
+          face: -Math.PI / 2, // 西(バス側)を向く。乗降後は東側の敷地内へ歩く
         });
         return;
       }

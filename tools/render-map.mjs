@@ -114,9 +114,37 @@ const STUB_LEN = 42; // road.js の addTurnIntersections と同値
 
 /** 右左折交差点の腕(貫通道路の矩形)一覧 [{cx, cz, heading, from, to, hw}] */
 function turnArms(t) {
+  const stubInLen = t.stubInLen ?? STUB_LEN;
+  const inArms = [];
+  if (t.stubInHeadingDeg != null) {
+    inArms.push({
+      heading: t.headingIn,
+      hw: t.hwIn,
+      from: -(t.d + 2),
+      to: t.hwOut,
+    });
+    inArms.push({
+      heading: (t.stubInHeadingDeg * Math.PI) / 180,
+      hw: t.stubInHw ?? t.hwIn,
+      from: 0,
+      to: stubInLen,
+    });
+  } else {
+    inArms.push({
+      heading: t.headingIn,
+      hw: t.hwIn,
+      from: -(t.d + 2),
+      to: stubInLen,
+    });
+  }
   return [
-    { heading: t.headingIn, hw: t.hwIn, from: -(t.d + 2), to: STUB_LEN },
-    { heading: t.headingOut, hw: t.hwOut, from: -STUB_LEN, to: t.d + 2 },
+    ...inArms,
+    {
+      heading: t.headingOut,
+      hw: t.hwOut,
+      from: -(t.stubBackLen ?? STUB_LEN),
+      to: t.d + 2,
+    },
   ].map((a) => ({ ...a, cx: t.x, cz: t.z }));
 }
 /** 点が腕矩形の内側か(margin>0 で緩め、<0 で厳しめ) */
@@ -270,10 +298,87 @@ function rectPts(cx, cz, heading, from, to, hw) {
   ];
 }
 
+// ---- 川(OSM waterway の実ポリラインをそのまま帯状に描く) ----
+function ribbonPts(points, halfWidth) {
+  const left = [],
+    right = [];
+  for (let i = 0; i < points.length; i++) {
+    const a = points[Math.max(0, i - 1)];
+    const b = points[Math.min(points.length - 1, i + 1)];
+    const dx = b[0] - a[0],
+      dz = b[1] - a[1];
+    const len = Math.hypot(dx, dz) || 1e-9;
+    const nx = -dz / len,
+      nz = dx / len;
+    left.push([points[i][0] + nx * halfWidth, points[i][1] + nz * halfWidth]);
+    right.push([points[i][0] - nx * halfWidth, points[i][1] - nz * halfWidth]);
+  }
+  return [...left, ...right.reverse()];
+}
+for (const r of data.rivers ?? []) {
+  const br = (data.bridges ?? []).find((b) => b.name === r.bridgeName);
+  if (br && !inRange(br.s)) continue;
+  if (!r.points?.length) continue;
+  const halfWidth = Math.max(6, (br?.length ?? 30) / 2);
+  poly(ribbonPts(r.points, halfWidth), "#4fa8d8", 0.55);
+  el.push(
+    `<polyline points="${r.points.map((p) => `${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(" ")}" fill="none" stroke="#2f6f9e" stroke-width="0.6"/>`,
+  );
+  const mid = r.points[Math.floor(r.points.length / 2)];
+  text([mid[0] + 6, mid[1]], `${r.river}(実測OSM)`, 8, "#2f6f9e");
+
+  // 比較用: ゲーム内(nature.js)が仮定している「経路に直交」の川帯を破線で重ねる。
+  // 実測ポリラインとの向きのズレが一目で分かる。
+  if (br) {
+    const c = pointAt(br.s);
+    const roadHeading = headingAt(br.s);
+    const assumedPts = rectPts(
+      c[0],
+      c[1],
+      roadHeading + Math.PI / 2,
+      -110,
+      110,
+      halfWidth,
+    );
+    el.push(
+      `<polygon points="${assumedPts.map((p) => `${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(" ")}" fill="none" stroke="#c0392b" stroke-width="0.7" stroke-dasharray="4,3"/>`,
+    );
+    const skewDeg = (() => {
+      const riverH = r.headingDeg;
+      let diff = Math.abs(((roadHeading * 180) / Math.PI - riverH) % 180);
+      if (diff > 90) diff = 180 - diff;
+      return Math.abs(90 - diff);
+    })();
+    text(
+      [c[0] + 6, c[1] + 12],
+      `想定(直交)とのズレ ${skewDeg.toFixed(0)}°`,
+      7.5,
+      "#c0392b",
+    );
+  }
+}
+
 // ---- 建物 ----
 for (const b of data.buildings ?? []) {
   if (b.s != null && !inRange(b.s)) continue;
   if (b.footprint?.length > 2) poly(b.footprint, "#e2ded4");
+}
+
+// ---- 梅小路公園の樹木 ----
+if (data.umekojiTrees) {
+  for (const forest of data.umekojiTrees.forests || []) {
+    if (forest.length > 2) poly(forest, "#4e7a3d", 0.35);
+  }
+  for (const treeRow of data.umekojiTrees.treeRows || []) {
+    if (treeRow.length > 1) {
+      el.push(
+        `<polyline points="${treeRow.map((p) => `${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(" ")}" fill="none" stroke="#4e7a3d" stroke-width="4" opacity="0.35"/>`,
+      );
+    }
+  }
+  for (const tree of data.umekojiTrees.trees || []) {
+    circle(tree, 2, "#4e7a3d");
+  }
 }
 
 // ---- 通常交差点スタブ ----
@@ -318,9 +423,12 @@ for (const sec of data.roadSections ?? [
   const { wL, wR } = secAt((from + to) / 2);
   const left = [],
     right = [];
-  for (let s = from; s <= to; s += 4) {
-    left.push(offsetPt(Math.min(s, to), -wL));
-    right.push(offsetPt(Math.min(s, to), wR));
+  // セクション終端まで必ず描く(端数で終端が落ちると境界に切れ目が出る)
+  for (let s = from; ; s += 4) {
+    const ss = Math.min(s, to);
+    left.push(offsetPt(ss, -wL));
+    right.push(offsetPt(ss, wR));
+    if (ss >= to) break;
   }
   poly([...left, ...right.reverse()], "#4a4f55");
 }

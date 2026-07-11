@@ -14,6 +14,7 @@ import {
   leftWidthAt,
   rightWidthAt,
 } from "../route/routeData.js";
+import { RoutePath } from "../route/path.js";
 
 const mat = (color) => new THREE.MeshLambertMaterial({ color });
 const signalMat = (color) => new THREE.MeshBasicMaterial({ color });
@@ -174,6 +175,7 @@ function fallbackSignalPositions(path) {
 export function buildTraffic(scene, path, events = {}) {
   const g = new THREE.Group();
   scene.add(g);
+  const feederRoads = events.feederRoads ?? [];
 
   // ================= 信号 =================
   // 位相: 自道 青22→黄3→赤17 / 交差道は自道が赤の間に 全赤1→青14→黄2(交差点内で連動)
@@ -399,12 +401,13 @@ export function buildTraffic(scene, path, events = {}) {
   // 二条駅前ロータリー(急カーブ・狭隘)には一般車を入れない
   const TRAFFIC_MIN_S = 360;
 
-  // 対向車(北行き)はこの2交差点(府道201号線・(34.9554,135.7422)地点)を越えて北上せず、
-  // 西へ左折して側道へ抜ける(旋回アニメーションの後に消える。heading は交差点を実際に
-  // 西へ抜ける道路の実測方位)
+  // 対向車(北行き)は一方通行区間の終端交差点を通過してから左折し、
+  // 側道を少し進んでから消える。交差点手前で消えると分岐が見えないため、
+  // triggerAfterは交差点通過後の距離として扱う。
   const TURNOFF_POINTS = [
-    { s: 6598.7, heading: -1.5931 }, // 府道201号線(西行き一方通行)
-    { s: 7672.5, heading: -1.596 }, // (34.955406,135.742175)付近の交差点
+    { s: 6598.7, heading: -1.5931, triggerAfter: 2, exitDistance: 28 }, // 府道201号線
+    { s: 7672.5, heading: -1.596, triggerAfter: 2, exitDistance: 28 }, // 小枝橋北側の切替
+    { s: 8317.7, heading: 2.94, triggerAfter: 2, exitDistance: 28 }, // 小枝橋東詰
   ];
 
   // 右左折交差点の交錯ゾーン(近接ターンは連結: 狭隘路のS字ジョグ等)
@@ -486,6 +489,45 @@ export function buildTraffic(scene, path, events = {}) {
       v: 6,
       latCur: null,
     };
+  }
+
+  // 地蔵前南側の北行き一方通行路。南端から北へ進み、地蔵前交差点を抜けて
+  // 本線の北行き車線へ合流させる。B=0の南行き本線に対向車を無理に置かない。
+  const feederPaths = feederRoads
+    .filter((road) => road.points?.length >= 2)
+    .map((road) => ({ ...road, path: new RoutePath(road.points) }));
+  const feederCars = [];
+  let feederSerial = 0;
+  const feederPosition = (c) => {
+    const [x, z] = c.path.getPoint(c.s);
+    const [tx, tz] = c.path.getTangent(c.s);
+    c.outer.position.set(x, 0.04, z);
+    c.outer.rotation.y = Math.atan2(tx, tz);
+  };
+  const spawnFeederCar = (road, offset = 0) => {
+    const def = ONCOMING_BASE[feederSerial++ % ONCOMING_BASE.length];
+    const inner = def.make();
+    const outer = new THREE.Group();
+    outer.add(inner);
+    g.add(outer);
+    const c = {
+      road,
+      path: road.path,
+      outer,
+      inner,
+      s: Math.max(4, Math.min(road.path.length - 18, 18 + offset)),
+      v: 7,
+      vMax: def.vMax,
+      hitR: def.hitR,
+      mergeArc: null,
+      mergeT: 0,
+    };
+    feederPosition(c);
+    feederCars.push(c);
+  };
+  for (const road of feederPaths) {
+    spawnFeederCar(road, 0);
+    spawnFeederCar(road, 52);
   }
 
   // ================= 交差点(自ルート外の交差道路)を横切る他車 =================
@@ -582,9 +624,73 @@ export function buildTraffic(scene, path, events = {}) {
   let collisionCooldown = 0;
   let lastBusS = 0;
 
+  function checkFeederCollision(c, busPos, hitR) {
+    if (collisionCooldown > 0) return;
+    const dx = c.outer.position.x - busPos[0];
+    const dz = c.outer.position.z - busPos[1];
+    if (dx * dx + dz * dz < (c.hitR + hitR) ** 2) {
+      collisionCooldown = 4;
+      events.onCollision?.();
+    }
+  }
+
+  function updateFeederCars(dt, busPos) {
+    for (let i = feederCars.length - 1; i >= 0; i--) {
+      const c = feederCars[i];
+      if (c.mergeArc) {
+        c.v += (Math.min(c.vMax, 8) - c.v) * Math.min(1, dt * 1.6);
+        c.mergeT += (c.v * dt) / c.mergeArc.length;
+        if (c.mergeT >= 1) {
+          const mergeS = Math.max(0, (c.road.mergeS ?? path.closestS(c.road.points.at(-1)).s) - 18);
+          cars.push({
+            outer: c.outer,
+            inner: c.inner,
+            dir: -1,
+            laneIdx: 0,
+            hitR: c.hitR,
+            vMax: c.vMax,
+            s: mergeS,
+            v: c.v,
+            latCur: laneLat(mergeS, -1, 0),
+          });
+          feederCars.splice(i, 1);
+          continue;
+        }
+        const samp = sampleTurnArc(c.mergeArc, c.mergeT);
+        c.outer.position.set(samp.x, 0.04, samp.z);
+        c.outer.rotation.y = samp.heading;
+        checkFeederCollision(c, busPos, 2.5);
+        continue;
+      }
+
+      c.v += (Math.min(c.vMax, 8) - c.v) * Math.min(1, dt * 0.9);
+      c.s += c.v * dt;
+      if (c.s >= c.path.length - 18) {
+        const mergeS = Math.max(
+          0,
+          (c.road.mergeS ?? path.closestS(c.road.points.at(-1)).s) - 18,
+        );
+        const [sx, sz] = c.path.getPoint(c.path.length - 1);
+        const [ftx, ftz] = c.path.getTangent(c.path.length - 3);
+        const targetLat = laneLat(mergeS, -1, 0) ?? 2.5;
+        const [px, pz] = path.getPoint(mergeS);
+        const [tx, tz] = path.getTangent(mergeS);
+        const end = [px + -tz * targetLat, pz + tx * targetLat];
+        const ctrl = [sx + ftx * 12, sz + ftz * 12];
+        c.mergeArc = buildTurnArc([sx, sz], ctrl, end);
+        c.mergeT = 0;
+        continue;
+      }
+      feederPosition(c);
+      checkFeederCollision(c, busPos, 2.5);
+    }
+  }
+
   return {
     signals,
     update(dt, busS, busPos, busV) {
+      updateFeederCars(dt, busPos);
+
       // ---- 信号の位相更新(交差点内で main/cross 連動) ----
       for (const sig of signals) {
         sig.phase = (sig.phase + dt) % CYCLE;
@@ -670,12 +776,15 @@ export function buildTraffic(scene, path, events = {}) {
         let latT = smoothLaneLat(c.s, c.dir, c.laneIdx);
         const inOneway = latT == null; // 対向車が一方通行区間に入った → 実在しないのでリスポーン
         if (inOneway) latT = c.latCur ?? 2.5;
-        // 対向車: 府道201号線・(34.9554,...)地点で西へ左折させる(その交差点通過時のみ)。
-        // s以下すべてで真にすると北側の対向車が全滅するので、交差点手前55m以内の帯域に限定する。
-        // 一度だけ旋回アーク(現在位置→交差道路の実方位)を作り、以降は上のブロックが処理する。
+        // 対向車: 交差点を越えた直後に左折させる。交差点手前ではまだ本線上を走り、
+        // 左折後もexitDistanceだけ側道を進んでから上のturnArcブロックで消える。
         const turnPoint =
           c.dir === -1
-            ? TURNOFF_POINTS.find((p) => c.s <= p.s && c.s > p.s - 55)
+            ? TURNOFF_POINTS.find(
+                (p) =>
+                  c.s <= p.s - p.triggerAfter &&
+                  c.s > p.s - p.triggerAfter - 10,
+              )
             : null;
         if (turnPoint) {
           const sx = c.outer.position.x,
@@ -684,7 +793,10 @@ export function buildTraffic(scene, path, events = {}) {
           const [cx, cz] = path.getPoint(turnPoint.s);
           const hx = Math.sin(turnPoint.heading),
             hz = Math.cos(turnPoint.heading);
-          const end = [cx + hx * 26, cz + hz * 26];
+          const end = [
+            cx + hx * turnPoint.exitDistance,
+            cz + hz * turnPoint.exitDistance,
+          ];
           const ctrl = [
             sx + Math.sin(startHeading) * 12,
             sz + Math.cos(startHeading) * 12,

@@ -208,23 +208,7 @@ function buildAquarium(scene, path) {
   );
   aqRoof.position.set(-20, 12.8, -20);
   g.add(aqRoof);
-  // 公園の木
-  for (let i = 0; i < 14; i++) {
-    const t = new THREE.Group();
-    const trunk = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.3, 0.4, 3, 6),
-      mat(0x6b4f3a),
-    );
-    trunk.position.y = 1.5;
-    const crown = new THREE.Mesh(
-      new THREE.SphereGeometry(2.6, 8, 6),
-      mat(0x4e7a3d),
-    );
-    crown.position.y = 4.6;
-    t.add(trunk, crown);
-    t.position.set(30 - (i % 5) * 14, 0, 40 - Math.floor(i / 5) * 30);
-    g.add(t);
-  }
+  // 公園の木は OSM 実測の木に置き換わるため削除(nature.js で生成)
   scene.add(g);
   return { x: a.x, z: a.z, r: 95 };
 }
@@ -306,37 +290,9 @@ function buildLabeledFactory(scene, path, f) {
   return { x: a.x, z: a.z, r: Math.max(f.w, f.d) / 2 + 8 };
 }
 
-/** 西高瀬川(天神橋)〜桂川(久我橋)間の沿道工場(オムロン京都太陽・有本機業) */
-function buildRiverIndustries(scene, path) {
-  const bridgeS = (prefix) =>
-    route.bridges.find((b) => b.name.startsWith(prefix))?.s;
-  const s0 = bridgeS("天神橋");
-  const s1 = bridgeS("久我橋");
-  if (s0 == null || s1 == null) return [];
-  const mid = (s0 + s1) / 2;
-  const specs = [
-    {
-      name: "オムロン京都太陽",
-      s: mid - 60,
-      side: 1,
-      setback: 10,
-      w: 46,
-      d: 30,
-      h: 9,
-      color: 0xd9d4c6,
-    },
-    {
-      name: "有本機業",
-      s: mid + 55,
-      side: -1,
-      setback: 10,
-      w: 34,
-      d: 24,
-      h: 7,
-      color: 0xb7bcc0,
-    },
-  ];
-  return specs.map((f) => buildLabeledFactory(scene, path, f));
+/** 太陽の家・有本機業は手動箱を置かず、OSM建物フットプリントだけを表示する。 */
+function buildRiverIndustries() {
+  return [];
 }
 
 /**
@@ -390,16 +346,6 @@ function buildKugaIndustries(scene, path) {
       h: 6.5,
       color: 0xc4bca6,
     },
-    {
-      name: "京セラ 京都伏見事業所",
-      s: s1 - 85,
-      side: -1,
-      setback: 8,
-      w: 70,
-      d: 46,
-      h: 11,
-      color: 0xd8dbd8,
-    },
     // 終点(久我石原町)敷地の道路反対側(西側)の倉庫群。実地図では PISORICO久我(手前)と
     // クレアジオーネ伏見(奥)が連なる大型倉庫として並ぶ。
     {
@@ -427,40 +373,65 @@ function buildKugaIndustries(scene, path) {
 }
 
 /**
- * 久我石原町バス終点(京セラ京都伏見事業所の西隣の敷地内)。
- * バス駐車スペース(区画線入り舗装)と屋根付きバス停(乗降場)を表現。
- * バスは進行方向左側(negative lateral)の縁石に着けて停まる規約に合わせ、
- * 敷地は経路の負側(curbStopLat と同じ側)に置く。
+ * 久我石原町バス終点(京セラ京都伏見事業所の西隣の敷地内)。実際の操車場と同じく、
+ * 敷地は道路(経路)の向きに関係なく世界座標の南北・東西軸に揃えて置く(北側を出入口として
+ * 開放した形)。府道202は敷地の北側を通り、敷地内に南へ伸びる公道は置かない。南東の角に
+ * バス駐車区画を2つ(いずれも北向き)設け、1台だけを駐機させる。
  *
- * 終点直前(s≈10505)に府道202→南への支線への右左折交差点(実データ由来の急カーブ)が
- * あるため、円弧のど真ん中に敷地を置くと接線が急回転して歪む。円弧を抜けた先の
- * 短い直線区間(sOut〜経路終端)に敷地を収める。
+ * 終点構内の南北 parking_aisle は公道ではないため経路から除外し、府道202の南側にある
+ * OSMの転回場・停留所座標を基準に敷地を置く(位置決めのみ経路を使い、向きは使わない)。
  */
-// 久我石原町敷地(バス駐車場)の寸法。local X=道路と直交(奥行き)・local Z=道路沿い(長さ)
-const TERMINUS_LOT = { w: 22, d: 18 };
+// 久我石原町敷地(操車場)の寸法。OSM landuse=garages の実測範囲に合わせる。
+const TERMINUS_LOT = { w: 22.5, d: 24.7 };
+const TERMINUS_STOP_INSET = { x: 1.8, z: 2.0 }; // 西端・北端からポールまで
 
 /**
- * 久我石原町敷地のアンカー(位置・向き)を計算。buildTerminus と stops.js(バス停を
+ * 久我石原町敷地のアンカー(位置)を計算。buildTerminus と stops.js(バス停を
  * 道路上ではなく敷地内に置くため)の両方から参照する共通ロジック。
  * 実際の引き込み路(府道202号線→終点)はごく短い(約15m)ため、敷地もそれに合わせて
  * ターン頂点(≒府道202号線)のすぐ先にコンパクトに収める。
+ * 敷地自体は世界座標軸に揃えるため、返り値の ry は常に 0(北=-Z, 東=+X)。
+ * OSMのバス停座標を基準に、西端・北寄りへ敷地を復元する。南北の構内道路は経路に含めない。
  */
 export function terminusLotAnchor(path) {
   const stop = route.stops.find((st) => st.name === "久我石原町");
   if (!stop) return null;
-  const turn = route.turnIntersections.find((t) => Math.abs(t.s - stop.s) < 60);
-  const availFrom = turn
-    ? turn.sOut + 2
-    : Math.max(0, stop.s - TERMINUS_LOT.d / 2);
-  const availTo = path.length - 3;
-  let s = availFrom + TERMINUS_LOT.d / 2;
-  if (s + TERMINUS_LOT.d / 2 > availTo) s = availTo - TERMINUS_LOT.d / 2;
-  const HW = leftWidthAt(s);
+  if (route.terminalStop) {
+    const { x: stopX, z: stopZ } = route.terminalStop;
+    return {
+      s: stop.s,
+      x: stopX + TERMINUS_LOT.w / 2 - TERMINUS_STOP_INSET.x,
+      z: stopZ + TERMINUS_LOT.d / 2 - TERMINUS_STOP_INSET.z,
+      stopX,
+      stopZ,
+      ry: 0,
+      lotW: TERMINUS_LOT.w,
+      lotD: TERMINUS_LOT.d,
+    };
+  }
+
+  // 旧データ互換: OSM停留所メタデータがない場合も、終端手前の道路南側へ置く。
+  const s = Math.max(0, Math.min(path.length, stop.s - 9.5));
+  const { x, z } = anchor(path, s, -16.6);
   return {
     s,
-    ...anchor(path, s, -(HW + 14)),
+    x,
+    z,
+    stopX: x - TERMINUS_LOT.w / 2 + TERMINUS_STOP_INSET.x,
+    stopZ: z - TERMINUS_LOT.d / 2 + TERMINUS_STOP_INSET.z,
+    ry: 0,
     lotW: TERMINUS_LOT.w,
     lotD: TERMINUS_LOT.d,
+  };
+}
+
+/** 久我石原町のバス停位置。敷地西端で、バスは真北(-Z)を向く。 */
+export function terminusStopAnchor(lot) {
+  if (!lot) return null;
+  return {
+    x: lot.stopX ?? lot.x - (lot.lotW / 2 - TERMINUS_STOP_INSET.x),
+    z: lot.stopZ ?? lot.z - (lot.lotD / 2 - TERMINUS_STOP_INSET.z),
+    heading: Math.PI,
   };
 }
 
@@ -468,10 +439,8 @@ function buildTerminus(scene, path) {
   const lot = terminusLotAnchor(path);
   if (!lot) return { x: 0, z: 0, r: 0 };
   const { lotW, lotD } = lot;
-  const a = lot;
   const g = new THREE.Group();
-  g.position.set(a.x, 0, a.z);
-  g.rotation.y = a.ry;
+  g.position.set(lot.x, 0, lot.z); // 向きは世界軸のまま(rotation.y=0): +X=東, +Z=南
   const pavement = new THREE.Mesh(
     new THREE.PlaneGeometry(lotW, lotD),
     mat(0x6a6e70),
@@ -480,47 +449,52 @@ function buildTerminus(scene, path) {
   pavement.position.y = 0.02;
   g.add(pavement);
 
-  // 駐車区画の白線(道路沿いに2台分・各区画は道路と直交する線で仕切る)
+  // 南東の角にバス駐車区画を2つ(いずれも北向き=バスの前面が-Z)。
+  const BAY_W = 3.6,
+    BAY_L = 11.5,
+    MARGIN = 1;
+  const bayRightX = lotW / 2 - MARGIN; // 東の縁からの余白
+  const bayMidX = bayRightX - BAY_W;
+  const bayLeftX = bayMidX - BAY_W;
+  const bayFrontZ = lotD / 2 - MARGIN - BAY_L; // 区画の北端(開放側)
+  const bayBackZ = lotD / 2 - MARGIN; // 区画の南端(フェンス側)
+  const bay2X = (bayMidX + bayRightX) / 2; // 東側の区画(南東の角。駐機バスはここに置く)
+  const bayZ = (bayFrontZ + bayBackZ) / 2;
+
   const lineMat = new THREE.MeshBasicMaterial({ color: 0xe8e8e8 });
-  for (const zBay of [-(lotD / 2 - 3), 0, lotD / 2 - 3]) {
-    const line = new THREE.Mesh(
-      new THREE.PlaneGeometry(lotW - 4, 0.18),
-      lineMat,
-    );
+  for (const x of [bayLeftX, bayMidX, bayRightX]) {
+    const line = new THREE.Mesh(new THREE.PlaneGeometry(0.15, BAY_L), lineMat);
     line.rotation.x = -Math.PI / 2;
-    line.position.set(2, 0.03, zBay);
+    line.position.set(x, 0.03, bayZ);
     g.add(line);
   }
-
-  // 屋根付きバス停(乗降場)。道路(縁石)寄りの敷地端に設置。
-  const shelter = new THREE.Group();
-  shelter.position.set(lotW / 2 - 4, 0, 0);
-  shelter.rotation.y = Math.PI / 2;
-  const postMat = mat(0x8a8f94);
-  for (const [px, pz] of [
-    [-4.2, -3.5],
-    [4.2, -3.5],
-    [-4.2, 3.5],
-    [4.2, 3.5],
-  ]) {
-    const post = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.12, 0.12, 2.6, 8),
-      postMat,
-    );
-    post.position.set(px, 1.3, pz);
-    shelter.add(post);
-  }
-  const roof = new THREE.Mesh(
-    new THREE.BoxGeometry(9.4, 0.25, 8.2),
-    mat(0x2f5c46),
+  const backLine = new THREE.Mesh(
+    new THREE.PlaneGeometry(bayRightX - bayLeftX, 0.15),
+    lineMat,
   );
-  roof.position.y = 2.7;
-  shelter.add(roof);
+  backLine.rotation.x = -Math.PI / 2;
+  backLine.position.set((bayLeftX + bayRightX) / 2, 0.03, bayBackZ);
+  g.add(backLine);
+
+  // バス停(乗降場)。ガソリンスタンド風の大屋根は使わず、簡素なポール・上屋なしの
+  // ベンチ+サインのみにする。敷地西端の北寄りに置き、バスは真北を向く。西側に道路は置かない。
+  const stop = terminusStopAnchor(lot);
+  const shelter = new THREE.Group();
+  shelter.position.set(stop.x - lot.x, 0, stop.z - lot.z);
+  shelter.rotation.y = stop.heading;
+  const postMat = mat(0x9a9d9a);
+  const pole = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.08, 0.08, 2.4, 8),
+    postMat,
+  );
+  pole.position.set(0, 1.2, 0);
+  shelter.add(pole);
   const bench = new THREE.Mesh(
-    new THREE.BoxGeometry(6, 0.5, 1.2),
+    new THREE.BoxGeometry(3.6, 0.5, 1.0),
     mat(0x8f8577),
   );
-  bench.position.set(0, 0.5, 2.6);
+  // shelter は北向きに回しているため、ベンチは回転後に敷地内(東側)へ来る側へ置く。
+  bench.position.set(-1.8, 0.5, -0.9);
   shelter.add(bench);
   const sign = new THREE.Mesh(
     new THREE.PlaneGeometry(3.2, 0.9),
@@ -529,23 +503,23 @@ function buildTerminus(scene, path) {
       side: THREE.DoubleSide,
     }),
   );
-  sign.position.set(0, 3.4, 0);
+  sign.position.set(0, 3.0, 0);
   shelter.add(sign);
   g.add(shelter);
 
-  // 駐機バス(北向きに停車)。g 自体は経路接線 a.ry で回転しているため、
-  // ワールドで真北を向くよう子要素側で打ち消して Math.PI(真北)を作る。
+  // 駐機バス(北向き=-Z 向き)。敷地は世界軸に揃っているため、そのまま π で北を向く。
+  // 駐車区画は2つ設けるが、実際に配置するバスは1台のみ(南東の角=bay2)。
   const bus = makeParkedBus();
-  bus.position.set(-lotW / 2 + 8, 0, 0);
-  bus.rotation.y = Math.PI - a.ry;
+  bus.position.set(bay2X, 0, bayZ);
+  bus.rotation.y = Math.PI;
   g.add(bus);
 
-  // 敷地境界のフェンス(京セラ側・奥側の3辺のみ。道路側は出入口として開放)
+  // 敷地境界のフェンス(南・東・西の3辺。北側は出入口として開放)
   const fenceMat = mat(0xb4b8b4);
   for (const [w, d, x, z] of [
-    [lotW, 0.3, 0, -lotD / 2],
-    [lotW, 0.3, 0, lotD / 2],
-    [0.3, lotD, -lotW / 2, 0],
+    [lotW, 0.3, 0, lotD / 2], // 南辺
+    [0.3, lotD, lotW / 2, 0], // 東辺
+    [0.3, lotD, -lotW / 2, 0], // 西辺
   ]) {
     const fence = new THREE.Mesh(new THREE.BoxGeometry(w, 1.4, d), fenceMat);
     fence.position.set(x, 0.7, z);
@@ -553,7 +527,7 @@ function buildTerminus(scene, path) {
   }
 
   scene.add(g);
-  return { x: a.x, z: a.z, r: Math.max(lotW, lotD) / 2 + 6 };
+  return { x: lot.x, z: lot.z, r: Math.max(lotW, lotD) / 2 + 6 };
 }
 
 /**

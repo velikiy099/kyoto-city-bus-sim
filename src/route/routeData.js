@@ -10,9 +10,12 @@ export const route = {
   source: raw.source,
   scale: raw.scale,
   path: new RoutePath(raw.path),
+  terminalStop: raw.terminalStop ?? null, // OSMの久我石原町バス停ワールド座標
   // 上鳥羽村山町は北行きのみ停車(南行きは通過)のため除外
   stops: raw.stops.filter((st) => st.name !== "上鳥羽村山町"), // [{name, s}]
   bridges: raw.bridges, // [{name, s, length}]
+  rivers: raw.rivers ?? [], // [{bridgeName, river, points:[[x,z],...], headingDeg}]
+  extraRoads: raw.extraRoads ?? [], // [{id, points:[[x,z],...], width, mergeS, direction}]
   speedZones: raw.speedZones, // [{from, to, limit(km/h)}]
   roadSections: raw.roadSections ?? [], // [{from, to, lanes}]
   intersections: raw.intersections ?? [], // [{s, heading, width, lanes}]
@@ -21,6 +24,7 @@ export const route = {
   signals: raw.signals ?? [], // [{s, name}]
   buildings: raw.buildings ?? [], // [{footprint:[[x,z]], height, color}]
   railStructures: raw.railStructures ?? [], // [{kind, s, heading, layer}]
+  umekojiTrees: raw.umekojiTrees, // 梅小路公園の樹木データ
 };
 
 // ---- 車線構成(roadSections 由来。build-route-data.mjs の LANE_PLAN が生成) ----
@@ -118,13 +122,21 @@ export function turnExclusions() {
       z: t.z,
       r: Math.max(hwIn, hwOut) + (t.crossWidth ?? 8) / 2 + 3,
     });
-    // 直進スタブ(headingIn 前方)と退出道路の後方延長に沿って円を並べる
-    const arms = [
-      [Math.sin(t.headingIn), Math.cos(t.headingIn), hwIn],
-      [-Math.sin(t.headingOut), -Math.cos(t.headingOut), hwOut],
+    // 直進スタブ(headingIn 前方)と退出道路の後方延長に沿って円を並べる。
+    // headingIn 側は stubInLen(road.js の addTurnIntersections と同じ既定 42m)
+    // まで届くよう間隔を保って円を並べる — 既定より長いスタブ(小枝橋東詰など)でも
+    // 先端まで街路樹・建物の除外が効くようにする。
+    const headingIn =
+      t.stubInHeadingDeg != null
+        ? (t.stubInHeadingDeg * Math.PI) / 180
+        : t.headingIn;
+    const stubBackLen = t.stubBackLen ?? 42;
+    const armsWithLen = [
+      [Math.sin(headingIn), Math.cos(headingIn), hwIn, t.stubInLen ?? 42],
+      [-Math.sin(t.headingOut), -Math.cos(t.headingOut), hwOut, stubBackLen],
     ];
-    for (const [dx, dz, hw] of arms) {
-      for (const d of [14, 27, 40])
+    for (const [dx, dz, hw, len] of armsWithLen) {
+      for (let d = 14; d < len; d += 13)
         out.push({ x: t.x + dx * d, z: t.z + dz * d, r: hw + 3.5 });
     }
   }

@@ -84,7 +84,7 @@ function buildConventionalUnderpass(scene, path, spec) {
   const sTo = spec.bridgeToS ?? railTo;
   const aIn = spec.approachIn ?? 52;
   const aOut = spec.approachOut ?? 52;
-  const deckHalf = (spec.deckHalf ?? 7.2) + 3.4; // 車道+橋上歩道の外縁
+  const deckHalf = spec.deckHalf ?? 7.2; // 車道の外縁(橋上に歩道は無い実際の大宮跨線橋に合わせる)
   // デッキ・欄干(makeRibbon が標高追従するので路面と一緒に持ち上がる)。
   // 欄干は車線と車線の間の仕切り程度の幅(0.2m)に抑える。
   scene.add(
@@ -172,7 +172,6 @@ function buildConventionalUnderpass(scene, path, spec) {
       const inner = deckHalf + 0.6; // 高架縁のすぐ外
       const roadMat = mat(0x565a60);
       const curbMat = mat(0xb9bdb9);
-      const walkMat = mat(0xcfd2cc);
       const lineMat = mat(0xe8e8e8);
       for (const [a, b] of [
         [sFrom - aIn, railFrom - 5],
@@ -201,7 +200,6 @@ function buildConventionalUnderpass(scene, path, spec) {
           span(inner + 0.15, inner + 0.3, 0.026, lineMat); // 内側路側線
           span(inner + laneW - 0.3, inner + laneW - 0.15, 0.026, lineMat);
           span(inner + laneW, inner + laneW + 0.5, 0.13, curbMat);
-          span(inner + laneW + 0.5, inner + laneW + 3.0, 0.1, walkMat);
         }
       }
       // 高架下の舗装(八条通が下をくぐる区間)
@@ -304,26 +302,86 @@ function buildExpresswayViaduct(scene, path, spec) {
     g.add(parapet);
   }
 
-  // 橋脚(道路上・川面の上には立てない — 高架は経路と斜めに交差する)
+  const isKoeda = spec.name?.includes("鴨川・小枝橋");
+  const isHishizuma = spec.name?.includes("桂川・菱妻神社");
+
+  const addFenceLine = (z, span, height = 2.2) => {
+    const fenceMat = mat(0xb9bfbd, { transparent: true, opacity: 0.78 });
+    const postMat = mat(0x737a78);
+    const postStep = 5;
+    for (let x = -span / 2; x <= span / 2 + 0.1; x += postStep) {
+      const post = new THREE.Mesh(
+        new THREE.BoxGeometry(0.12, height, 0.12),
+        postMat,
+      );
+      post.position.set(x, height / 2, z);
+      g.add(post);
+    }
+    const panel = new THREE.Mesh(
+      new THREE.BoxGeometry(span, height - 0.2, 0.06),
+      fenceMat,
+    );
+    panel.position.set(0, height / 2, z);
+    g.add(panel);
+    for (const y of [0.75, height - 0.35]) {
+      const rail = new THREE.Mesh(
+        new THREE.BoxGeometry(span, 0.08, 0.08),
+        postMat,
+      );
+      rail.position.set(0, y, z);
+      g.add(rail);
+    }
+  };
+
+  // 菱妻神社側は高架下の道路両側をフェンスで覆う。道路中央は空ける。
+  if (isHishizuma) {
+    const routeClear = halfWidthAt(spec.s) + 1.2;
+    const fenceZ = routeClear + 1.0;
+    addFenceLine(-fenceZ, width - 2.0, 2.4);
+    addFenceLine(fenceZ, width - 2.0, 2.4);
+  }
+
+  // 小枝橋側は鴨川側に高架下の塀を置く。道路と河川の視界を塞ぎすぎない高さにする。
+  if (isKoeda) {
+    const riverSide = spec.riverSide ?? -1;
+    const wall = new THREE.Mesh(
+      new THREE.BoxGeometry(0.45, 1.8, length - 12),
+      mat(0x9da39f),
+    );
+    wall.position.set(riverSide * (width / 2 - 0.7), 0.9, 0);
+    g.add(wall);
+  }
+
+  // 橋脚は横長の板ではなく、道路・水面を避けた細い柱として配置する。
   const clearHalf = halfWidthAt(spec.s) + 5;
   const riverZones = (route.bridges ?? []).map((br) => {
     const b = at(path, br.s);
     return { x: b.x, z: b.z, r: Math.max(18, br.length * 0.85) / 2 + 24 };
   });
-  for (const z of [-75, -38, 0, 38, 75]) {
-    if (Math.abs(z) < clearHalf) continue;
-    const wx = p.x + Math.sin(spec.heading) * z;
-    const wz = p.z + Math.cos(spec.heading) * z;
-    if (
-      riverZones.some((rz) => (wx - rz.x) ** 2 + (wz - rz.z) ** 2 < rz.r * rz.r)
-    )
-      continue;
-    const pier = new THREE.Mesh(
-      new THREE.BoxGeometry(width * 0.5, deckY - 0.6, 1.6),
-      mat(0x9c9f9c),
-    );
-    pier.position.set(0, (deckY - 0.6) / 2, z);
-    g.add(pier);
+  const pierRows = spec.pierRows ?? (isKoeda ? [-90, 90] : [-75, 75]);
+  const pierX = Math.min(
+    width / 2 - 1.5,
+    Math.max(clearHalf + 1, width * 0.38),
+  );
+  const pierXs = spec.pierXs ?? [-pierX, pierX];
+  for (const z of pierRows) {
+    for (const x of pierXs) {
+      if (Math.abs(x) < clearHalf) continue;
+      const wx = p.x + Math.cos(spec.heading) * x + Math.sin(spec.heading) * z;
+      const wz = p.z - Math.sin(spec.heading) * x + Math.cos(spec.heading) * z;
+      if (
+        riverZones.some(
+          (rz) => (wx - rz.x) ** 2 + (wz - rz.z) ** 2 < rz.r * rz.r,
+        )
+      )
+        continue;
+      const pier = new THREE.Mesh(
+        new THREE.BoxGeometry(1.8, deckY - 0.6, 1.8),
+        mat(0x9c9f9c),
+      );
+      pier.position.set(x, (deckY - 0.6) / 2, z);
+      g.add(pier);
+    }
   }
   scene.add(g);
 }
