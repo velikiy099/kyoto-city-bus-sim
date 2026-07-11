@@ -5,3 +5,7 @@ tools/cache/
 .DS_Store
 tools/*.blend1
 tools/map*.svg
+data/raw/plateau/
+data/work/plateau/
+.venv-world/
+.plateau-osm-backup/

@@ -37,6 +37,7 @@ import { buildBuildings } from "./world/buildings.js";
 import { buildRailways } from "./world/railways.js";
 import { buildExtraRoads } from "./world/extraRoads.js";
 import { buildTraffic } from "./world/traffic.js";
+import { buildWorldScenery } from "./world/declarative/buildWorldScenery.js";
 import * as sfx from "./audio/sfx.js";
 import {
   initAnnouncements,
@@ -68,14 +69,15 @@ scene.add(sun);
 
 scene.add(buildGround(path, route.bridges, route.rivers));
 scene.add(buildRoad(path, route));
-const extraRoadTraffic = buildExtraRoads(scene); // OSM実測の並行道路・小枝橋西行き橋
-buildRailways(scene, path, route.railStructures);
-const exclusions = [
-  ...buildLandmarks(scene, path),
-  ...buildNature(scene, path),
-  ...turnExclusions(),
-];
-buildBuildings(scene, path, exclusions, route.buildings);
+const extraRoadTraffic = buildExtraRoads(scene); // existing feeder roads and traffic definitions stay intact
+void buildWorldScenery(scene, path, route, {
+  buildRailways,
+  buildLandmarks,
+  buildNature,
+  buildBuildings,
+  turnExclusions,
+  elevationAt,
+});
 
 // ---------------------------------------------------------------- bus / game objects
 const bus = new BusPhysics();

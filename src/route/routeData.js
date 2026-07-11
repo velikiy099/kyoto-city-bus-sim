@@ -1,4 +1,5 @@
 import raw from "../data/route18.json";
+import terrainProfile from "../world/declarative/generated/route-elevation.json";
 import { RoutePath } from "./path.js";
 
 /** 路線データ一式(経路・停留所・橋・速度ゾーン) */
@@ -165,7 +166,7 @@ const elevRamps = elevSrc.map((r) => ({
 const smoothstep = (t) => t * t * (3 - 2 * t);
 
 /** s 位置の路面標高 [m](跨線橋以外は 0) */
-export function elevationAt(s) {
+function structuralElevationAt(s) {
   for (const r of elevRamps) {
     if (s <= r.a0 || s >= r.b1) continue;
     if (s < r.a1) return r.h * smoothstep((s - r.a0) / (r.a1 - r.a0));
@@ -173,6 +174,29 @@ export function elevationAt(s) {
     return r.h * smoothstep((r.b1 - s) / (r.b1 - r.b0));
   }
   return 0;
+}
+
+function terrainElevationAt(s) {
+  const samples = terrainProfile?.samples;
+  if (!Array.isArray(samples) || samples.length === 0) return 0;
+  if (s <= samples[0][0]) return samples[0][1] ?? 0;
+  if (s >= samples.at(-1)[0]) return samples.at(-1)[1] ?? 0;
+  let lo = 0;
+  let hi = samples.length - 1;
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (samples[mid][0] <= s) lo = mid;
+    else hi = mid;
+  }
+  const [s0, y0] = samples[lo];
+  const [s1, y1] = samples[hi];
+  const t = s1 === s0 ? 0 : (s - s0) / (s1 - s0);
+  return y0 + (y1 - y0) * t;
+}
+
+/** PLATEAU地形の高低差に、既存の橋・跨線橋プロファイルを加える。 */
+export function elevationAt(s) {
+  return terrainElevationAt(s) + structuralElevationAt(s);
 }
 
 /** s 増加方向の路面勾配(dy/ds) */

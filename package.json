@@ -9,7 +9,14 @@
     "preview": "vite preview",
     "build-data": "node tools/build-route-data.mjs",
     "map": "node tools/render-map.mjs",
-    "map-check": "node tools/render-map.mjs --check"
+    "map-check": "node tools/render-map.mjs --check",
+    "world:download": "node tools/world/download-sources.mjs",
+    "world:select": "node tools/world/select-citygml.mjs",
+    "world:build": "node tools/world/build-world.mjs",
+    "world:refresh": "node tools/world/build-world.mjs --refresh-osm",
+    "world:validate": "node tools/world/validate-world-data.mjs",
+    "world:all": "npm run world:download && npm run world:build",
+    "validate:plateau-integration": "node tools/validate-plateau-integration.mjs"
   },
   "dependencies": {
     "three": "^0.170.0"
