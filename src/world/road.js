@@ -158,8 +158,11 @@ function addIntersections(
   });
   const medianMat = new THREE.MeshLambertMaterial({ color: 0x7d9668 }); // 植栽帯
   for (const ix of intersections ?? []) {
-    // 右左折交差点の近傍は addTurnIntersections が本物の交差を描くのでスキップ
-    if (turns.some((t) => ix.s > t.sIn - 28 && ix.s < t.sOut + 28)) continue;
+    // 右左折交差点の近傍は addTurnIntersections が本物の交差を描くのでスキップ。
+    // 地蔵前手前のように、同じ分岐を構成するOSM wayの接続点が曲がり角の
+    // 前後に別々に検出される場合、短い範囲では交差道路スタブが二重に残る。
+    // addTurnIntersections の既定スタブ長(42m)まで含めて抑制し、分岐を1つにする。
+    if (turns.some((t) => ix.s > t.sIn - 42 && ix.s < t.sOut + 42)) continue;
     const s = Math.max(0, Math.min(path.length - 0.1, ix.s));
     const [px, pz] = path.getPoint(s);
     const width = Math.max(5.5, ix.width ?? 7);
