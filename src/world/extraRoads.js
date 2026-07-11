@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { CFG } from "../config.js";
 import { route } from "../route/routeData.js";
+import { terrainHeightAtWorld, roadHeightAtWorld } from "./declarative/continuousTerrain.js";
 
 /**
  * 経路外のOSM実測道路。pointsはゲーム座標の折れ線で、各wayの実形状をそのまま描く。
@@ -22,7 +23,7 @@ const FALLBACK_ROADS = [
   },
 ];
 
-function polylineRibbon(points, from, to, y) {
+function polylineRibbon(points, from, to, y, heightAt = terrainHeightAtWorld) {
   const positions = [];
   const indices = [];
   for (let i = 0; i < points.length; i++) {
@@ -34,8 +35,12 @@ function polylineRibbon(points, from, to, y) {
     const nx = -dz / len;
     const nz = dx / len;
     const [x, z] = points[i];
-    positions.push(x + nx * from, y, z + nz * from);
-    positions.push(x + nx * to, y, z + nz * to);
+    const fromX = x + nx * from;
+    const fromZ = z + nz * from;
+    const toX = x + nx * to;
+    const toZ = z + nz * to;
+    positions.push(fromX, heightAt(fromX, fromZ) + y, fromZ);
+    positions.push(toX, heightAt(toX, toZ) + y, toZ);
     if (i > 0) {
       const b = i * 2;
       indices.push(b - 2, b - 1, b, b - 1, b + 1, b);
@@ -48,10 +53,10 @@ function polylineRibbon(points, from, to, y) {
   return geo;
 }
 
-function addStrip(group, points, from, to, y, material) {
+function addStrip(group, points, from, to, y, material, heightAt) {
   group.add(
     new THREE.Mesh(
-      polylineRibbon(points, Math.min(from, to), Math.max(from, to), y),
+      polylineRibbon(points, Math.min(from, to), Math.max(from, to), y, heightAt),
       material,
     ),
   );
@@ -65,30 +70,33 @@ function drawRoad(group, road) {
   const lineMat = new THREE.MeshBasicMaterial({ color: CFG.colors.roadLine });
   const curbMat = new THREE.MeshLambertMaterial({ color: CFG.colors.curb });
   const walkMat = new THREE.MeshLambertMaterial({ color: 0xcfd2cc });
+  const heightAt = road.name?.includes("橋")
+    ? (x, z) => Math.max(roadHeightAtWorld(x, z), terrainHeightAtWorld(x, z))
+    : terrainHeightAtWorld;
 
-  addStrip(group, points, -width / 2, width / 2, 0.006, roadMat);
+  addStrip(group, points, -width / 2, width / 2, 0.006, roadMat, heightAt);
 
   // 片側1車線は中央線を引かず、2車線一方通行の小枝橋だけ車線境界を引く。
   if ((road.lanes ?? 1) >= 2 && road.oneway)
-    addStrip(group, points, -0.045, 0.045, 0.026, lineMat);
+    addStrip(group, points, -0.045, 0.045, 0.026, lineMat, heightAt);
 
   for (const side of [-1, 1]) {
     const edge = side * (width / 2 - 0.28);
-    addStrip(group, points, edge - 0.07, edge + 0.07, 0.025, lineMat);
+    addStrip(group, points, edge - 0.07, edge + 0.07, 0.025, lineMat, heightAt);
     const curb = side * (width / 2 + 0.15);
-    addStrip(group, points, curb - side * 0.25, curb + side * 0.25, 0.12, curbMat);
+    addStrip(group, points, curb - side * 0.25, curb + side * 0.25, 0.12, curbMat, heightAt);
 
     // 小枝橋の橋面では歩道を細くし、道路端の板状の張り出しを作らない。
     const walk = side * (width / 2 + 0.9);
-    addStrip(group, points, walk - side * 0.65, walk + side * 0.65, 0.09, walkMat);
+    addStrip(group, points, walk - side * 0.65, walk + side * 0.65, 0.09, walkMat, heightAt);
   }
 }
 
-export function buildExtraRoads(scene) {
+export function buildExtraRoads(scene, { render = true } = {}) {
   const group = new THREE.Group();
   scene.add(group);
   const roads = route.extraRoads?.length ? route.extraRoads : FALLBACK_ROADS;
-  for (const road of roads) drawRoad(group, road);
+  if (render) for (const road of roads) drawRoad(group, road);
 
   return {
     trafficRoads: roads.filter((road) => road.direction === "northbound"),

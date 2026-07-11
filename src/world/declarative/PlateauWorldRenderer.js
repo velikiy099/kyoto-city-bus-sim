@@ -14,11 +14,35 @@ function colorValue(value, fallback) {
   return fallback;
 }
 
+function polygonCenter(polygon) {
+  let x = 0;
+  let z = 0;
+  for (const point of polygon) {
+    x += point[0];
+    z += point[2];
+  }
+  return [x / polygon.length, z / polygon.length];
+}
+
+function shiftedPolygon(polygon, heightAt, followSurface = false) {
+  if (!heightAt || !polygon?.length) return polygon;
+  if (followSurface) {
+    return polygon.map(([px, py, pz]) => {
+      const target = heightAt(px, pz);
+      return [px, Number.isFinite(target) ? target : py, pz];
+    });
+  }
+  const [x, z] = polygonCenter(polygon);
+  const sourceBase = Math.min(...polygon.map((point) => point[1]));
+  const delta = heightAt(x, z) - sourceBase;
+  return polygon.map(([px, py, pz]) => [px, py + delta, pz]);
+}
+
 function appendSurface(polygon, positions, indices, yOffset = 0) {
   if (!Array.isArray(polygon) || polygon.length < 3) return;
-  // Project the 3D polygon onto its dominant plane. This supports both horizontal
-  // road/terrain surfaces and vertical/oblique LOD2 building walls and roofs.
-  let nx = 0, ny = 0, nz = 0;
+  let nx = 0;
+  let ny = 0;
+  let nz = 0;
   for (let i = 0; i < polygon.length; i++) {
     const [x1, y1, z1] = polygon[i];
     const [x2, y2, z2] = polygon[(i + 1) % polygon.length];
@@ -38,38 +62,38 @@ function appendSurface(polygon, positions, indices, yOffset = 0) {
     if (faces.length) break;
   }
   if (!faces.length) return;
-  // ShapeUtils.triangulateShape assumes a simple (non-self-intersecting) 2D
-  // polygon. Real-world LOD2/3 CityGML wall/roof rings occasionally violate
-  // that after coordinate rounding/simplification, and the ear-clipping
-  // triangulator then produces "bowtie" triangles that jump between distant
-  // corners of the ring instead of only connecting adjacent vertices. Such a
-  // triangle's longest edge always exceeds the polygon's own bounding-box
-  // diagonal, so reject those rather than let them render as stray shards.
-  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity, minZ = Infinity, maxZ = -Infinity;
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  let minZ = Infinity;
+  let maxZ = -Infinity;
   for (const [x, y, z] of polygon) {
-    if (x < minX) minX = x; if (x > maxX) maxX = x;
-    if (y < minY) minY = y; if (y > maxY) maxY = y;
-    if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
+    minX = Math.min(minX, x); maxX = Math.max(maxX, x);
+    minY = Math.min(minY, y); maxY = Math.max(maxY, y);
+    minZ = Math.min(minZ, z); maxZ = Math.max(maxZ, z);
   }
   const maxPlausibleEdge = Math.hypot(maxX - minX, maxY - minY, maxZ - minZ) * 1.01 + 0.05;
   const base = positions.length / 3;
   for (const [x, y, z] of polygon) positions.push(x, y + yOffset, z);
   for (const face of faces) {
-    const [a, b, c] = face.map((i) => polygon[i]);
+    const [a, b, c] = face.map((index) => polygon[index]);
     const edge = Math.max(
       Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]),
       Math.hypot(b[0] - c[0], b[1] - c[1], b[2] - c[2]),
       Math.hypot(c[0] - a[0], c[1] - a[1], c[2] - a[2]),
     );
-    if (edge > maxPlausibleEdge) continue;
-    indices.push(base + face[0], base + face[1], base + face[2]);
+    if (edge <= maxPlausibleEdge) indices.push(base + face[0], base + face[1], base + face[2]);
   }
 }
 
-function surfaceMesh(features, material, yOffset = 0) {
+function surfaceMesh(features, material, heightAt, yOffset = 0, followSurface = false) {
   const positions = [];
   const indices = [];
-  for (const feature of features ?? []) appendSurface(feature.polygon, positions, indices, yOffset);
+  for (const feature of features ?? []) {
+    const polygon = shiftedPolygon(feature.polygon, heightAt, followSurface);
+    appendSurface(polygon, positions, indices, yOffset);
+  }
   if (!indices.length) return null;
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
@@ -78,14 +102,329 @@ function surfaceMesh(features, material, yOffset = 0) {
   return new THREE.Mesh(geometry, material);
 }
 
-function terrainMesh(triangles) {
-  const positions = [];
-  for (const triangle of triangles ?? []) {
-    for (const [x, y, z] of triangle) positions.push(x, y - 0.03, z);
+function area2d(polygon) {
+  let area = 0;
+  for (let i = 0; i < polygon.length; i++) {
+    const a = polygon[i];
+    const b = polygon[(i + 1) % polygon.length];
+    area += a[0] * b[1] - b[0] * a[1];
   }
-  if (!positions.length) return null;
+  return area * 0.5;
+}
+
+function cross2(a, b, p) {
+  return (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]);
+}
+
+function clipPolygonByEdge(polygon, a, b, keepPositive) {
+  if (!polygon.length) return [];
+  const inside = (point) => (keepPositive ? cross2(a, b, point) : -cross2(a, b, point)) >= -1e-5;
+  const intersection = (from, to) => {
+    const fromSide = cross2(a, b, from);
+    const toSide = cross2(a, b, to);
+    const denominator = fromSide - toSide;
+    const t = Math.abs(denominator) < 1e-9 ? 0 : fromSide / denominator;
+    return [from[0] + (to[0] - from[0]) * t, from[1] + (to[1] - from[1]) * t];
+  };
+  const clipped = [];
+  let previous = polygon.at(-1);
+  let previousInside = inside(previous);
+  for (const current of polygon) {
+    const currentInside = inside(current);
+    if (currentInside !== previousInside) clipped.push(intersection(previous, current));
+    if (currentInside) clipped.push(current);
+    previous = current;
+    previousInside = currentInside;
+  }
+  return clipped;
+}
+
+function clipPolygonToTriangle(polygon, triangle) {
+  const keepPositive = area2d(triangle) >= 0;
+  let clipped = polygon;
+  for (let i = 0; i < triangle.length && clipped.length >= 3; i++) {
+    clipped = clipPolygonByEdge(
+      clipped,
+      triangle[i],
+      triangle[(i + 1) % triangle.length],
+      keepPositive,
+    );
+  }
+  return clipped;
+}
+
+function pointInPolygon(point, polygon) {
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const [xi, yi] = polygon[i];
+    const [xj, yj] = polygon[j];
+    const crosses = yi > point[1] !== yj > point[1]
+      && point[0] < ((xj - xi) * (point[1] - yi)) / (yj - yi || 1e-9) + xi;
+    if (crosses) inside = !inside;
+  }
+  return inside;
+}
+
+function roadFeatureIndex(features, originX, originZ, stepX, stepZ, width, height) {
+  const index = new Map();
+  const add = (ix, iz, feature) => {
+    const key = `${ix}:${iz}`;
+    const list = index.get(key) ?? [];
+    list.push(feature);
+    index.set(key, list);
+  };
+  for (const feature of features ?? []) {
+    const polygon = feature.polygon;
+    if (!Array.isArray(polygon) || polygon.length < 3) continue;
+    const xs = polygon.map((point) => point[0]);
+    const zs = polygon.map((point) => point[2]);
+    const ix0 = Math.max(0, Math.floor((Math.min(...xs) - originX) / stepX) - 1);
+    const ix1 = Math.min(width - 2, Math.floor((Math.max(...xs) - originX) / stepX) + 1);
+    const iz0 = Math.max(0, Math.floor((Math.min(...zs) - originZ) / stepZ) - 1);
+    const iz1 = Math.min(height - 2, Math.floor((Math.max(...zs) - originZ) / stepZ) + 1);
+    for (let iz = iz0; iz <= iz1; iz++) {
+      for (let ix = ix0; ix <= ix1; ix++) add(ix, iz, feature);
+    }
+  }
+  return index;
+}
+
+function roadSectionAt(routeData, s) {
+  for (const section of routeData?.roadSections ?? []) {
+    if (s >= (section.from ?? 0) && s < (section.to ?? Infinity)) {
+      const lanes = Math.max(1, Number(section.lanes) || 2);
+      const defaultWidth = Math.max(4, lanes * 1.6 + 0.8);
+      return {
+        wL: section.wL ?? defaultWidth,
+        wR: section.wR ?? defaultWidth,
+      };
+    }
+  }
+  return { wL: 4, wR: 4 };
+}
+
+function ribbonCutFeature(a, b, wL, wR, id) {
+  const dx = b[0] - a[0];
+  const dz = b[1] - a[1];
+  const length = Math.hypot(dx, dz) || 1;
+  const nx = -dz / length;
+  const nz = dx / length;
+  const left = [
+    a[0] + nx * -wL,
+    0,
+    a[1] + nz * -wL,
+  ];
+  const leftNext = [
+    b[0] + nx * -wL,
+    0,
+    b[1] + nz * -wL,
+  ];
+  const rightNext = [
+    b[0] + nx * wR,
+    0,
+    b[1] + nz * wR,
+  ];
+  const right = [
+    a[0] + nx * wR,
+    0,
+    a[1] + nz * wR,
+  ];
+  return { id, kind: "osm-road-cut", polygon: [left, leftNext, rightNext, right] };
+}
+
+/**
+ * Build terrain-cut polygons from the same OSM route ribbons used by the
+ * simulator. PLATEAU transportation polygons remain the authoritative visible
+ * road surfaces; these extra masks make the terrain follow the current route
+ * shape even where the two datasets differ by a few metres.
+ */
+function routeRoadCutFeatures(path, routeData) {
+  if (!path || !routeData) return [];
+  const features = [];
+  const step = 12;
+  const margin = 0.35;
+  for (let s = 0; s < path.length; s += step) {
+    const s0 = s;
+    const s1 = Math.min(path.length, s + step);
+    const p0 = path.getPoint(s0);
+    const p1 = path.getPoint(s1);
+    const w0 = roadSectionAt(routeData, s0);
+    const w1 = roadSectionAt(routeData, s1);
+    const dx0 = path.getTangent(s0)[0];
+    const dz0 = path.getTangent(s0)[1];
+    const dx1 = path.getTangent(s1)[0];
+    const dz1 = path.getTangent(s1)[1];
+    const n0 = Math.hypot(dx0, dz0) || 1;
+    const n1 = Math.hypot(dx1, dz1) || 1;
+    const left0 = [p0[0] - dz0 / n0 * (w0.wL + margin), p0[1] + dx0 / n0 * (w0.wL + margin)];
+    const right0 = [p0[0] + -dz0 / n0 * (w0.wR + margin), p0[1] + dx0 / n0 * (w0.wR + margin)];
+    const left1 = [p1[0] - dz1 / n1 * (w1.wL + margin), p1[1] + dx1 / n1 * (w1.wL + margin)];
+    const right1 = [p1[0] + -dz1 / n1 * (w1.wR + margin), p1[1] + dx1 / n1 * (w1.wR + margin)];
+    features.push({
+      id: `osm-route-cut-${s0.toFixed(1)}`,
+      kind: "osm-road-cut",
+      polygon: [
+        [left0[0], 0, left0[1]],
+        [left1[0], 0, left1[1]],
+        [right1[0], 0, right1[1]],
+        [right0[0], 0, right0[1]],
+      ],
+    });
+  }
+  for (const road of routeData.extraRoads ?? []) {
+    const points = road.points ?? [];
+    const halfWidth = (road.width ?? (road.lanes ?? 1) * 3.2) / 2 + margin;
+    for (let i = 0; i < points.length - 1; i++) {
+      const a = points[i];
+      const b = points[i + 1];
+      const feature = ribbonCutFeature(
+        a,
+        b,
+        halfWidth,
+        halfWidth,
+        `osm-extra-road-cut-${road.id ?? i}-${i}`,
+      );
+      features.push(feature);
+    }
+  }
+  return features;
+}
+
+function terrainGridMesh(grid, roadFeatures = [], routeCutFeatures = []) {
+  if (!grid || !Array.isArray(grid.heights)) return null;
+  const width = Number(grid.width);
+  const height = Number(grid.height);
+  const [originX, originZ] = grid.origin ?? [];
+  const [stepX, stepZ] = Array.isArray(grid.spacing) ? grid.spacing : [grid.spacing, grid.spacing];
+  if (!(width >= 2 && height >= 2) || grid.heights.length !== width * height) return null;
+  const positions = [];
+  const indices = [];
+  const roads = roadFeatureIndex(
+    [...roadFeatures, ...routeCutFeatures],
+    originX,
+    originZ,
+    stepX,
+    stepZ,
+    width,
+    height,
+  );
+  const heightAtGrid = (ix, iz) => Number(grid.heights[iz * width + ix] ?? 0) - 0.035;
+  const heightAtTriangle = (point, triangle, values) => {
+    const [a, b, c] = triangle;
+    const denominator = (b[1] - c[1]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[1] - c[1]);
+    if (Math.abs(denominator) < 1e-9) return values[0];
+    const wa = ((b[1] - c[1]) * (point[0] - c[0]) + (c[0] - b[0]) * (point[1] - c[1])) / denominator;
+    const wb = ((c[1] - a[1]) * (point[0] - c[0]) + (a[0] - c[0]) * (point[1] - c[1])) / denominator;
+    const wc = 1 - wa - wb;
+    return wa * values[0] + wb * values[1] + wc * values[2];
+  };
+  const roadTerrainMaxEdge = 10;
+  const roadMaskForTriangle = (triangle, candidates) => {
+    const outerArea = Math.abs(area2d(triangle));
+    if (outerArea < 1e-6) return;
+    const holes = [];
+    let fullyCovered = false;
+    for (const feature of candidates ?? []) {
+      const polygon = feature.polygon?.map((point) => [point[0], point[2]]);
+      if (!polygon || polygon.length < 3) continue;
+      const clipped = clipPolygonToTriangle(polygon, triangle);
+      const clippedArea = Math.abs(area2d(clipped));
+      if (clippedArea < 0.12) continue;
+      if (clippedArea >= outerArea * 0.985) {
+        fullyCovered = true;
+        break;
+      }
+      if (area2d(clipped) * area2d(triangle) > 0) clipped.reverse();
+      holes.push({ polygon: clipped, area: clippedArea });
+    }
+    if (fullyCovered) return { fullyCovered: true, holes: [] };
+
+    // TrafficArea and AuxiliaryTrafficArea polygons can touch or overlap at
+    // their boundaries. Keep the largest clipped ring when a smaller ring is
+    // wholly inside it so ear-clipping receives non-overlapping holes.
+    holes.sort((a, b) => b.area - a.area);
+    const accepted = [];
+    for (const hole of holes) {
+      const center = hole.polygon.reduce((sum, point) => [sum[0] + point[0] / hole.polygon.length, sum[1] + point[1] / hole.polygon.length], [0, 0]);
+      if (accepted.some((item) => pointInPolygon(center, item))) continue;
+      accepted.push(hole.polygon);
+    }
+    return { fullyCovered: false, holes: accepted };
+  };
+
+  const appendTriangle = (triangle, values, candidates, depth = 0) => {
+    const roadMask = roadMaskForTriangle(triangle, candidates);
+    if (!roadMask) return;
+    if (roadMask.fullyCovered) return;
+
+    const maxEdge = Math.max(
+      Math.hypot(triangle[0][0] - triangle[1][0], triangle[0][1] - triangle[1][1]),
+      Math.hypot(triangle[1][0] - triangle[2][0], triangle[1][1] - triangle[2][1]),
+      Math.hypot(triangle[2][0] - triangle[0][0], triangle[2][1] - triangle[0][1]),
+    );
+    // Refine only where a PLATEAU road polygon actually intersects the
+    // terrain. This keeps the connected terrain grid inexpensive while
+    // making the road boundary independent of the original 30m cell size.
+    if (roadMask.holes.length && depth < 2 && maxEdge > roadTerrainMaxEdge) {
+      const [a, b, c] = triangle;
+      const [va, vb, vc] = values;
+      const ab = [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5];
+      const bc = [(b[0] + c[0]) * 0.5, (b[1] + c[1]) * 0.5];
+      const ca = [(c[0] + a[0]) * 0.5, (c[1] + a[1]) * 0.5];
+      const vab = (va + vb) * 0.5;
+      const vbc = (vb + vc) * 0.5;
+      const vca = (vc + va) * 0.5;
+      appendTriangle([a, ab, ca], [va, vab, vca], candidates, depth + 1);
+      appendTriangle([ab, b, bc], [vab, vb, vbc], candidates, depth + 1);
+      appendTriangle([ca, bc, c], [vca, vbc, vc], candidates, depth + 1);
+      appendTriangle([ab, bc, ca], [vab, vbc, vca], candidates, depth + 1);
+      return;
+    }
+
+    const contours = [triangle, ...roadMask.holes];
+    const faces = roadMask.holes.length
+      ? THREE.ShapeUtils.triangulateShape(
+          triangle.map((point) => new THREE.Vector2(...point)),
+          roadMask.holes.map((hole) => hole.map((point) => new THREE.Vector2(...point))),
+        )
+      : [[0, 1, 2]];
+    if (!faces.length) {
+      // Never restore the complete terrain triangle after a road mask was
+      // found. That fallback was the source of terrain reappearing over
+      // narrow/overlapping PLATEAU road polygons. The road surface remains
+      // responsible for covering the masked area.
+      return;
+    }
+    const offsets = [];
+    let offset = 0;
+    for (const contour of contours) {
+      offsets.push(offset);
+      for (const point of contour) {
+        const y = heightAtTriangle(point, triangle, values);
+        positions.push(point[0], y, point[1]);
+        offset++;
+      }
+    }
+    const base = positions.length / 3 - offset;
+    for (const face of faces) indices.push(base + face[0], base + face[1], base + face[2]);
+  };
+
+  for (let iz = 0; iz < height - 1; iz++) {
+    for (let ix = 0; ix < width - 1; ix++) {
+      const x = originX + ix * stepX;
+      const z = originZ + iz * stepZ;
+      const a = [x, z];
+      const b = [x + stepX, z];
+      const c = [x, z + stepZ];
+      const d = [x + stepX, z + stepZ];
+      const candidates = roads.get(`${ix}:${iz}`) ?? [];
+      appendTriangle([a, c, b], [heightAtGrid(ix, iz), heightAtGrid(ix, iz + 1), heightAtGrid(ix + 1, iz)], candidates);
+      appendTriangle([b, c, d], [heightAtGrid(ix + 1, iz), heightAtGrid(ix, iz + 1), heightAtGrid(ix + 1, iz + 1)], candidates);
+    }
+  }
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setIndex(indices);
   geometry.computeVertexNormals();
   return new THREE.Mesh(
     geometry,
@@ -93,15 +432,50 @@ function terrainMesh(triangles) {
   );
 }
 
-function appendBuilding(building, positions, indices) {
-  if (Array.isArray(building.surfaces) && building.surfaces.length) {
-    for (const polygon of building.surfaces) appendSurface(polygon, positions, indices);
-    return;
+function detailedShell(building) {
+  const surfaces = Array.isArray(building.surfaces) ? building.surfaces : [];
+  const values = surfaces.flatMap((surface) => surface.map((point) => point[1]));
+  if (surfaces.length < 4 || values.length < 12) return null;
+  const low = Math.min(...values);
+  const spread = Math.max(...values) - low;
+  const expected = Math.max(1.5, Number(building.height ?? 6) * 0.3);
+  if (spread < expected) return null;
+  let vertical = 0;
+  let roof = 0;
+  for (const surface of surfaces) {
+    const ys = surface.map((point) => point[1]);
+    const surfaceSpread = Math.max(...ys) - Math.min(...ys);
+    if (surfaceSpread >= expected * 0.65) vertical++;
+    else if (surfaceSpread < 1.2 && ys.reduce((sum, value) => sum + value, 0) / ys.length > low + expected * 0.6) roof++;
   }
+  return vertical >= 2 && roof >= 1 ? surfaces : null;
+}
+
+function median(values) {
+  const sorted = values.filter(Number.isFinite).sort((a, b) => a - b);
+  if (!sorted.length) return 0;
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) * 0.5;
+}
+
+function appendBuilding(building, positions, indices, heightAt) {
   const footprint = building.footprint ?? [];
   if (footprint.length < 3) return;
+  const center = building.center ?? footprint.reduce((sum, point) => [sum[0] + point[0] / footprint.length, sum[1] + point[1] / footprint.length], [0, 0]);
+  const terrainSamples = heightAt
+    ? [heightAt(center[0], center[1]), ...footprint.map(([x, z]) => heightAt(x, z))]
+    : [];
+  const targetBase = heightAt ? median(terrainSamples) : Number(building.baseHeight ?? 0);
+  const shell = detailedShell(building);
+  if (shell) {
+    const sourceBase = Math.min(...shell.flatMap((surface) => surface.map((point) => point[1])));
+    const delta = targetBase - sourceBase;
+    for (const polygon of shell) appendSurface(polygon.map(([x, y, z]) => [x, y + delta, z]), positions, indices);
+    return;
+  }
+
   const base = positions.length / 3;
-  const y0 = Number(building.baseHeight ?? 0);
+  const y0 = targetBase;
   const y1 = y0 + Math.max(2.8, Number(building.height ?? 6));
   const shape = footprint.map(([x, z]) => new THREE.Vector2(x, z));
   const faces = THREE.ShapeUtils.triangulateShape(shape, []);
@@ -118,7 +492,7 @@ function appendBuilding(building, positions, indices) {
   }
 }
 
-function buildingMeshes(document, exclusions = []) {
+function buildingMeshes(document, exclusions, heightAt) {
   const groups = new Map();
   const excluded = (building) => exclusions.some((entry) => {
     const center = building.center ?? [0, 0];
@@ -126,10 +500,10 @@ function buildingMeshes(document, exclusions = []) {
   });
   for (const building of document.features ?? []) {
     if (excluded(building)) continue;
-    const materialName = building.material ?? "lowrise";
-    if (!groups.has(materialName)) groups.set(materialName, { positions: [], indices: [] });
-    const target = groups.get(materialName);
-    appendBuilding(building, target.positions, target.indices);
+    const name = building.material ?? "lowrise";
+    if (!groups.has(name)) groups.set(name, { positions: [], indices: [] });
+    const target = groups.get(name);
+    appendBuilding(building, target.positions, target.indices, heightAt);
   }
   const sourceMaterials = { ...DEFAULT_MATERIALS, ...(document.materials ?? {}) };
   const meshes = [];
@@ -147,7 +521,7 @@ function buildingMeshes(document, exclusions = []) {
   return meshes;
 }
 
-function furnitureGroup(features) {
+function furnitureGroup(features, heightAt) {
   const signals = (features ?? []).filter((feature) => feature.kind === "traffic-signal");
   if (!signals.length) return null;
   const group = new THREE.Group();
@@ -157,7 +531,8 @@ function furnitureGroup(features) {
   const headGeometry = new THREE.BoxGeometry(0.28, 0.8, 0.22);
   const headMaterial = new THREE.MeshLambertMaterial({ color: 0x262626 });
   for (const feature of signals) {
-    const [x, y, z] = feature.position;
+    const [x, sourceY, z] = feature.position;
+    const y = heightAt ? heightAt(x, z) : sourceY;
     const pole = new THREE.Mesh(poleGeometry, poleMaterial);
     pole.position.set(x, y + 1.7, z);
     const head = new THREE.Mesh(headGeometry, headMaterial);
@@ -178,23 +553,32 @@ export class PlateauWorldRenderer {
     this.scene = scene;
     this.exclusions = options.exclusions ?? [];
     this.enabled = options.enabled ?? {};
+    this.terrainHeightAtWorld = options.terrainHeightAtWorld;
+    this.roadHeightAtWorld = options.roadHeightAtWorld ?? options.terrainHeightAtWorld;
+    this.routePath = options.routePath;
+    this.routeData = options.routeData;
     this.groups = [];
   }
 
   async load(manifest) {
     const layers = new Map((manifest.layers ?? []).map((layer) => [layer.id, layer]));
     const wanted = ["terrain", "transportation", "water", "vegetation", "bridges", "buildings", "furniture"]
-      .filter((id) => this.enabled[id] !== false && layers.get(id)?.url);
+      .filter((id) => this.enabled[id] !== false && layers.get(id)?.url)
+      .filter((id) => id !== "terrain" || layers.get(id)?.geometry === "connected-grid");
     const documents = Object.fromEntries(await Promise.all(wanted.map(async (id) => [id, await fetchJson(layers.get(id).url)])));
 
-    if (documents.terrain) this.add("terrain", terrainMesh(documents.terrain.triangles));
+    const routeCuts = routeRoadCutFeatures(this.routePath, this.routeData);
+    const terrain = terrainGridMesh(
+      documents.terrain?.grid,
+      documents.transportation?.features,
+      routeCuts,
+    );
+    if (terrain) this.add("terrain", terrain);
     if (documents.transportation) {
-      const byKind = Object.groupBy
-        ? Object.groupBy(documents.transportation.features ?? [], (feature) => feature.kind ?? "road")
-        : (documents.transportation.features ?? []).reduce((acc, feature) => {
-            (acc[feature.kind ?? "road"] ??= []).push(feature);
-            return acc;
-          }, {});
+      const byKind = (documents.transportation.features ?? []).reduce((acc, feature) => {
+        (acc[feature.kind ?? "road"] ??= []).push(feature);
+        return acc;
+      }, {});
       const materials = {
         road: new THREE.MeshLambertMaterial({ color: 0x55585a, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -1 }),
         lane: new THREE.MeshLambertMaterial({ color: 0x515456, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -1 }),
@@ -202,18 +586,19 @@ export class PlateauWorldRenderer {
         sidewalk: new THREE.MeshLambertMaterial({ color: 0x99958d, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -1 }),
         island: new THREE.MeshLambertMaterial({ color: 0x8c8b82, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -1 }),
       };
-      for (const [kind, features] of Object.entries(byKind)) this.add(`transportation:${kind}`, surfaceMesh(features, materials[kind] ?? materials.road, 0.015));
+      for (const [kind, features] of Object.entries(byKind)) this.add(`transportation:${kind}`, surfaceMesh(features, materials[kind] ?? materials.road, this.roadHeightAtWorld, 0.015, true));
     }
-    if (documents.water) this.add("water", surfaceMesh(documents.water.features, new THREE.MeshLambertMaterial({ color: 0x4b86a6, transparent: true, opacity: 0.78, side: THREE.DoubleSide }), 0.03));
-    if (documents.vegetation) this.add("vegetation", surfaceMesh(documents.vegetation.features, new THREE.MeshLambertMaterial({ color: 0x547448, side: THREE.DoubleSide }), 0.025));
-    if (documents.bridges) this.add("bridges", surfaceMesh(documents.bridges.features, new THREE.MeshLambertMaterial({ color: 0x777777, side: THREE.DoubleSide }), 0.02));
-    if (documents.buildings) for (const mesh of buildingMeshes(documents.buildings, this.exclusions)) this.add(mesh.name, mesh);
-    if (documents.furniture) this.add("furniture", furnitureGroup(documents.furniture.features));
+    if (documents.water) this.add("water", surfaceMesh(documents.water.features, new THREE.MeshLambertMaterial({ color: 0x4b86a6, transparent: true, opacity: 0.78, side: THREE.DoubleSide }), this.terrainHeightAtWorld, -0.12));
+    if (documents.vegetation) this.add("vegetation", surfaceMesh(documents.vegetation.features, new THREE.MeshLambertMaterial({ color: 0x547448, side: THREE.DoubleSide }), this.terrainHeightAtWorld, 0.025));
+    if (documents.bridges) this.add("bridges", surfaceMesh(documents.bridges.features, new THREE.MeshLambertMaterial({ color: 0x777777, side: THREE.DoubleSide }), this.roadHeightAtWorld, 0.02));
+    if (documents.buildings) for (const mesh of buildingMeshes(documents.buildings, this.exclusions, this.terrainHeightAtWorld)) this.add(mesh.name, mesh);
+    if (documents.furniture) this.add("furniture", furnitureGroup(documents.furniture.features, this.roadHeightAtWorld));
 
     return {
       groups: this.groups,
-      counts: Object.fromEntries(Object.entries(documents).map(([id, doc]) => [id, (doc.features ?? doc.triangles ?? []).length])),
+      counts: Object.fromEntries(Object.entries(documents).map(([id, doc]) => [id, (doc.features ?? doc.triangles ?? doc.grid?.heights ?? []).length])),
       hasPlateauBuildings: Boolean(documents.buildings?.features?.length),
+      hasConnectedTerrain: Boolean(terrain),
     };
   }
 

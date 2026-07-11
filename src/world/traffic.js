@@ -15,6 +15,7 @@ import {
   rightWidthAt,
 } from "../route/routeData.js";
 import { RoutePath } from "../route/path.js";
+import { terrainHeightAtWorld, roadHeightAtWorld } from "./declarative/continuousTerrain.js";
 
 const mat = (color) => new THREE.MeshLambertMaterial({ color });
 const signalMat = (color) => new THREE.MeshBasicMaterial({ color });
@@ -150,6 +151,84 @@ function sampleTurnArc(arc, u) {
   return { x: ax + dx * t, z: az + dz * t, heading: Math.atan2(dx, dz) };
 }
 
+
+// ===== 共通走行ダイナミクス =====
+const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+
+/** IDM(知的運転者モデル)に近い追従加速度。前車との速度差を考慮し、
+ * 単純な距離比例制御で起きていた急制動・速度振動を抑える。 */
+function idmAcceleration(speed, desiredSpeed, gap = Infinity, leadSpeed = desiredSpeed, options = {}) {
+  const acceleration = options.acceleration ?? 1.25;
+  const comfortableBrake = options.comfortableBrake ?? 2.0;
+  const minimumGap = options.minimumGap ?? 3.2;
+  const timeHeadway = options.timeHeadway ?? 1.35;
+  const target = Math.max(0.5, desiredSpeed);
+  const freeRoad = 1 - Math.pow(speed / target, 4);
+  if (!Number.isFinite(gap)) return acceleration * freeRoad;
+  const closingSpeed = speed - Math.max(0, leadSpeed);
+  const dynamicGap = minimumGap + Math.max(
+    0,
+    speed * timeHeadway + (speed * closingSpeed) / (2 * Math.sqrt(acceleration * comfortableBrake)),
+  );
+  const interaction = Math.pow(dynamicGap / Math.max(0.5, gap), 2);
+  return clamp(acceleration * (freeRoad - interaction), -5.0, acceleration);
+}
+
+function setSurfacePose(vehicle, x, z, heading, heightAt, yOffset = 0.04) {
+  const y = heightAt(x, z) + yOffset;
+  vehicle.outer.position.set(x, y, z);
+  vehicle.outer.rotation.y = heading;
+  const look = 2.4;
+  const dx = Math.sin(heading) * look;
+  const dz = Math.cos(heading) * look;
+  const backY = heightAt(x - dx, z - dz);
+  const frontY = heightAt(x + dx, z + dz);
+  vehicle.inner.rotation.x = -Math.atan2(frontY - backY, look * 2);
+}
+
+function setRoadPose(vehicle, x, z, heading, yOffset = 0.04) {
+  setSurfacePose(vehicle, x, z, heading, roadHeightAtWorld, yOffset);
+}
+
+function setGroundRoadPose(vehicle, x, z, heading, yOffset = 0.04) {
+  setSurfacePose(vehicle, x, z, heading, terrainHeightAtWorld, yOffset);
+}
+
+function setFeederRoadPose(vehicle, x, z, heading, yOffset = 0.04) {
+  // 小枝橋西行き車線橋のような経路外の橋は別RoutePathを持つため、
+  // 地表面ではなく本線の共有道路標高へ投影する。
+  const heightAt = vehicle.road?.name?.includes("橋")
+    ? roadHeightAtWorld
+    : terrainHeightAtWorld;
+  setSurfacePose(vehicle, x, z, heading, heightAt, yOffset);
+}
+
+function orientedBoxesOverlap(a, b) {
+  // Use the actual vertical overlap. The previous extra 0.35m tolerance made
+  // vehicles on a nearby bridge/underpass count as collisions even when their
+  // visible bodies were separated.
+  if (Math.abs((a.y ?? 0) - (b.y ?? 0)) >= ((a.height ?? 2) + (b.height ?? 2)) * 0.5) return false;
+  const axes = [
+    [Math.sin(a.heading), Math.cos(a.heading)],
+    [Math.cos(a.heading), -Math.sin(a.heading)],
+    [Math.sin(b.heading), Math.cos(b.heading)],
+    [Math.cos(b.heading), -Math.sin(b.heading)],
+  ];
+  const dx = b.x - a.x;
+  const dz = b.z - a.z;
+  const cornersRadius = (box, axis) => {
+    const f = [Math.sin(box.heading), Math.cos(box.heading)];
+    const r = [Math.cos(box.heading), -Math.sin(box.heading)];
+    return Math.abs(axis[0] * f[0] + axis[1] * f[1]) * box.halfLength
+      + Math.abs(axis[0] * r[0] + axis[1] * r[1]) * box.halfWidth;
+  };
+  for (const axis of axes) {
+    const centerDistance = Math.abs(dx * axis[0] + dz * axis[1]);
+    if (centerDistance > cornersRadius(a, axis) + cornersRadius(b, axis)) return false;
+  }
+  return true;
+}
+
 const stopS = (name) => route.stops.find((st) => st.name === name)?.s ?? null;
 
 function fallbackSignalPositions(path) {
@@ -240,25 +319,27 @@ export function buildTraffic(scene, path, events = {}) {
     ? route.signals
     : fallbackSignalPositions(path);
   /** 柱を立て、必要ならアームを渡し、灯器を付ける */
+  let activeSignalElevation = 0;
   function buildHead(h) {
     const pole = new THREE.Mesh(poleGeo, mat(0x8a8f94));
-    pole.position.set(h.pole[0], 2.7, h.pole[1]);
+    pole.position.set(h.pole[0], activeSignalElevation + 2.7, h.pole[1]);
     g.add(pole);
     if (h.arm)
       g.add(
         makeCylinderBetween(
-          [h.pole[0], 5.1, h.pole[1]],
-          [h.head[0], 5.1, h.head[1]],
+          [h.pole[0], activeSignalElevation + 5.1, h.pole[1]],
+          [h.head[0], activeSignalElevation + 5.1, h.head[1]],
           0.06,
           0x8a8f94,
         ),
       );
-    return makeHead(h.head[0], 4.85, h.head[1], h.face, !!h.hoods);
+    return makeHead(h.head[0], activeSignalElevation + 4.85, h.head[1], h.face, !!h.hoods);
   }
 
   for (const def of signalDefs) {
     const s = def.s;
     if (s > path.length - 30) continue;
+    activeSignalElevation = elevationAt(s);
     const mainHeads = [];
     const crossHeads = [];
 
@@ -320,6 +401,31 @@ export function buildTraffic(scene, path, events = {}) {
     });
   }
 
+  // 交差点内を同時に相反する流入が占有しないよう、交差交通が進入した間だけ
+  // 短い予約を保持する。信号切替直後の「まだ交差点内にいる車」も保護できる。
+  let simulationTime = 0;
+  const intersectionReservations = new Map();
+  const reservationKey = (sig) => Math.round(sig.s * 10) / 10;
+  function activeReservation(sig) {
+    const key = reservationKey(sig);
+    const item = intersectionReservations.get(key);
+    if (item && item.until > simulationTime) return item;
+    if (item) intersectionReservations.delete(key);
+    return null;
+  }
+  function reserveIntersection(sig, owner, seconds = 4.5) {
+    const key = reservationKey(sig);
+    const current = activeReservation(sig);
+    if (current && current.owner !== owner) return false;
+    intersectionReservations.set(key, { owner, until: simulationTime + seconds });
+    return true;
+  }
+  function releaseIntersection(sig, owner) {
+    const key = reservationKey(sig);
+    const current = intersectionReservations.get(key);
+    if (current?.owner === owner) intersectionReservations.delete(key);
+  }
+
   /** 進行方向 dir(+1/-1)の車が s 位置・速度 v で従うべき停止線までの距離(なければ null) */
   function redDistAhead(s, dir, v) {
     let best = null;
@@ -327,7 +433,8 @@ export function buildTraffic(scene, path, events = {}) {
       const line = sig.s - 9 * dir;
       const d = (line - s) * dir;
       if (d < -2 || d > 90) continue;
-      if (sig.state === "green") continue;
+      const reservedByCross = activeReservation(sig)?.owner?.startsWith("cross-");
+      if (sig.state === "green" && !reservedByCross) continue;
       const brakeDist = (v * v) / (2 * 2.6);
       if (d < brakeDist - 4) continue;
       // 黄信号: 停止線まで余裕があれば止まらない(yellow→stopは行わない)
@@ -339,7 +446,8 @@ export function buildTraffic(scene, path, events = {}) {
 
   /** 交差点(自ルート外)を横切る他車が、交差道路の入り口で停止すべき残距離(なければ null) */
   function crossRedDist(cc) {
-    if (cc.sig.crossState === "green") return null;
+    const reserved = activeReservation(cc.sig);
+    if (cc.sig.crossState === "green" && (!reserved || reserved.owner === cc.id)) return null;
     const ix = cc.ix;
     // off=0=中心。車両は端(entryOff)の手前で停止。entryOffの符号は dir=1→-、dir=-1→+
     const entryOff = ((ix.width ?? 8) / 2 + 5) * cc.dir * -1;
@@ -401,14 +509,7 @@ export function buildTraffic(scene, path, events = {}) {
   // 二条駅前ロータリー(急カーブ・狭隘)には一般車を入れない
   const TRAFFIC_MIN_S = 360;
 
-  // 対向車(北行き)は一方通行区間の終端交差点を通過してから左折し、
-  // 側道を少し進んでから消える。交差点手前で消えると分岐が見えないため、
-  // triggerAfterは交差点通過後の距離として扱う。
-  const TURNOFF_POINTS = [
-    { s: 6598.7, heading: -1.5931, triggerAfter: 2, exitDistance: 28 }, // 府道201号線
-    { s: 7672.5, heading: -1.596, triggerAfter: 2, exitDistance: 28 }, // 小枝橋北側の切替
-    { s: 8317.7, heading: 2.94, triggerAfter: 2, exitDistance: 28 }, // 小枝橋東詰
-  ];
+  // 分岐・離脱先は route.intersections の実在する道路腕から動的に選択する。
 
   // 右左折交差点の交錯ゾーン(近接ターンは連結: 狭隘路のS字ジョグ等)
   const turnZones = [];
@@ -463,6 +564,13 @@ export function buildTraffic(scene, path, events = {}) {
     return sBase; // 近傍に多車線区間が無ければそのまま(1車線区間は疎らな密度を維持)
   }
 
+  let trafficSerial = 0;
+  const dimensionsFor = (def) => def.hitR >= 2.7
+    ? { length: 11.4, width: 2.45, height: 3.2 }
+    : def.hitR >= 2.3
+      ? { length: 6.6, width: 2.15, height: 2.8 }
+      : { length: 4.5, width: 1.82, height: 1.8 };
+
   const cars = [];
   ONCOMING_DEFS.forEach((def, i) => {
     const sBase = ((i + 1) / (ONCOMING_DEFS.length + 1)) * path.length;
@@ -478,16 +586,25 @@ export function buildTraffic(scene, path, events = {}) {
     const outer = new THREE.Group();
     outer.add(inner);
     g.add(outer);
+    const dimensions = dimensionsFor(def);
     return {
+      id: `main-${trafficSerial++}`,
       outer,
       inner,
       dir,
       laneIdx,
+      desiredLane: laneIdx,
+      laneChangeCooldown: 1 + Math.random() * 4,
       hitR: def.hitR,
+      length: dimensions.length,
+      width: dimensions.width,
+      height: dimensions.height,
       vMax: def.vMax,
       s: Math.max(360, Math.min(path.length - 15, s)),
       v: 6,
       latCur: null,
+      reservationKey: null,
+      exitPlan: null,
     };
   }
 
@@ -501,8 +618,7 @@ export function buildTraffic(scene, path, events = {}) {
   const feederPosition = (c) => {
     const [x, z] = c.path.getPoint(c.s);
     const [tx, tz] = c.path.getTangent(c.s);
-    c.outer.position.set(x, 0.04, z);
-    c.outer.rotation.y = Math.atan2(tx, tz);
+    setFeederRoadPose(c, x, z, Math.atan2(tx, tz));
   };
   const spawnFeederCar = (road, offset = 0) => {
     const def = ONCOMING_BASE[feederSerial++ % ONCOMING_BASE.length];
@@ -510,7 +626,9 @@ export function buildTraffic(scene, path, events = {}) {
     const outer = new THREE.Group();
     outer.add(inner);
     g.add(outer);
+    const dimensions = dimensionsFor(def);
     const c = {
+      id: `feeder-${trafficSerial++}`,
       road,
       path: road.path,
       outer,
@@ -519,8 +637,12 @@ export function buildTraffic(scene, path, events = {}) {
       v: 7,
       vMax: def.vMax,
       hitR: def.hitR,
+      length: dimensions.length,
+      width: dimensions.width,
+      height: dimensions.height,
       mergeArc: null,
       mergeT: 0,
+      waitingForGap: false,
     };
     feederPosition(c);
     feederCars.push(c);
@@ -552,6 +674,7 @@ export function buildTraffic(scene, path, events = {}) {
     outer.add(inner);
     g.add(outer);
     const vMax = 7 + Math.random() * 3;
+    const dimensions = dimensionsFor(def);
     if (mode === "tstub") {
       // 腕(side)の外側寄りに出現し、中心(本線)へ向かって進む(進行方向は常に中心向き)
       const armLen = Math.max(24, arm.length ?? 60);
@@ -559,6 +682,7 @@ export function buildTraffic(scene, path, events = {}) {
         arm.side *
         (Math.max(20, armLen * 0.35) + Math.random() * (armLen * 0.5));
       return {
+        id: `cross-${trafficSerial++}`,
         ix,
         sig,
         dir: -arm.side,
@@ -568,6 +692,9 @@ export function buildTraffic(scene, path, events = {}) {
         v: 6,
         vMax,
         hitR: def.hitR,
+        length: dimensions.length,
+        width: dimensions.width,
+        height: dimensions.height,
         phase: "approach",
         turnT: 0,
         turnArc: null,
@@ -577,6 +704,7 @@ export function buildTraffic(scene, path, events = {}) {
     }
     const range = Math.max(16, Math.min(60, (ix.length ?? 40) / 2 - 4));
     return {
+      id: `cross-${trafficSerial++}`,
       ix,
       sig,
       dir,
@@ -586,6 +714,9 @@ export function buildTraffic(scene, path, events = {}) {
       v: 6,
       vMax,
       hitR: def.hitR,
+      length: dimensions.length,
+      width: dimensions.width,
+      height: dimensions.height,
       outer,
       inner,
     };
@@ -624,415 +755,570 @@ export function buildTraffic(scene, path, events = {}) {
   let collisionCooldown = 0;
   let lastBusS = 0;
 
-  function checkFeederCollision(c, busPos, hitR) {
+  // Keep the collision hull just inside the visible body. This prevents a
+  // near-miss between lane neighbors from being scored as contact while still
+  // leaving a small safety allowance for mirrors and model rounding.
+  const COLLISION_LENGTH_SHRINK = 0.18;
+  const COLLISION_WIDTH_SHRINK = 0.12;
+
+  const busPoseFrom = (busS, busPos, busV, busHeading, busLat) => ({
+    x: busPos[0],
+    z: busPos[1],
+    y: busPos[2] ?? elevationAt(busS) + 1.35,
+    heading: busHeading,
+    halfLength: (11.5 - COLLISION_LENGTH_SHRINK) * 0.5,
+    halfWidth: (2.5 - COLLISION_WIDTH_SHRINK) * 0.5,
+    height: 3.0,
+    speed: busV,
+    s: busS,
+    lat: busLat,
+  });
+
+  function vehiclePose(vehicle) {
+    const length = Math.max(0.5, (vehicle.length ?? 4.5) - COLLISION_LENGTH_SHRINK);
+    const width = Math.max(0.5, (vehicle.width ?? 1.8) - COLLISION_WIDTH_SHRINK);
+    return {
+      x: vehicle.outer.position.x,
+      z: vehicle.outer.position.z,
+      y: vehicle.outer.position.y + (vehicle.height ?? 2) * 0.5,
+      heading: vehicle.outer.rotation.y,
+      halfLength: length * 0.5,
+      halfWidth: width * 0.5,
+      height: vehicle.height ?? 2,
+    };
+  }
+
+  function checkBusCollision(vehicle, busPose) {
     if (collisionCooldown > 0) return;
-    const dx = c.outer.position.x - busPos[0];
-    const dz = c.outer.position.z - busPos[1];
-    if (dx * dx + dz * dz < (c.hitR + hitR) ** 2) {
+    if (orientedBoxesOverlap(vehiclePose(vehicle), busPose)) {
       collisionCooldown = 4;
       events.onCollision?.();
     }
   }
 
-  function updateFeederCars(dt, busPos) {
+  function laneIndexAt(vehicle) {
+    return vehicle.desiredLane ?? vehicle.laneIdx ?? 0;
+  }
+
+  function laneNeighbors(s, dir, laneIdx, exclude, busPose) {
+    let lead = null;
+    let trail = null;
+    const targetLat = laneLat(s, dir, laneIdx);
+    if (targetLat == null) return { lead, trail };
+    const consider = (otherS, otherSpeed, otherLength, otherLat, ref) => {
+      if (Math.abs(otherLat - targetLat) > 1.85) return;
+      const longitudinal = (otherS - s) * dir;
+      const item = {
+        gap: Math.abs(longitudinal) - ((exclude?.length ?? 4.5) + otherLength) * 0.5,
+        speed: otherSpeed,
+        ref,
+      };
+      if (longitudinal > 0) {
+        if (!lead || item.gap < lead.gap) lead = item;
+      } else if (longitudinal < 0) {
+        if (!trail || item.gap < trail.gap) trail = item;
+      }
+    };
+    for (const other of cars) {
+      if (other === exclude || other.dir !== dir || other.turnArc) continue;
+      consider(
+        other.s,
+        other.v,
+        other.length ?? 4.5,
+        other.latCur ?? smoothLaneLat(other.s, dir, laneIndexAt(other)) ?? 0,
+        other,
+      );
+    }
+    if (dir === 1 && busPose) {
+      consider(busPose.s, busPose.speed, 11.4, busPose.lat, busPose);
+    }
+    return { lead, trail };
+  }
+
+  function canMergeIntoLane(s, dir, laneIdx, speed, busPose, exclude = null) {
+    const { lead, trail } = laneNeighbors(s, dir, laneIdx, exclude, busPose);
+    const frontNeed = Math.max(12, speed * 1.45);
+    const rearNeed = Math.max(10, (trail?.speed ?? speed) * 1.25);
+    return (!lead || lead.gap > frontNeed) && (!trail || trail.gap > rearNeed);
+  }
+
+  function chooseLane(vehicle, busPose, dt) {
+    vehicle.laneChangeCooldown = Math.max(0, (vehicle.laneChangeCooldown ?? 0) - dt);
+    const count = vehicle.dir === 1 ? fwdLanesAt(vehicle.s) : backLanesAt(vehicle.s);
+    if (count <= 1) {
+      vehicle.desiredLane = 0;
+      return;
+    }
+    const current = clamp(laneIndexAt(vehicle), 0, count - 1);
+    vehicle.desiredLane = current;
+    if (vehicle.laneChangeCooldown > 0) return;
+    const currentLead = laneNeighbors(vehicle.s, vehicle.dir, current, vehicle, busPose).lead;
+    if (!currentLead || currentLead.gap > Math.max(32, vehicle.v * 2.4)) return;
+    let bestLane = current;
+    let bestGap = currentLead.gap;
+    for (const candidate of [current - 1, current + 1]) {
+      if (candidate < 0 || candidate >= count) continue;
+      const neighbors = laneNeighbors(vehicle.s, vehicle.dir, candidate, vehicle, busPose);
+      const frontGap = neighbors.lead?.gap ?? Infinity;
+      if (
+        frontGap > bestGap + 12 &&
+        canMergeIntoLane(vehicle.s, vehicle.dir, candidate, vehicle.v, busPose, vehicle)
+      ) {
+        bestLane = candidate;
+        bestGap = frontGap;
+      }
+    }
+    if (bestLane !== current) {
+      vehicle.desiredLane = bestLane;
+      vehicle.laneIdx = bestLane;
+      vehicle.laneChangeCooldown = 5 + Math.random() * 4;
+    } else {
+      vehicle.laneChangeCooldown = 2 + Math.random() * 2;
+    }
+  }
+
+  const driveableArms = (ix) => (ix.arms ?? []).filter((arm) => arm?.exists && !arm.pedestrian);
+
+  function assignExitPlan(vehicle) {
+    vehicle.exitPlan = null;
+    if (Math.random() > 0.32) return;
+    const candidates = (route.intersections ?? []).filter((ix) => {
+      const ahead = (ix.s - vehicle.s) * vehicle.dir;
+      return ahead > 180 && ahead < 1250 && driveableArms(ix).length > 0;
+    });
+    if (!candidates.length) return;
+    const ix = candidates[Math.floor(Math.random() * Math.min(candidates.length, 8))];
+    const arms = driveableArms(ix);
+    const arm = arms[Math.floor(Math.random() * arms.length)];
+    vehicle.exitPlan = { ix, arm, triggered: false };
+  }
+
+  function beginNetworkExit(vehicle) {
+    const plan = vehicle.exitPlan;
+    if (!plan || plan.triggered) return false;
+    const distance = (plan.ix.s - vehicle.s) * vehicle.dir;
+    if (distance < -3 || distance > 8) return false;
+    const side = plan.arm.side || (Math.random() < 0.5 ? -1 : 1);
+    const [cx, cz] = path.getPoint(plan.ix.s);
+    const hx = Math.sin(plan.ix.heading);
+    const hz = Math.cos(plan.ix.heading);
+    const exitDistance = Math.max(24, Math.min(70, (plan.arm.length ?? 55) * 0.65));
+    const end = [cx + hx * side * exitDistance, cz + hz * side * exitDistance];
+    const start = [vehicle.outer.position.x, vehicle.outer.position.z];
+    const startHeading = vehicle.outer.rotation.y;
+    const ctrl = [
+      start[0] + Math.sin(startHeading) * 13,
+      start[1] + Math.cos(startHeading) * 13,
+    ];
+    vehicle.turnArc = buildTurnArc(start, ctrl, end, 24);
+    vehicle.turnT = 0;
+    plan.triggered = true;
+    return true;
+  }
+
+  function respawnMainCar(vehicle, busS) {
+    vehicle.turnArc = null;
+    vehicle.turnT = 0;
+    vehicle.reservationKey = null;
+    if (vehicle.dir === 1) {
+      const offset = Math.random() < 0.35
+        ? -(220 + Math.random() * 420)
+        : 320 + Math.random() * 1050;
+      vehicle.s = nearMultiLane(
+        clamp(busS + offset, TRAFFIC_MIN_S, path.length - 20),
+        350,
+      );
+    } else {
+      let candidate = nearMultiLane(
+        clamp(busS + 450 + Math.random() * 1300, TRAFFIC_MIN_S, path.length - 20),
+        350,
+      );
+      for (let k = 0; k < 50 && backLanesAt(candidate) === 0; k++) {
+        candidate = clamp(candidate + 50, TRAFFIC_MIN_S, path.length - 20);
+      }
+      if (backLanesAt(candidate) === 0) candidate = clamp(busS - 450, TRAFFIC_MIN_S, path.length - 20);
+      vehicle.s = candidate;
+    }
+    vehicle.v = 5 + Math.random() * 2;
+    vehicle.laneIdx = 0;
+    vehicle.desiredLane = 0;
+    vehicle.latCur = null;
+    vehicle.laneChangeCooldown = 2 + Math.random() * 4;
+    assignExitPlan(vehicle);
+  }
+
+  for (const vehicle of cars) assignExitPlan(vehicle);
+
+  function updateFeederCars(dt, busPose) {
     for (let i = feederCars.length - 1; i >= 0; i--) {
       const c = feederCars[i];
       if (c.mergeArc) {
-        c.v += (Math.min(c.vMax, 8) - c.v) * Math.min(1, dt * 1.6);
+        const accel = idmAcceleration(c.v, Math.min(c.vMax, 8));
+        c.v = clamp(c.v + accel * dt, 0, c.vMax);
         c.mergeT += (c.v * dt) / c.mergeArc.length;
         if (c.mergeT >= 1) {
-          const mergeS = Math.max(0, (c.road.mergeS ?? path.closestS(c.road.points.at(-1)).s) - 18);
-          cars.push({
+          const mergeS = c.mergeS;
+          const merged = {
+            id: `main-${trafficSerial++}`,
             outer: c.outer,
             inner: c.inner,
-            dir: -1,
+            dir: c.mergeDir,
             laneIdx: 0,
+            desiredLane: 0,
+            laneChangeCooldown: 4,
             hitR: c.hitR,
+            length: c.length,
+            width: c.width,
+            height: c.height,
             vMax: c.vMax,
             s: mergeS,
             v: c.v,
-            latCur: laneLat(mergeS, -1, 0),
-          });
+            latCur: c.mergeLat,
+            reservationKey: null,
+            exitPlan: null,
+            turnArc: null,
+            turnT: 0,
+          };
+          assignExitPlan(merged);
+          cars.push(merged);
           feederCars.splice(i, 1);
           continue;
         }
-        const samp = sampleTurnArc(c.mergeArc, c.mergeT);
-        c.outer.position.set(samp.x, 0.04, samp.z);
-        c.outer.rotation.y = samp.heading;
-        checkFeederCollision(c, busPos, 2.5);
+        const sample = sampleTurnArc(c.mergeArc, c.mergeT);
+        setRoadPose(c, sample.x, sample.z, sample.heading);
+        checkBusCollision(c, busPose);
         continue;
       }
 
-      c.v += (Math.min(c.vMax, 8) - c.v) * Math.min(1, dt * 0.9);
-      c.s += c.v * dt;
-      if (c.s >= c.path.length - 18) {
-        const mergeS = Math.max(
-          0,
-          (c.road.mergeS ?? path.closestS(c.road.points.at(-1)).s) - 18,
-        );
+      let leadGap = Infinity;
+      let leadSpeed = c.vMax;
+      for (const other of feederCars) {
+        if (other === c || other.road !== c.road || other.mergeArc) continue;
+        const gap = other.s - c.s - ((c.length + other.length) * 0.5);
+        if (gap > 0 && gap < leadGap) {
+          leadGap = gap;
+          leadSpeed = other.v;
+        }
+      }
+      const mergeDir = c.road.mergeDir ?? -1;
+      const mergeS = clamp(
+        (c.road.mergeS ?? path.closestS(c.road.points.at(-1)).s) - 18 * mergeDir,
+        20,
+        path.length - 20,
+      );
+      const remaining = c.path.length - 18 - c.s;
+      const mergeSafe = canMergeIntoLane(mergeS, mergeDir, 0, c.v, busPose);
+      if (!mergeSafe && remaining < leadGap) {
+        leadGap = Math.max(0, remaining);
+        leadSpeed = 0;
+        c.waitingForGap = true;
+      } else {
+        c.waitingForGap = false;
+      }
+      const desired = Math.min(c.vMax, 8);
+      const accel = idmAcceleration(c.v, desired, leadGap, leadSpeed, { timeHeadway: 1.5 });
+      c.v = clamp(c.v + accel * dt, 0, desired);
+      c.s = Math.min(c.path.length - 18, c.s + c.v * dt);
+
+      if (remaining <= 0.35 && mergeSafe) {
         const [sx, sz] = c.path.getPoint(c.path.length - 1);
         const [ftx, ftz] = c.path.getTangent(c.path.length - 3);
-        const targetLat = laneLat(mergeS, -1, 0) ?? 2.5;
+        const mergeLat = laneLat(mergeS, mergeDir, 0) ?? 0;
         const [px, pz] = path.getPoint(mergeS);
         const [tx, tz] = path.getTangent(mergeS);
-        const end = [px + -tz * targetLat, pz + tx * targetLat];
-        const ctrl = [sx + ftx * 12, sz + ftz * 12];
-        c.mergeArc = buildTurnArc([sx, sz], ctrl, end);
+        const end = [px - tz * mergeLat, pz + tx * mergeLat];
+        const ctrl = [sx + ftx * 13, sz + ftz * 13];
+        c.mergeArc = buildTurnArc([sx, sz], ctrl, end, 24);
         c.mergeT = 0;
+        c.mergeDir = mergeDir;
+        c.mergeS = mergeS;
+        c.mergeLat = mergeLat;
         continue;
       }
-      feederPosition(c);
-      checkFeederCollision(c, busPos, 2.5);
+      const [x, z] = c.path.getPoint(c.s);
+      const [tx, tz] = c.path.getTangent(c.s);
+      setFeederRoadPose(c, x, z, Math.atan2(tx, tz));
+      checkBusCollision(c, busPose);
+    }
+  }
+
+  function updateSignalStates(dt, busS, busV) {
+    for (const sig of signals) {
+      sig.phase = (sig.phase + dt) % CYCLE;
+      const state = mainStateOf(sig.phase);
+      const crossState = crossStateOf(sig.phase);
+      if (state !== sig.state) {
+        sig.state = state;
+        for (const head of sig.mainHeads) paintHead(head, state);
+      }
+      if (crossState !== sig.crossState) {
+        sig.crossState = crossState;
+        for (const head of sig.crossHeads) paintHead(head, crossState);
+      }
+      const lineS = sig.s - 9;
+      if (sig.state === "red" && lastBusS < lineS && busS >= lineS && busV > 1.5) {
+        events.onRedLight?.();
+      }
+    }
+    lastBusS = busS;
+  }
+
+  function mainIntersectionReservation(vehicle) {
+    for (const sig of signals) {
+      const relative = (sig.s - vehicle.s) * vehicle.dir;
+      if (relative > -18 && relative < 18 && sig.state === "green") {
+        reserveIntersection(sig, vehicle.id, 3.2);
+        vehicle.reservationKey = reservationKey(sig);
+        return;
+      }
+      if (vehicle.reservationKey === reservationKey(sig) && Math.abs(relative) > 28) {
+        releaseIntersection(sig, vehicle.id);
+        vehicle.reservationKey = null;
+      }
+    }
+  }
+
+  function updateMainCars(dt, busS, busPose) {
+    for (let index = cars.length - 1; index >= 0; index--) {
+      const c = cars[index];
+      if (c.turnArc) {
+        const accel = idmAcceleration(c.v, Math.min(c.vMax, 8));
+        c.v = clamp(c.v + accel * dt, 0, c.vMax);
+        c.turnT += (c.v * dt) / c.turnArc.length;
+        if (c.turnT >= 1) {
+          respawnMainCar(c, busS);
+          continue;
+        }
+        const sample = sampleTurnArc(c.turnArc, c.turnT);
+        setRoadPose(c, sample.x, sample.z, sample.heading);
+        checkBusCollision(c, busPose);
+        continue;
+      }
+
+      let targetLat = smoothLaneLat(c.s, c.dir, laneIndexAt(c));
+      const invalidDirection = targetLat == null;
+      if (invalidDirection) targetLat = c.latCur ?? 2.5;
+
+      chooseLane(c, busPose, dt);
+      const updatedLat = smoothLaneLat(c.s, c.dir, laneIndexAt(c));
+      if (updatedLat != null) targetLat = updatedLat;
+
+      let desiredSpeed = Math.min(c.vMax, speedLimitAt(c.s) * 1.05);
+      const curvature = Math.abs(path.curvatureAt(c.s));
+      if (curvature > 1e-4) desiredSpeed = Math.min(desiredSpeed, Math.max(3.2, Math.sqrt(2.3 / curvature)));
+
+      const neighbors = laneNeighbors(c.s, c.dir, laneIndexAt(c), c, busPose);
+      let gap = neighbors.lead?.gap ?? Infinity;
+      let leadSpeed = neighbors.lead?.speed ?? desiredSpeed;
+
+      const redDistance = redDistAhead(c.s, c.dir, c.v);
+      if (redDistance != null && redDistance - c.length * 0.5 < gap) {
+        gap = Math.max(0, redDistance - c.length * 0.5);
+        leadSpeed = 0;
+      }
+
+      if (c.dir === -1 && lanesAt(c.s) <= 2) {
+        const meetingDistance = c.s - busS;
+        if (meetingDistance > -14 && meetingDistance < 45) {
+          desiredSpeed = Math.min(desiredSpeed, 5.5);
+          targetLat += 0.45;
+        }
+        for (const zone of turnZones) {
+          if (busS > zone.from - 35 && busS < zone.to + 25 && c.s > zone.to) {
+            const d = c.s - (zone.to + 26);
+            if (d < gap) {
+              gap = Math.max(0, d - 1.5);
+              leadSpeed = 0;
+            }
+            break;
+          }
+        }
+      }
+
+      const acceleration = idmAcceleration(c.v, desiredSpeed, gap, leadSpeed, {
+        timeHeadway: c.length > 8 ? 1.8 : 1.35,
+        minimumGap: c.length > 8 ? 4.5 : 3.0,
+      });
+      c.v = clamp(c.v + acceleration * dt, 0, desiredSpeed + 0.8);
+      c.s += c.v * dt * c.dir;
+
+      mainIntersectionReservation(c);
+      if (beginNetworkExit(c)) continue;
+
+      if (
+        c.s < TRAFFIC_MIN_S ||
+        c.s > path.length - 15 ||
+        Math.abs(c.s - busS) > 1900 ||
+        invalidDirection
+      ) {
+        respawnMainCar(c, busS);
+        targetLat = laneLat(c.s, c.dir, laneIndexAt(c)) ?? 0;
+      }
+
+      if (c.latCur == null) c.latCur = targetLat;
+      c.latCur += (targetLat - c.latCur) * Math.min(1, dt * 1.35);
+      const [px, pz] = path.getPoint(c.s);
+      const [tx, tz] = path.getTangent(c.s);
+      const x = px - tz * c.latCur;
+      const z = pz + tx * c.latCur;
+      setRoadPose(c, x, z, Math.atan2(tx * c.dir, tz * c.dir));
+      checkBusCollision(c, busPose);
+    }
+  }
+
+  function crossLead(cc) {
+    let leadGap = Infinity;
+    let leadSpeed = cc.vMax;
+    for (const other of crossCars) {
+      if (other === cc || other.ix !== cc.ix || other.dir !== cc.dir || other.phase === "turn") continue;
+      const longitudinal = (other.off - cc.off) * cc.dir;
+      const gap = longitudinal - ((cc.length + other.length) * 0.5);
+      if (gap > 0 && gap < leadGap) {
+        leadGap = gap;
+        leadSpeed = other.v;
+      }
+    }
+    return { gap: leadGap, speed: leadSpeed };
+  }
+
+  function startCrossMerge(cc, busPose) {
+    const s0 = clamp(cc.ix.s, 0, path.length);
+    if (cc.mergeDir == null) cc.mergeDir = Math.random() < 0.5 ? 1 : -1;
+    const mergeDir = cc.mergeDir;
+    const mergeS = clamp(s0 + mergeDir * 18, 30, path.length - 30);
+    if (!canMergeIntoLane(mergeS, mergeDir, 0, cc.v, busPose)) return false;
+    if (!reserveIntersection(cc.sig, cc.id, 5.5)) return false;
+    const [px, pz] = path.getPoint(s0);
+    const hx = Math.sin(cc.ix.heading);
+    const hz = Math.cos(cc.ix.heading);
+    const laneOffset = 2.6 * (cc.dir > 0 ? 1 : -1);
+    const start = [px + hx * cc.off + hz * laneOffset, pz + hz * cc.off - hx * laneOffset];
+    const startHeading = cc.dir > 0 ? cc.ix.heading : cc.ix.heading + Math.PI;
+    const mergeLat = laneLat(mergeS, mergeDir, 0) ?? 0;
+    const [mpx, mpz] = path.getPoint(mergeS);
+    const [mtx, mtz] = path.getTangent(mergeS);
+    const end = [mpx - mtz * mergeLat, mpz + mtx * mergeLat];
+    const ctrl = [start[0] + Math.sin(startHeading) * 12, start[1] + Math.cos(startHeading) * 12];
+    cc.turnArc = buildTurnArc(start, ctrl, end, 24);
+    cc.turnT = 0;
+    cc.phase = "turn";
+    cc.mergeS = mergeS;
+    cc.mergeLat = mergeLat;
+    return true;
+  }
+
+  function updateCrossCars(dt, busPose) {
+    for (let index = crossCars.length - 1; index >= 0; index--) {
+      const cc = crossCars[index];
+      if (cc.phase === "turn") {
+        const accel = idmAcceleration(cc.v, Math.min(cc.vMax, 7.5));
+        cc.v = clamp(cc.v + accel * dt, 0, cc.vMax);
+        cc.turnT += (cc.v * dt) / cc.turnArc.length;
+        if (cc.turnT >= 1) {
+          releaseIntersection(cc.sig, cc.id);
+          const merged = {
+            id: `main-${trafficSerial++}`,
+            outer: cc.outer,
+            inner: cc.inner,
+            dir: cc.mergeDir,
+            laneIdx: 0,
+            desiredLane: 0,
+            laneChangeCooldown: 4,
+            hitR: cc.hitR,
+            length: cc.length,
+            width: cc.width,
+            height: cc.height,
+            vMax: cc.vMax,
+            s: cc.mergeS,
+            v: cc.v,
+            latCur: cc.mergeLat,
+            reservationKey: null,
+            exitPlan: null,
+            turnArc: null,
+            turnT: 0,
+          };
+          assignExitPlan(merged);
+          cars.push(merged);
+          crossCars.splice(index, 1);
+          continue;
+        }
+        const sample = sampleTurnArc(cc.turnArc, cc.turnT);
+        setRoadPose(cc, sample.x, sample.z, sample.heading);
+        checkBusCollision(cc, busPose);
+        continue;
+      }
+
+      const lead = crossLead(cc);
+      let gap = lead.gap;
+      let leadSpeed = lead.speed;
+      const redDistance = crossRedDist(cc);
+      if (redDistance != null && redDistance - cc.length * 0.5 < gap) {
+        gap = Math.max(0, redDistance - cc.length * 0.5);
+        leadSpeed = 0;
+      }
+
+      if (cc.mode === "tstub") {
+        const edge = (cc.ix.width ?? 8) / 2 + 3;
+        const distanceToMerge = Math.abs(cc.off) - edge;
+        if (distanceToMerge <= 0.35) {
+          if (startCrossMerge(cc, busPose)) continue;
+          gap = Math.min(gap, Math.max(0, distanceToMerge));
+          leadSpeed = 0;
+        }
+      }
+
+      if (cc.mode === "through") {
+        const entry = ((cc.ix.width ?? 8) / 2 + 5) * cc.dir * -1;
+        const distanceToEntry = cc.dir * (entry - cc.off);
+        if (distanceToEntry > -2 && distanceToEntry < 8 && cc.sig.crossState === "green") {
+          if (!reserveIntersection(cc.sig, cc.id, 4.5)) {
+            gap = Math.min(gap, Math.max(0, distanceToEntry));
+            leadSpeed = 0;
+          }
+        }
+      }
+
+      const accel = idmAcceleration(cc.v, cc.vMax, gap, leadSpeed, { timeHeadway: 1.45 });
+      cc.v = clamp(cc.v + accel * dt, 0, cc.vMax);
+      cc.off += cc.v * dt * cc.dir;
+
+      if (cc.mode === "through" && (cc.off > cc.range || cc.off < -cc.range)) {
+        releaseIntersection(cc.sig, cc.id);
+        cc.off = -Math.sign(cc.dir) * cc.range;
+        cc.v = 4.5 + Math.random() * 2;
+      }
+
+      const s = clamp(cc.ix.s, 0, path.length);
+      const [px, pz] = path.getPoint(s);
+      const hx = Math.sin(cc.ix.heading);
+      const hz = Math.cos(cc.ix.heading);
+      const laneOffset = 2.6 * (cc.dir > 0 ? 1 : -1);
+      const x = px + hx * cc.off + hz * laneOffset;
+      const z = pz + hz * cc.off - hx * laneOffset;
+      const heading = cc.dir > 0 ? cc.ix.heading : cc.ix.heading + Math.PI;
+      setGroundRoadPose(cc, x, z, heading);
+      checkBusCollision(cc, busPose);
     }
   }
 
   return {
     signals,
-    update(dt, busS, busPos, busV) {
-      updateFeederCars(dt, busPos);
-
-      // ---- 信号の位相更新(交差点内で main/cross 連動) ----
-      for (const sig of signals) {
-        sig.phase = (sig.phase + dt) % CYCLE;
-        const st = mainStateOf(sig.phase);
-        const cst = crossStateOf(sig.phase);
-        if (st !== sig.state) {
-          sig.state = st;
-          for (const h of sig.mainHeads) paintHead(h, st);
-        }
-        if (cst !== sig.crossState) {
-          sig.crossState = cst;
-          for (const h of sig.crossHeads) paintHead(h, cst);
-        }
-        // 赤信号無視(自車): 停止線(交差点 9m 手前)を v>1.5 で通過
-        const lineS = sig.s - 9;
-        if (
-          sig.state === "red" &&
-          lastBusS < lineS &&
-          busS >= lineS &&
-          busV > 1.5
-        ) {
-          events.onRedLight?.();
-        }
-      }
-      lastBusS = busS;
-
-      // 自車が赤信号停止線の直前か(同行車の追い越し抑制に使う)
-      const busRedD = redDistAhead(busS, 1, busV);
-      const busHeldAtSignal = busRedD != null && busRedD < 22;
-
-      // ---- 車両 ----
-      for (let ci = cars.length - 1; ci >= 0; ci--) {
-        const c = cars[ci];
-        // 左折旋回中(府道201号線などへの離脱): 弧長ベースでなめらかに進め、完了で消える
-        if (c.turnArc) {
-          c.v += (Math.min(c.vMax, 8) - c.v) * Math.min(1, dt * 1.6);
-          c.turnT += (c.v * dt) / c.turnArc.length;
-          if (c.turnT >= 1) {
-            g.remove(c.outer);
-            cars.splice(ci, 1);
-            continue;
-          }
-          const samp = sampleTurnArc(c.turnArc, c.turnT);
-          c.outer.position.set(samp.x, elevationAt(c.s), samp.z);
-          c.outer.rotation.y = samp.heading;
-          if (collisionCooldown <= 0) {
-            const ddx = c.outer.position.x - busPos[0];
-            const ddz = c.outer.position.z - busPos[1];
-            if (ddx * ddx + ddz * ddz < c.hitR * c.hitR) {
-              collisionCooldown = 4;
-              events.onCollision?.();
-            }
-          }
-          continue;
-        }
-        // 目標速度
-        let vT = Math.min(c.vMax, speedLimitAt(c.s) * 1.05);
-        const k = Math.abs(path.curvatureAt(c.s));
-        if (k > 1e-4) vT = Math.min(vT, Math.max(3.5, Math.sqrt(2.4 / k)));
-
-        // 信号停止
-        const dRed = redDistAhead(c.s, c.dir, c.v);
-        if (dRed != null)
-          vT = Math.min(
-            vT,
-            dRed < 1 ? 0 : Math.sqrt(2 * 1.8 * Math.max(0, dRed - 1.5)),
-          );
-
-        // 前方車追従(同方向・同レーン近傍)
-        for (const o of cars) {
-          if (o === c || o.dir !== c.dir) continue;
-          const gap = (o.s - c.s) * c.dir;
-          if (
-            gap > 0 &&
-            gap < 55 &&
-            Math.abs((o.latCur ?? 0) - (c.latCur ?? 0)) < 1.6
-          ) {
-            vT = Math.min(vT, Math.max(0, (gap - 9) * 0.6));
-          }
-        }
-
-        // 同行車: 自車(プレイヤーのバス)との車間・追い越し
-        let latT = smoothLaneLat(c.s, c.dir, c.laneIdx);
-        const inOneway = latT == null; // 対向車が一方通行区間に入った → 実在しないのでリスポーン
-        if (inOneway) latT = c.latCur ?? 2.5;
-        // 対向車: 交差点を越えた直後に左折させる。交差点手前ではまだ本線上を走り、
-        // 左折後もexitDistanceだけ側道を進んでから上のturnArcブロックで消える。
-        const turnPoint =
-          c.dir === -1
-            ? TURNOFF_POINTS.find(
-                (p) =>
-                  c.s <= p.s - p.triggerAfter &&
-                  c.s > p.s - p.triggerAfter - 10,
-              )
-            : null;
-        if (turnPoint) {
-          const sx = c.outer.position.x,
-            sz = c.outer.position.z;
-          const startHeading = c.outer.rotation.y;
-          const [cx, cz] = path.getPoint(turnPoint.s);
-          const hx = Math.sin(turnPoint.heading),
-            hz = Math.cos(turnPoint.heading);
-          const end = [
-            cx + hx * turnPoint.exitDistance,
-            cz + hz * turnPoint.exitDistance,
-          ];
-          const ctrl = [
-            sx + Math.sin(startHeading) * 12,
-            sz + Math.cos(startHeading) * 12,
-          ];
-          c.turnArc = buildTurnArc([sx, sz], ctrl, end);
-          c.turnT = 0;
-          continue;
-        }
-        // 対向車: 狭い2車線でバスと接近したら減速して外側に待避(狭隘路の譲り合い)
-        if (c.dir === -1 && lanesAt(c.s) <= 2) {
-          const ahead = c.s - busS; // すれ違い前は正
-          if (ahead > -14 && ahead < 45) {
-            vT = Math.min(vT, 5.5);
-            latT += 0.5;
-          }
-        }
-        // 対向車: バスが右左折交差点を通過する間はゾーン手前で待つ(交差点内での交錯防止)。
-        // 停止線は出口の膨らみゾーンの外(to+26)に置き、バスの膨らみが収まるまで解除しない
-        if (c.dir === -1) {
-          for (const z of turnZones) {
-            if (busS > z.from - 35 && busS < z.to + 25 && c.s > z.to) {
-              const d = c.s - (z.to + 26);
-              if (d < 55)
-                vT = Math.min(
-                  vT,
-                  d < 1 ? 0 : Math.sqrt(2 * 1.8 * Math.max(0, d - 1.5)),
-                );
-              break;
-            }
-          }
-        }
-        if (c.dir === 1) {
-          const gapBus = busS - c.s;
-          const sameLane =
-            Math.abs((c.latCur ?? latT) - laneLat(c.s, 1, 1)) < 2.2 ||
-            lanesAt(c.s) <= 2;
-          // 1車線(片道1車線)の道ではバスが停車中でも追い越さず、そのまま後ろで待つ
-          if (gapBus > -16 && gapBus < 55 && sameLane && gapBus > 0) {
-            vT = Math.min(vT, Math.max(0, (gapBus - 11) * 0.55)); // 車間維持
-          }
-        }
-
-        // 速度・位置更新
-        const rate = vT < c.v ? 2.6 : 0.9;
-        c.v += (vT - c.v) * Math.min(1, dt * rate);
-        c.s += c.v * dt * c.dir;
-
-        // リスポーン: 経路端・駅前ロータリー・自車から離れすぎ・一方通行進入 → 自車の周辺へ
-        // (左折地点通過は上で旋回アークへ切り替え済みのためここでは扱わない)
-        const rel = (c.s - busS) * 1;
-        if (
-          c.s < TRAFFIC_MIN_S ||
-          c.s > path.length - 15 ||
-          Math.abs(rel) > 1800 ||
-          inOneway
-        ) {
-          if (c.dir === 1) {
-            const behind = Math.random() < 0.4;
-            const off = behind
-              ? -(160 + Math.random() * 380)
-              : 250 + Math.random() * 900;
-            const s1 = Math.max(
-              TRAFFIC_MIN_S,
-              Math.min(path.length - 15, busS + off),
-            );
-            c.s = nearMultiLane(s1, 300); // 片側2車線以上の区間があれば近傍で密度を上げる
-          } else {
-            // 対向車は一方通行(対向車線なし)の区間を避け、片側2車線以上の区間に寄せて配置
-            let s2 = nearMultiLane(
-              Math.max(
-                TRAFFIC_MIN_S,
-                Math.min(path.length - 15, busS + 400 + Math.random() * 1200),
-              ),
-              300,
-            );
-            for (let k = 0; k < 40 && backLanesAt(s2) === 0; k++)
-              s2 = Math.min(path.length - 15, s2 + 60);
-            if (backLanesAt(s2) === 0) s2 = Math.max(TRAFFIC_MIN_S, busS - 300); // 前方に空きがなければ後方
-            c.s = s2;
-          }
-          c.v = 6;
-          c.latCur = null;
-          latT = laneLat(c.s, c.dir, c.laneIdx) ?? 0;
-        }
-
-        // 横位置(レーンチェンジは滑らかに)
-        if (c.latCur == null) c.latCur = latT;
-        c.latCur += (latT - c.latCur) * Math.min(1, dt * 1.7);
-
-        const [px, pz] = path.getPoint(c.s);
-        const [tx, tz] = path.getTangent(c.s);
-        c.outer.position.set(
-          px + -tz * c.latCur,
-          elevationAt(c.s),
-          pz + tx * c.latCur,
-        );
-        c.outer.rotation.y = Math.atan2(tx * c.dir, tz * c.dir);
-        c.inner.rotation.x = Math.atan(gradeAt(c.s)) * -c.dir; // 勾配ピッチ(向きに応じて符号)
-
-        // 自車との衝突判定
-        if (collisionCooldown <= 0) {
-          const dx = c.outer.position.x - busPos[0];
-          const dz = c.outer.position.z - busPos[1];
-          if (dx * dx + dz * dz < c.hitR * c.hitR) {
-            collisionCooldown = 4;
-            events.onCollision?.();
-          }
-        }
-      }
+    update(dt, busS, busPos, busV, busHeading = 0, busLat = laneCenterAt(busS)) {
+      simulationTime += dt;
+      updateSignalStates(dt, busS, busV);
+      const busPose = busPoseFrom(busS, busPos, busV, busHeading, busLat);
+      updateFeederCars(dt, busPose);
+      updateMainCars(dt, busS, busPose);
+      updateCrossCars(dt, busPose);
       collisionCooldown = Math.max(0, collisionCooldown - dt);
-
-      // ---- 交差点(自ルート外)の他車: 信号(交差方向)に従って走行 ----
-      for (let ci = crossCars.length - 1; ci >= 0; ci--) {
-        const cc = crossCars[ci];
-
-        // T字路: 本線の縁まで到達し、旋回合流アークを走行中 → 完了したら cars[] へ正式合流
-        if (cc.phase === "turn") {
-          cc.v += (Math.min(cc.vMax, 8) - cc.v) * Math.min(1, dt * 1.8);
-          cc.turnT += (cc.v * dt) / cc.turnArc.length;
-          if (cc.turnT >= 1) {
-            cars.push({
-              outer: cc.outer,
-              inner: cc.inner,
-              dir: cc.mergeDir,
-              laneIdx: 0,
-              hitR: cc.hitR,
-              vMax: cc.vMax,
-              s: cc.mergeS,
-              v: cc.v,
-              latCur: cc.mergeLat,
-            });
-            crossCars.splice(ci, 1);
-            continue;
-          }
-          const samp = sampleTurnArc(cc.turnArc, cc.turnT);
-          cc.outer.position.set(samp.x, elevationAt(cc.ix.s), samp.z);
-          cc.outer.rotation.y = samp.heading;
-          if (collisionCooldown <= 0) {
-            const ddx = cc.outer.position.x - busPos[0];
-            const ddz = cc.outer.position.z - busPos[1];
-            if (ddx * ddx + ddz * ddz < cc.hitR * cc.hitR) {
-              collisionCooldown = 4;
-              events.onCollision?.();
-            }
-          }
-          continue;
-        }
-
-        let vT = cc.vMax;
-        // 同行車と同じ「速度依存のブレーキ距離ゲート」を使い、赤信号では停止線通過直前・
-        // 直後で解除せず、青になるまで確実に止まり続ける(交差点内での立ち往生バグの修正)
-        const dRed = crossRedDist(cc);
-        if (dRed != null)
-          vT = Math.min(
-            vT,
-            dRed < 1 ? 0 : Math.sqrt(2 * 1.8 * Math.max(0, dRed - 1.5)),
-          );
-        cc.v += (vT - cc.v) * Math.min(1, dt * 2.2);
-        cc.off += cc.v * dt * cc.dir;
-
-        if (cc.mode === "tstub") {
-          // 本線の縁に到達したら直進させず、左右どちらかへ旋回して本線へ合流させる
-          const edge = (cc.ix.width ?? 8) / 2 + 3;
-          if (Math.abs(cc.off) < edge) {
-            const s0 = Math.max(0, Math.min(path.length, cc.ix.s));
-            const [px, pz] = path.getPoint(s0);
-            const hx = Math.sin(cc.ix.heading),
-              hz = Math.cos(cc.ix.heading);
-            const laneOff = 2.6 * (cc.dir > 0 ? 1 : -1);
-            const start = [
-              px + hx * cc.off + hz * laneOff,
-              pz + hz * cc.off - hx * laneOff,
-            ];
-            const startHeading =
-              cc.dir > 0 ? cc.ix.heading : cc.ix.heading + Math.PI;
-            const mergeDir = Math.random() < 0.5 ? 1 : -1;
-            const mergeS = Math.max(
-              30,
-              Math.min(path.length - 30, s0 + mergeDir * 16),
-            );
-            const mergeLat = laneLat(mergeS, mergeDir, 0) ?? 0;
-            const [mpx, mpz] = path.getPoint(mergeS);
-            const [mtx, mtz] = path.getTangent(mergeS);
-            const end = [mpx + -mtz * mergeLat, mpz + mtx * mergeLat];
-            const ctrl = [
-              start[0] + Math.sin(startHeading) * 12,
-              start[1] + Math.cos(startHeading) * 12,
-            ];
-            cc.turnArc = buildTurnArc(start, ctrl, end);
-            cc.turnT = 0;
-            cc.phase = "turn";
-            cc.mergeDir = mergeDir;
-            cc.mergeS = mergeS;
-            cc.mergeLat = mergeLat;
-            continue;
-          }
-        } else if (cc.off > cc.range || cc.off < -cc.range) {
-          cc.off = -Math.sign(cc.dir) * cc.range;
-          cc.v = 6;
-        }
-
-        const s = Math.max(0, Math.min(path.length, cc.ix.s));
-        const [px, pz] = path.getPoint(s);
-        const hx = Math.sin(cc.ix.heading),
-          hz = Math.cos(cc.ix.heading);
-        const laneOff = 2.6 * (cc.dir > 0 ? 1 : -1); // 左側通行(進行方向の左に寄せる)
-        cc.outer.position.set(
-          px + hx * cc.off + hz * laneOff,
-          elevationAt(s),
-          pz + hz * cc.off - hx * laneOff,
-        );
-        cc.outer.rotation.y =
-          cc.dir > 0 ? cc.ix.heading : cc.ix.heading + Math.PI;
-
-        // 自車との衝突判定(交差する道路を走る他車にも当たり判定をつける)
-        if (collisionCooldown <= 0) {
-          const ddx = cc.outer.position.x - busPos[0];
-          const ddz = cc.outer.position.z - busPos[1];
-          if (ddx * ddx + ddz * ddz < cc.hitR * cc.hitR) {
-            collisionCooldown = 4;
-            events.onCollision?.();
-          }
-        }
-      }
     },
-    /** autoDrive 用: 前方の同方向車(同一レーン近傍)までの車間 [m](なければ null) */
-    leadGapAhead(busS, busLat, maxDist = 60) {
+    /** autoDrive 用: 前方の同方向車(同一レーン近傍)までの実車間 [m](なければ null) */
+    leadGapAhead(busS, busLat, maxDist = 80) {
       let best = null;
       for (const c of cars) {
-        if (c.dir !== 1) continue;
-        const gap = c.s - busS;
-        if (
-          gap > 2 &&
-          gap < maxDist &&
-          Math.abs((c.latCur ?? 0) - busLat) < 1.8
-        ) {
+        if (c.dir !== 1 || c.turnArc) continue;
+        const gap = c.s - busS - (c.length + 11.4) * 0.5;
+        if (gap > 0 && gap < maxDist && Math.abs((c.latCur ?? 0) - busLat) < 1.85) {
           if (best == null || gap < best) best = gap;
         }
       }
@@ -1043,15 +1329,11 @@ export function buildTraffic(scene, path, events = {}) {
       let best = null;
       for (const sig of signals) {
         const d = sig.s - busS;
-        if (d > -5 && (best == null || d < best.d))
-          best = { d, state: sig.state };
+        if (d > -5 && (best == null || d < best.d)) best = { d, state: sig.state };
       }
       return best;
     },
-    /**
-     * autoDrive 用: 前方の止まるべき信号の停止線 s(なければ null)。
-     * 黄は停止可能距離があるときのみ止まる。青は残り時間を読まず進む。
-     */
+    /** autoDrive 用: 前方の止まるべき信号の停止線 s(なければ null) */
     redStopTarget(busS, busV) {
       const d = redDistAhead(busS, 1, busV);
       return d == null ? null : busS + d;

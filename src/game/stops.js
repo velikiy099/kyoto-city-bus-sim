@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { leftWidthAt } from "../route/routeData.js";
+import { leftWidthAt, elevationAt } from "../route/routeData.js";
 import { loadProps } from "../util/propsLib.js";
 import {
   terminusLotAnchor,
@@ -78,6 +78,7 @@ export function buildStops(scene, path, stops) {
         waiting.push({
           at: atLot,
           HW: 1.4,
+          baseY: elevationAt(stop.s),
           meshes: [],
           face: -Math.PI / 2, // 西(バス側)を向く。乗降後は東側の敷地内へ歩く
         });
@@ -86,6 +87,7 @@ export function buildStops(scene, path, stops) {
     }
 
     const HW = leftWidthAt(stop.s); // 進行方向左側の路肩(縁石)基準で配置
+    const baseY = elevationAt(stop.s);
     const [px, pz] = path.getPoint(stop.s);
     const [tx, tz] = path.getTangent(stop.s);
     const nx = -tz,
@@ -102,7 +104,7 @@ export function buildStops(scene, path, stops) {
       new THREE.CylinderGeometry(0.05, 0.05, 2.4, 8),
       new THREE.MeshLambertMaterial({ color: 0x9a9d9a }),
     );
-    pole.position.set(poleX, 1.2, poleZ);
+    pole.position.set(poleX, baseY + 1.2, poleZ);
     group.add(pole);
 
     const disc = new THREE.Mesh(
@@ -111,7 +113,7 @@ export function buildStops(scene, path, stops) {
     );
     disc.rotation.x = Math.PI / 2;
     disc.rotation.z = Math.atan2(tx, tz);
-    disc.position.set(poleX, 2.55, poleZ);
+    disc.position.set(poleX, baseY + 2.55, poleZ);
     group.add(disc);
 
     // 名前看板(両面)
@@ -122,7 +124,7 @@ export function buildStops(scene, path, stops) {
         side: THREE.DoubleSide,
       }),
     );
-    sign.position.set(poleX, 1.75, poleZ);
+    sign.position.set(poleX, baseY + 1.75, poleZ);
     sign.rotation.y = Math.atan2(nx, nz); // 道路側を向く
     group.add(sign);
 
@@ -136,7 +138,7 @@ export function buildStops(scene, path, stops) {
     const [lx, lz] = at(-(HW - 0.35 - lineW / 2), 1.2);
     line.rotation.x = -Math.PI / 2;
     line.rotation.z = -Math.atan2(tx, tz);
-    line.position.set(lx, 0.03, lz);
+    line.position.set(lx, baseY + 0.03, lz);
     group.add(line);
 
     // 「バス」路面標示風の枠
@@ -151,10 +153,10 @@ export function buildStops(scene, path, stops) {
     const [zx, zz] = at(-HW + 1.5, -3);
     zone.rotation.x = -Math.PI / 2;
     zone.rotation.z = -Math.atan2(tx, tz);
-    zone.position.set(zx, 0.025, zz);
+    zone.position.set(zx, baseY + 0.025, zz);
     group.add(zone);
 
-    waiting.push({ at, HW, meshes: [], face: Math.atan2(nx, nz) }); // face: 車道向き
+    waiting.push({ at, HW, baseY, meshes: [], face: Math.atan2(nx, nz) }); // face: 車道向き
   });
 
   // ---- 降車客(ドア付近に現れ、バス停から歩いて離れていく) ----
@@ -178,7 +180,7 @@ export function buildStops(scene, path, stops) {
           -(w.HW + 0.6) + (k % 2) * 0.5,
           -1.1 - Math.floor(k / 2) * 0.75,
         );
-        m.position.set(x, 0, z);
+        m.position.set(x, w.baseY ?? 0, z);
         group.add(m);
         w.meshes.push(m);
       }
@@ -196,7 +198,7 @@ export function buildStops(scene, path, stops) {
         Math.floor(Math.random() * 1000),
       );
       holder.rotation.y = awayAngle;
-      holder.position.set(x, 0, z);
+      holder.position.set(x, w.baseY ?? 0, z);
       group.add(holder);
       walkers.push({
         mesh: holder,

@@ -16,7 +16,9 @@
     "world:refresh": "node tools/world/build-world.mjs --refresh-osm",
     "world:validate": "node tools/world/validate-world-data.mjs",
     "world:all": "npm run world:download && npm run world:build",
-    "validate:plateau-integration": "node tools/validate-plateau-integration.mjs"
+    "validate:plateau-integration": "node tools/validate-plateau-integration.mjs",
+    "validate:terrain-fix": "node tools/validate-terrain-fix.mjs",
+    "validate:world-alignment": "node tools/validate-world-alignment.mjs"
   },
   "dependencies": {
     "three": "^0.170.0"

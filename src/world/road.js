@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { CFG } from "../config.js";
-import { elevationAt, halfWidthAt } from "../route/routeData.js";
+import { elevationAt, terrainElevationAt, halfWidthAt } from "../route/routeData.js";
 
 /**
  * 経路に沿った帯(リボン)ジオメトリを生成
@@ -28,7 +28,7 @@ export function makeRibbon(
     // 左法線 = (tz, -tx) が lateral 負方向(path.closestS の符号系と整合)
     const nx = -tz,
       nz = tx; // lateral 正(右)方向
-    const ye = y + (withElevation ? elevationAt(ss) : 0); // 跨線橋区間は路面ごと持ち上げる(側道は地上)
+    const ye = y + (withElevation ? elevationAt(ss) : terrainElevationAt(ss)); // 本線は構造標高、側道はPLATEAU地表標高
     positions.push(px + nx * latFrom, ye, pz + nz * latFrom);
     positions.push(px + nx * latTo, ye, pz + nz * latTo);
     if (row > 0) {
@@ -166,7 +166,7 @@ function addIntersections(
     const s = Math.max(0, Math.min(path.length - 0.1, ix.s));
     const [px, pz] = path.getPoint(s);
     const width = Math.max(5.5, ix.width ?? 7);
-    const elev = ix.under ? 0 : elevationAt(s); // 高架下の交差道路(八条通)は地上のまま
+    const elev = ix.under ? terrainElevationAt(s) : elevationAt(s); // 高架下の交差道路(八条通)は地上のまま
 
     if (ix.arms?.length) {
       // 腕ごとに独立した舗装(実在しない側は描かない、腕ごとに幅・車線・歩行者専用を反映)

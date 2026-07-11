@@ -6,6 +6,7 @@ import {
   gradeAt,
   halfWidthAt,
 } from "../route/routeData.js";
+import { terrainHeightAtWorld } from "./declarative/continuousTerrain.js";
 
 const mat = (color, opts = {}) =>
   new THREE.MeshLambertMaterial({ color, ...opts });
@@ -46,7 +47,7 @@ function addDeckRails(group, width, y, length) {
 function buildConventionalUnderpass(scene, path, spec) {
   const p = at(path, spec.s);
   const g = new THREE.Group();
-  g.position.set(p.x, 0, p.z);
+  g.position.set(p.x, terrainHeightAtWorld(p.x, p.z), p.z);
   g.rotation.y = spec.heading;
 
   const length = spec.length ?? 180;
@@ -157,11 +158,14 @@ function buildConventionalUnderpass(scene, path, spec) {
     for (const sPier of [sFrom + 2, railTo + 6, sTo - 2]) {
       const [px, pz] = path.getPoint(sPier);
       const [tx, tz] = path.getTangent(sPier);
+      const groundY = terrainHeightAtWorld(px, pz);
+      const topY = elevationAt(sPier) - 0.8;
+      const pierHeight = Math.max(0.8, topY - groundY);
       const pier = new THREE.Mesh(
-        new THREE.BoxGeometry(15, elevationAt(sPier), 1.4),
+        new THREE.BoxGeometry(15, pierHeight, 1.4),
         concrete,
       );
-      pier.position.set(px, elevationAt(sPier) / 2 - 0.8, pz);
+      pier.position.set(px, groundY + pierHeight / 2, pz);
       pier.rotation.y = Math.atan2(tx, tz);
       scene.add(pier);
     }
@@ -216,7 +220,7 @@ function buildConventionalUnderpass(scene, path, spec) {
 function buildShinkansenViaduct(scene, path, spec) {
   const p = at(path, spec.s);
   const g = new THREE.Group();
-  g.position.set(p.x, 0, p.z);
+  g.position.set(p.x, terrainHeightAtWorld(p.x, p.z), p.z);
   g.rotation.y = spec.heading;
 
   const length = spec.length ?? 190;
@@ -234,11 +238,16 @@ function buildShinkansenViaduct(scene, path, spec) {
   const clearHalf = halfWidthAt(spec.s) + 4;
   for (const z of [-70, -35, 0, 35, 70]) {
     if (Math.abs(z) < clearHalf) continue;
+    const wx = p.x + Math.sin(spec.heading) * z;
+    const wz = p.z + Math.cos(spec.heading) * z;
+    const localGround = terrainHeightAtWorld(wx, wz) - g.position.y;
+    const pierTop = deckY - 0.55;
+    const pierHeight = Math.max(0.8, pierTop - localGround);
     const pier = new THREE.Mesh(
-      new THREE.BoxGeometry(width * 0.55, deckY - 0.55, 1.15),
+      new THREE.BoxGeometry(width * 0.55, pierHeight, 1.15),
       mat(0xb8b8b1),
     );
-    pier.position.set(0, (deckY - 0.55) / 2, z);
+    pier.position.set(0, localGround + pierHeight / 2, z);
     g.add(pier);
   }
 
@@ -251,7 +260,7 @@ function buildShinkansenViaduct(scene, path, spec) {
 function buildExpresswayViaduct(scene, path, spec) {
   const p = at(path, spec.s);
   const g = new THREE.Group();
-  g.position.set(p.x, 0, p.z);
+  g.position.set(p.x, terrainHeightAtWorld(p.x, p.z), p.z);
   g.rotation.y = spec.heading;
 
   const length = spec.length ?? 210;
@@ -375,11 +384,14 @@ function buildExpresswayViaduct(scene, path, spec) {
         )
       )
         continue;
+      const localGround = terrainHeightAtWorld(wx, wz) - g.position.y;
+      const pierTop = deckY - 0.6;
+      const pierHeight = Math.max(0.8, pierTop - localGround);
       const pier = new THREE.Mesh(
-        new THREE.BoxGeometry(1.8, deckY - 0.6, 1.8),
+        new THREE.BoxGeometry(1.8, pierHeight, 1.8),
         mat(0x9c9f9c),
       );
-      pier.position.set(x, (deckY - 0.6) / 2, z);
+      pier.position.set(x, localGround + pierHeight / 2, z);
       g.add(pier);
     }
   }

@@ -23,6 +23,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Iterator, Sequence
 
+from terrain_grid import build_connected_terrain_grid
+
 from pyproj import CRS, Transformer
 from tqdm import tqdm
 
@@ -270,6 +272,98 @@ class PointElevationIndex:
         return best_y
 
 
+def point_in_polygon(point: Sequence[float], polygon: Sequence[Sequence[float]]) -> bool:
+    inside = False
+    for index, current in enumerate(polygon):
+        previous = polygon[index - 1]
+        if (current[1] > point[1]) != (previous[1] > point[1]):
+            x_at_y = (previous[0] - current[0]) * (point[1] - current[1]) / (previous[1] - current[1] or 1e-9) + current[0]
+            if point[0] < x_at_y:
+                inside = not inside
+    return inside
+
+
+def point_segment_distance(point: Sequence[float], a: Sequence[float], b: Sequence[float]) -> float:
+    dx = b[0] - a[0]
+    dz = b[1] - a[1]
+    denominator = dx * dx + dz * dz or 1e-9
+    t = max(0.0, min(1.0, ((point[0] - a[0]) * dx + (point[1] - a[1]) * dz) / denominator))
+    return math.hypot(point[0] - (a[0] + dx * t), point[1] - (a[1] + dz * t))
+
+
+class RoadSurfaceIndex:
+    """Spatial index for PLATEAU transportation surfaces in route coordinates."""
+
+    def __init__(self, features: Sequence[dict], cell_size: float = 80.0):
+        self.cell_size = cell_size
+        self.records = []
+        self.grid: dict[tuple[int, int], list[int]] = defaultdict(list)
+        for feature in features:
+            polygon3d = feature.get("polygon") or []
+            polygon = [[point[0], point[2]] for point in polygon3d if len(point) >= 3]
+            if len(polygon) < 3:
+                continue
+            record = len(self.records)
+            self.records.append({
+                "polygon": polygon,
+                "minX": min(point[0] for point in polygon),
+                "maxX": max(point[0] for point in polygon),
+                "minZ": min(point[1] for point in polygon),
+                "maxZ": max(point[1] for point in polygon),
+                "elevation": statistics.median(point[1] for point in polygon3d),
+                # Road LOD0/1 polygons in this Kyoto dataset carry z=0 even
+                # when the CityGML semantic attribute says that the section is
+                # a viaduct/bridge. Keep the structural classification so the
+                # profile generator does not mistake that placeholder z for
+                # the physical road elevation.
+                "sectionType": str((feature.get("attributes") or {}).get("sectionType", "")),
+            })
+            item = self.records[-1]
+            for gx in range(math.floor(item["minX"] / cell_size) - 1, math.floor(item["maxX"] / cell_size) + 2):
+                for gz in range(math.floor(item["minZ"] / cell_size) - 1, math.floor(item["maxZ"] / cell_size) + 2):
+                    self.grid[(gx, gz)].append(record)
+
+    def nearest(self, x: float, z: float, max_distance: float = 20.0) -> dict | None:
+        point = [x, z]
+        gx, gz = math.floor(x / self.cell_size), math.floor(z / self.cell_size)
+        candidate_ids: set[int] = set()
+        radius = max(1, math.ceil(max_distance / self.cell_size) + 1)
+        for ix in range(gx - radius, gx + radius + 1):
+            for iz in range(gz - radius, gz + radius + 1):
+                candidate_ids.update(self.grid.get((ix, iz), ()))
+        hits = []
+        section_priority = {"2": 4, "3": 3, "5": 2, "6": 1, "1": 0, "4": 0}
+        for record_id in candidate_ids:
+            record = self.records[record_id]
+            if x < record["minX"] - max_distance or x > record["maxX"] + max_distance or z < record["minZ"] - max_distance or z > record["maxZ"] + max_distance:
+                continue
+            if point_in_polygon(point, record["polygon"]):
+                distance = 0.0
+            else:
+                distance = min(
+                    point_segment_distance(point, record["polygon"][index], record["polygon"][index - 1])
+                    for index in range(len(record["polygon"]))
+                )
+            if distance <= max_distance:
+                hits.append((distance, record["elevation"], record["sectionType"]))
+        if not hits:
+            return None
+        nearest_distance = min(item[0] for item in hits)
+        nearby = [item for item in hits if item[0] <= nearest_distance + 3.0]
+        # At intersections several semantic surfaces can overlap. Prefer a
+        # structural section when it is equally close; otherwise keep the
+        # closest surface as the route's road classification.
+        selected = min(
+            nearby,
+            key=lambda item: (item[0], -section_priority.get(item[2], 0)),
+        )
+        return {
+            "distance": selected[0],
+            "elevation": selected[1],
+            "sectionType": selected[2],
+        }
+
+
 class OsmBuildingIndex:
     def __init__(self, buildings: Sequence[dict], cell_size: float = 50.0):
         self.cell_size = cell_size
@@ -373,12 +467,37 @@ def candidate_ground_rings(building: ET.Element):
     return [ring for avg, spread, ring in stats if avg <= min_z + 1.0 and spread <= 1.5] or [min(stats)[2]]
 
 
+
+def valid_detailed_building_shell(surfaces: list, height: float) -> bool:
+    """Return true only for a usable wall+roof shell, never for GroundSurface plates."""
+    if len(surfaces) < 4:
+        return False
+    y_values = [float(point[1]) for surface in surfaces for point in surface if len(point) >= 3]
+    if len(y_values) < 12:
+        return False
+    low, high = min(y_values), max(y_values)
+    expected = max(1.5, float(height or 6.0) * 0.3)
+    if high - low < expected:
+        return False
+    vertical = 0
+    roof = 0
+    for surface in surfaces:
+        if len(surface) < 3:
+            continue
+        ys = [float(point[1]) for point in surface]
+        spread = max(ys) - min(ys)
+        if spread >= expected * 0.65:
+            vertical += 1
+        elif spread < 1.2 and sum(ys) / len(ys) > low + expected * 0.6:
+            roof += 1
+    return vertical >= 2 and roof >= 1
+
 def semantic_attributes(feature: ET.Element) -> dict:
     attrs = {}
     for key, names in {
         "name": {"name"}, "class": {"class"}, "function": {"function"}, "usage": {"usage"},
         "storeysAboveGround": {"storeysAboveGround"}, "storeysBelowGround": {"storeysBelowGround"},
-        "measuredHeight": {"measuredHeight"},
+        "measuredHeight": {"measuredHeight"}, "sectionType": {"sectionType"},
     }.items():
         values = all_text(feature, names)
         if values:
@@ -445,6 +564,101 @@ def sample_route_profile(route: dict, terrain_index: PointElevationIndex | None,
             smoothed.append([sample[0], round(sum(values) / len(values), 3)])
         samples = smoothed
     return {"version": 1, "sampleStepMeters": step, "verticalDatum": round(datum, 3), "samples": samples}
+
+
+def route_point_at(route_index: RouteIndex, s: float) -> list[float]:
+    for ax, az, bx, bz, start_s, length in route_index.segments:
+        if s <= start_s + length or length == 0:
+            t = 0.0 if length == 0 else max(0.0, min(1.0, (s - start_s) / length))
+            return [ax + (bx - ax) * t, az + (bz - az) * t]
+    return list(route_index.points[-1])
+
+
+def smooth_profile(samples: list[list[float]], window: int) -> list[list[float]]:
+    if window <= 1 or not samples:
+        return samples
+    half = window // 2
+    smoothed = []
+    for index, sample in enumerate(samples):
+        values = [samples[j][1] for j in range(max(0, index - half), min(len(samples), index + half + 1))]
+        smoothed.append([sample[0], round(sum(values) / len(values), 3)])
+    return smoothed
+
+
+def structural_height_at(route: dict, s: float) -> float:
+    """Fallback road profile for structures not represented by PLATEAU tran surfaces."""
+    for item in route.get("elevations") or []:
+        start = float(item.get("from", 0.0))
+        end = float(item.get("to", 0.0))
+        approach_in = float(item.get("approachIn", 50.0))
+        approach_out = float(item.get("approachOut", 50.0))
+        height = float(item.get("height", 0.0))
+        if s <= start - approach_in or s >= end + approach_out:
+            continue
+        if s < start:
+            t = (s - (start - approach_in)) / max(1e-9, approach_in)
+            return height * (t * t * (3.0 - 2.0 * t))
+        if s <= end:
+            return height
+        t = ((end + approach_out) - s) / max(1e-9, approach_out)
+        return height * (t * t * (3.0 - 2.0 * t))
+    return 0.0
+
+
+def sample_road_profile(
+    route: dict,
+    terrain_index: PointElevationIndex | None,
+    road_index: RoadSurfaceIndex | None,
+    datum: float,
+    step: float,
+    window: int,
+    search_distance: float,
+):
+    route_index = RouteIndex(route["path"])
+    samples = []
+    surface_samples = 0
+    structural_surface_samples = 0
+    elevated_surface_samples = 0
+    s = 0.0
+    while s <= route_index.length + 0.001:
+        point = route_point_at(route_index, s)
+        terrain = terrain_index.nearest(point[0], point[1]) if terrain_index else 0.0
+        terrain = terrain if terrain is not None else 0.0
+        structural = structural_height_at(route, s)
+        surface = road_index.nearest(point[0], point[1], search_distance) if road_index else None
+        if surface is not None:
+            surface_samples += 1
+            section_type = surface.get("sectionType")
+            if section_type in {"2", "3", "5", "6"}:
+                elevated_surface_samples += 1
+                # PLATEAU's road geometry in this dataset is a 2D LOD0/1
+                # footprint (z=0), while sectionType carries the fact that
+                # it is a viaduct, bridge, underpass, or tunnel. Use the
+                # route's structure height for those classified sections;
+                # using the raw polygon z would put Omiya overpass below the
+                # DEM and make the southern river bridges sink as well.
+                elevation = terrain + structural
+                if structural > 0.0:
+                    structural_surface_samples += 1
+            else:
+                # Normal road and intersection surfaces also use a 2D
+                # footprint. Their height is the PLATEAU DEM at the route.
+                elevation = terrain
+        else:
+            elevation = terrain + structural
+        samples.append([round(s, 2), round(elevation - datum, 3)])
+        s += step
+    if samples and samples[-1][0] < route_index.length:
+        samples.append([round(route_index.length, 2), samples[-1][1]])
+    return {
+        "version": 1,
+        "sampleStepMeters": step,
+        "verticalDatum": round(datum, 3),
+        "samples": smooth_profile(samples, window),
+        "surfaceSampleCount": surface_samples,
+        "structuralSurfaceSampleCount": structural_surface_samples,
+        "elevatedSurfaceSampleCount": elevated_surface_samples,
+    }
 
 
 _DEM_WORKER: dict = {}
@@ -572,15 +786,12 @@ def _process_bldg_file(file: Path):
                     footprint = [[x + dx / norm * setback, z + dz / norm * setback] for x, z in footprint]
                     center = polygon_centroid(footprint)
             key = (round(center[0], 1), round(center[1], 1), round(abs(signed_area(footprint)), 1), round(height, 1))
-            osm_match = osm_index.nearest(center)
-            if osm_match:
-                stats["buildingOsmMatched"] += 1
             feature_id = gml_id if len(ground_rings) == 1 else f"{gml_id}#part-{part_index+1}"
             terrain_base = terrain_index.nearest(center[0], center[1]) if terrain_index else 0.0
             source_base = (min_z - datum) if min_z is not None else terrain_base
             # Some low-LOD PLATEAU layers are encoded at z=0 even when the DEM uses
             # an absolute elevation datum. Snap clearly inconsistent bases to DEM.
-            shell_for_feature = shell_surfaces if len(ground_rings) == 1 else []
+            shell_for_feature = shell_surfaces if len(ground_rings) == 1 and valid_detailed_building_shell(shell_surfaces, height) else []
             if terrain_base is not None and (source_base < terrain_base - 10 or source_base > terrain_base + 80):
                 delta = terrain_base - source_base
                 source_base = terrain_base
@@ -599,7 +810,6 @@ def _process_bldg_file(file: Path):
                 "routeDistanceMeters": round(nearest.distance, 2),
                 "setbackMeters": round(setback, 2),
                 "attributes": attrs,
-                "osmMatch": osm_match,
                 "source": {"provider": "PLATEAU", "gmlId": gml_id, "file": source_file.name, "crs": source_crs},
             }))
     return results, dict(stats), crs_seen
@@ -650,20 +860,17 @@ def convert(args) -> dict:
     datum = terrain_index_abs.nearest(start_x, start_z) if terrain_index_abs else None
     if datum is None:
         datum = statistics.median([p[1] for p in terrain_points]) if terrain_points else 0.0
-    if len(terrain_raw) > max_triangles:
-        # Keep the triangles closest to the route and drop the farthest ones first.
-        # A naive stride (every Nth triangle in file-scan order) thins near-route
-        # ground and distant off-corridor hillsides equally, which leaves sparse,
-        # disconnected patches of elevated terrain that look like floating debris.
-        # Distance-first decimation keeps the immediate roadside dense and only
-        # trims decorative terrain far from the route.
-        terrain_raw.sort(key=lambda item: item[3])
-        stats["terrainDecimationDroppedFar"] = len(terrain_raw) - max_triangles
-        terrain_raw = terrain_raw[:max_triangles]
-    terrain_triangles = [
-        [[round(p[0], 3), round(p[1] - datum, 3), round(p[2], 3)] for p in triangle]
-        for triangle, _file, _crs, _dist in terrain_raw
-    ]
+    terrain_grid = build_connected_terrain_grid(
+        terrain_raw, datum, route["path"],
+        spacing=float(cfg["plateau"].get("terrainGridSpacingMeters", 30)),
+        padding=float(cfg["plateau"].get("terrainGridPaddingMeters", 650)),
+        max_vertices=int(cfg["plateau"].get("maximumTerrainGridVertices", 160000)),
+        smoothing_passes=int(cfg["plateau"].get("terrainGridSmoothingPasses", 2)),
+    ) if terrain_raw else None
+    stats["terrainSourceTriangles"] = len(terrain_raw)
+    stats["terrainGridVertices"] = len(terrain_grid["heights"]) if terrain_grid else 0
+    # Keep the legacy field empty so old renderers cannot display disconnected shards.
+    terrain_triangles = []
     terrain_points_relative = [[p[0], p[1] - datum, p[2]] for p in terrain_points]
     terrain_index = PointElevationIndex(terrain_points_relative) if terrain_points_relative else None
 
@@ -779,7 +986,7 @@ def convert(args) -> dict:
     outputs = {
         "buildings": {"version": 2, "generatedAt": generated_at, "source": source_common, "materials": materials, "features": buildings},
         "transportation": {"version": 2, "generatedAt": generated_at, "source": source_common, "features": transportation},
-        "terrain": {"version": 2, "generatedAt": generated_at, "source": source_common, "triangles": terrain_triangles},
+        "terrain": {"version": 3, "generatedAt": generated_at, "source": source_common, "grid": terrain_grid, "triangles": terrain_triangles},
         "bridges": {"version": 2, "generatedAt": generated_at, "source": source_common, "features": bridges},
         "furniture": {"version": 2, "generatedAt": generated_at, "source": source_common, "features": furniture},
         "water": {"version": 2, "generatedAt": generated_at, "source": source_common, "features": water},
@@ -791,6 +998,21 @@ def convert(args) -> dict:
         int(cfg["plateau"].get("routeElevationSmoothingWindow", 7)),
     )
     route_profile.update({"generatedAt": generated_at, "source": "PLATEAU dem", "verticalDatumSourceMeters": round(datum, 3)})
+    road_surface_index = RoadSurfaceIndex(transportation)
+    road_profile = sample_road_profile(
+        route,
+        terrain_index,
+        road_surface_index,
+        0.0,
+        float(cfg["plateau"].get("routeElevationSampleMeters", 10)),
+        int(cfg["plateau"].get("routeElevationSmoothingWindow", 7)),
+        float(cfg["plateau"].get("roadElevationSearchMeters", 20)),
+    )
+    road_profile.update({
+        "generatedAt": generated_at,
+        "source": "PLATEAU transportation road surfaces with structural-profile fallback",
+        "verticalDatumSourceMeters": round(datum, 3),
+    })
     osm_network = {
         "version": 2, "generatedAt": generated_at,
         "source": {"provider": "OpenStreetMap", "relationId": cfg["osm"]["relationId"], "license": cfg["osm"]["license"], "generatedAt": route.get("generatedAt")},
@@ -809,21 +1031,24 @@ def convert(args) -> dict:
     for key, output in outputs.items():
         write_json(output_paths[key], output)
     write_json(args.route_elevation, route_profile)
+    write_json(args.road_elevation, road_profile)
     write_json(args.osm_network, osm_network)
 
     counts = {key: len(value.get("features", value.get("triangles", []))) for key, value in outputs.items()}
+    if terrain_grid:
+        counts["terrain"] = max(0, (terrain_grid["width"] - 1) * (terrain_grid["height"] - 1) * 2)
     manifest = {
         "version": 3, "generatedAt": generated_at, "status": "ready",
         "sources": {"osm": osm_network["source"], "plateau": source_common},
         "policies": cfg["integration"],
         "layers": [
-            {"id": "terrain", "provider": "plateau", "url": "/world/generated/plateau-terrain.json", "featureCount": counts["terrain"]},
+            {"id": "terrain", "provider": "plateau", "url": "/world/generated/plateau-terrain.json", "geometry": "connected-grid", "featureCount": counts["terrain"]},
             {"id": "transportation", "provider": "plateau", "url": "/world/generated/plateau-transportation.json", "featureCount": counts["transportation"]},
             {"id": "water", "provider": "plateau", "url": "/world/generated/plateau-water.json", "featureCount": counts["water"]},
             {"id": "vegetation", "provider": "plateau", "url": "/world/generated/plateau-vegetation.json", "featureCount": counts["vegetation"]},
             {"id": "bridges", "provider": "plateau", "url": "/world/generated/plateau-bridges.json", "featureCount": counts["bridges"]},
-            {"id": "buildings", "provider": "plateau", "url": "/world/generated/plateau-buildings.json", "featureCount": counts["buildings"], "fallback": "route18.json buildings"},
-            {"id": "furniture", "provider": "plateau", "url": "/world/generated/plateau-furniture.json", "featureCount": counts["furniture"], "semanticFallback": "OSM signals"},
+            {"id": "buildings", "provider": "plateau", "url": "/world/generated/plateau-buildings.json", "featureCount": counts["buildings"]},
+            {"id": "furniture", "provider": "plateau", "url": "/world/generated/plateau-furniture.json", "featureCount": counts["furniture"], "semanticFallback": "OSM route/network signals"},
             {"id": "osm-network", "provider": "osm", "url": "/world/generated/osm-network.json"},
         ],
     }
@@ -831,7 +1056,16 @@ def convert(args) -> dict:
     report = {
         "generatedAt": generated_at, "sourceCrs": sorted(crs_values), "verticalDatumSourceMeters": round(datum, 3),
         "inputFiles": {kind: len(files) for kind, files in files_by_type.items()}, "counts": counts,
-        "routeElevationSamples": len(route_profile["samples"]), "stats": dict(sorted(stats.items())),
+        "routeElevationSamples": len(route_profile["samples"]),
+        "roadElevationSamples": len(road_profile["samples"]),
+        "roadSurfaceProfileSamples": road_profile["surfaceSampleCount"],
+        "roadStructuralSurfaceProfileSamples": road_profile["structuralSurfaceSampleCount"],
+        "roadElevatedSurfaceProfileSamples": road_profile["elevatedSurfaceSampleCount"],
+        "transportationSectionTypeCounts": dict(sorted(
+            (section_type, sum(1 for feature in transportation if str((feature.get("attributes") or {}).get("sectionType", "")) == section_type))
+            for section_type in {str((feature.get("attributes") or {}).get("sectionType", "")) for feature in transportation}
+        )),
+        "stats": dict(sorted(stats.items())),
     }
     write_json(args.report, report)
     return report
@@ -851,6 +1085,7 @@ def main() -> int:
     parser.add_argument("--vegetation", type=Path, required=True)
     parser.add_argument("--osm-network", type=Path, required=True)
     parser.add_argument("--route-elevation", type=Path, required=True)
+    parser.add_argument("--road-elevation", type=Path, required=True)
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)
     args = parser.parse_args()

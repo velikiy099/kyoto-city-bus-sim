@@ -14,6 +14,7 @@ const files = {
   vegetation: cfg.output.plateauVegetation,
   osmNetwork: cfg.output.osmNetwork,
   routeElevation: cfg.output.routeElevation,
+  roadElevation: cfg.output.roadElevation,
 };
 for (const [name, relative] of Object.entries(files)) {
   const file = resolveRoot(relative);
@@ -23,8 +24,15 @@ const data = Object.fromEntries(Object.entries(files).map(([name, relative]) => 
 if (data.manifest.version !== 3 || !Array.isArray(data.manifest.layers)) throw new Error("Invalid world manifest");
 if (!Array.isArray(data.buildings.features)) throw new Error("Invalid building layer");
 if (!Array.isArray(data.transportation.features)) throw new Error("Invalid transportation layer");
-if (!Array.isArray(data.terrain.triangles)) throw new Error("Invalid terrain layer");
+if (!Array.isArray(data.terrain.triangles) && !data.terrain.grid) throw new Error("Invalid terrain layer");
+if (data.terrain.grid) {
+  const grid = data.terrain.grid;
+  if (!(grid.width >= 2 && grid.height >= 2) || !Array.isArray(grid.heights) || grid.heights.length !== grid.width * grid.height) {
+    throw new Error("Invalid connected terrain grid");
+  }
+}
 if (!Array.isArray(data.routeElevation.samples)) throw new Error("Invalid route elevation profile");
+if (!Array.isArray(data.roadElevation.samples)) throw new Error("Invalid road elevation profile");
 if (!Array.isArray(data.osmNetwork.signals) || !Array.isArray(data.osmNetwork.intersections)) throw new Error("Invalid OSM network layer");
 
 const ids = new Set();
@@ -50,10 +58,16 @@ console.log(JSON.stringify({
     buildings: data.buildings.features.length,
     transportation: data.transportation.features.length,
     terrainTriangles: data.terrain.triangles.length,
+    terrainGridVertices: data.terrain.grid?.heights?.length ?? 0,
+    terrainGridTriangles: data.terrain.grid ? (data.terrain.grid.width - 1) * (data.terrain.grid.height - 1) * 2 : 0,
     bridges: data.bridges.features.length,
     furniture: data.furniture.features.length,
     water: data.water.features.length,
     vegetation: data.vegetation.features.length,
     routeElevationSamples: data.routeElevation.samples.length,
+    roadElevationSamples: data.roadElevation.samples.length,
+    roadSurfaceProfileSamples: data.roadElevation.surfaceSampleCount ?? 0,
+    roadStructuralSurfaceProfileSamples: data.roadElevation.structuralSurfaceSampleCount ?? 0,
+    roadElevatedSurfaceProfileSamples: data.roadElevation.elevatedSurfaceSampleCount ?? 0,
   },
 }, null, 2));

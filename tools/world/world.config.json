@@ -16,8 +16,13 @@
     "sourceCrsFallback": "EPSG:6697",
     "routeElevationSampleMeters": 10,
     "routeElevationSmoothingWindow": 7,
+    "roadElevationSearchMeters": 20,
     "maximumTerrainTriangleEdgeMeters": 220,
     "maximumTerrainTriangles": 70000,
+    "terrainGridSpacingMeters": 30,
+    "terrainGridPaddingMeters": 650,
+    "maximumTerrainGridVertices": 160000,
+    "terrainGridSmoothingPasses": 2,
     "maximumSurfacePolygonsPerLayer": 60000
   },
   "osm": {
@@ -35,12 +40,12 @@
     }
   },
   "integration": {
-    "roadVisualPolicy": "plateau-surface-plus-existing-osm-derived-drive-surface",
+    "roadVisualPolicy": "plateau-transportation-only",
     "terrainPolicy": "plateau-dem-with-route-profile",
-    "buildingPolicy": "plateau-preferred-osm-fallback",
+    "buildingPolicy": "plateau-only",
     "bridgePolicy": "plateau-visual-plus-existing-structural-profile",
     "signalPolicy": "osm-control-plus-plateau-visual-if-identifiable",
-    "fallbackToLegacy": true
+    "fallbackToLegacy": false
   },
   "output": {
     "publicDirectory": "public/world/generated",
@@ -53,6 +58,7 @@
     "plateauVegetation": "public/world/generated/plateau-vegetation.json",
     "osmNetwork": "public/world/generated/osm-network.json",
     "routeElevation": "src/world/declarative/generated/route-elevation.json",
+    "roadElevation": "src/world/declarative/generated/road-elevation.json",
     "worldManifest": "public/world/world-manifest.json",
     "report": "data/work/plateau/build-report.json"
   }

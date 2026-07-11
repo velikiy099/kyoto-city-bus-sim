@@ -8,6 +8,10 @@ import {
 } from "../route/routeData.js";
 import { loadProps } from "../util/propsLib.js";
 import { clippedRiverPoints } from "./road.js";
+import {
+  terrainHeightAtWorld,
+  roadHeightAtWorld,
+} from "./declarative/continuousTerrain.js";
 
 const mat = (color, opts = {}) =>
   new THREE.MeshLambertMaterial({ color, ...opts });
@@ -32,6 +36,12 @@ export function buildNature(scene, path) {
   scene.add(g);
   const exclusions = [];
 
+  // 河川橋の横端は本線中心から少し離れるため、点によっては通常の
+  // roadHeightAtWorld() が地表へフォールバックする。橋の中心線標高も
+  // 下限として使い、欄干・桁・橋脚上端を同じ橋梁レベルへ揃える。
+  const bridgeRoadHeightAt = (x, z, s) =>
+    Math.max(roadHeightAtWorld(x, z), elevationAt(s));
+
   // ---- 川と橋 ----
   // 実測ポリライン(route.rivers。tools/build-route-data.mjs が OSM waterway から切り出し
   // ゲーム座標へ投影済み)があればそれに沿ったリボンとして川を描く。
@@ -55,8 +65,12 @@ export function buildNature(scene, path) {
       const nx = -dz / l,
         nz = dx / l;
       const p = points[i];
-      positions.push(p[0] + nx * offFrom, y, p[1] + nz * offFrom);
-      positions.push(p[0] + nx * offTo, y, p[1] + nz * offTo);
+      const x0 = p[0] + nx * offFrom;
+      const z0 = p[1] + nz * offFrom;
+      const x1 = p[0] + nx * offTo;
+      const z1 = p[1] + nz * offTo;
+      positions.push(x0, terrainHeightAtWorld(x0, z0) + y, z0);
+      positions.push(x1, terrainHeightAtWorld(x1, z1) + y, z1);
       if (i > 0) {
         const b = i * 2;
         indices.push(b - 2, b - 1, b, b - 1, b + 1, b);
@@ -94,7 +108,11 @@ export function buildNature(scene, path) {
       );
       rail.position.set(
         rx + nx * side * railOffset,
-        elevationAt(midS) + 0.85,
+        bridgeRoadHeightAt(
+          rx + nx * side * railOffset,
+          rz + nz * side * railOffset,
+          midS,
+        ) + 0.85,
         rz + nz * side * railOffset,
       );
       rail.rotation.y = Math.atan2(tx, tz);
@@ -108,7 +126,7 @@ export function buildNature(scene, path) {
     const roadHeading = Math.atan2(tx, tz); // 経路方位(橋桁・欄干は道路に沿わせる)
     const w = Math.max(18, br.length * 0.85); // 川幅
     const halfW = w / 2;
-    const deckElev = elevationAt(br.s); // 跨線橋等と重なる場合は路面高さに追従
+    const deckElev = bridgeRoadHeightAt(px, pz, br.s); // 跨線橋等と重なる場合は路面高さに追従
     // 久我橋・天神橋は従来の「川幅+10m」を橋桁にも流用していたため、
     // 端部の欄干が接続道路まで伸びていた。橋桁と欄干は実際の川幅相当の
     // スパンに揃え、その他の橋の見た目は従来値を維持する。
@@ -179,6 +197,23 @@ export function buildNature(scene, path) {
     const railTo = Math.min(path.length, br.s + bridgeSpan / 2);
     for (const side of [-1, 1])
       addBridgeRail(side, railFrom, railTo);
+
+    // 長い河川橋は、河床から桁下までを結ぶ橋脚を実際の路面標高に合わせて配置する。
+    // 地形メッシュ側で河川谷を掘り下げているため、橋脚下端も同じ深さを使う。
+    const supportCount = Math.max(0, Math.ceil(bridgeSpan / 55) - 1);
+    for (let i = 1; i <= supportCount; i++) {
+      const sPier = railFrom + ((railTo - railFrom) * i) / (supportCount + 1);
+      const [sx, sz] = path.getPoint(sPier);
+      const topY = bridgeRoadHeightAt(sx, sz, sPier) - 0.9;
+      const bedY = terrainHeightAtWorld(sx, sz) - RIVER_DEPTH + 0.15;
+      const height = Math.max(0.8, topY - bedY);
+      const pier = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.75, 0.95, height, 10),
+        mat(0x8f9699),
+      );
+      pier.position.set(sx, bedY + height / 2, sz);
+      g.add(pier);
+    }
   }
 
   // ---- 遠景の山(北・東・西 — 京都盆地) ----
@@ -196,7 +231,7 @@ export function buildNature(scene, path) {
   const mountainMat = mat(0x6d8577);
   const mk = (x, z, r, h) => {
     const m = new THREE.Mesh(new THREE.ConeGeometry(r, h, 7), mountainMat);
-    m.position.set(x, 0, z);
+    m.position.set(x, terrainHeightAtWorld(x, z), z);
     g.add(m);
   };
   // 北山(二条駅の北)
@@ -403,7 +438,7 @@ export function buildNature(scene, path) {
           own.length,
         );
         own.forEach(([x, z], i) => {
-          dummy.position.set(x, 0, z);
+          dummy.position.set(x, terrainHeightAtWorld(x, z), z);
           dummy.rotation.set(0, rnd(x, z, 1) * Math.PI * 2, 0);
           dummy.scale.setScalar(0.85 + rnd(x, z, 2) * 0.35);
           dummy.updateMatrix();

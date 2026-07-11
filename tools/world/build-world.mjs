@@ -40,6 +40,7 @@ run(python, [
   "--vegetation", resolveRoot(out.plateauVegetation),
   "--osm-network", resolveRoot(out.osmNetwork),
   "--route-elevation", resolveRoot(out.routeElevation),
+  "--road-elevation", resolveRoot(out.roadElevation),
   "--manifest", resolveRoot(out.worldManifest),
   "--report", resolveRoot(out.report),
 ]);

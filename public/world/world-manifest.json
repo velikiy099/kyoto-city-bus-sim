@@ -1,6 +1,6 @@
 {
   "version": 3,
-  "generatedAt": "2026-07-11T11:43:30.909720+00:00",
+  "generatedAt": "2026-07-11T21:14:51.423952+00:00",
   "status": "ready",
   "sources": {
     "osm": {
@@ -23,19 +23,20 @@
     }
   },
   "policies": {
-    "roadVisualPolicy": "plateau-surface-plus-existing-osm-derived-drive-surface",
+    "roadVisualPolicy": "plateau-transportation-only",
     "terrainPolicy": "plateau-dem-with-route-profile",
-    "buildingPolicy": "plateau-preferred-osm-fallback",
+    "buildingPolicy": "plateau-only",
     "bridgePolicy": "plateau-visual-plus-existing-structural-profile",
     "signalPolicy": "osm-control-plus-plateau-visual-if-identifiable",
-    "fallbackToLegacy": true
+    "fallbackToLegacy": false
   },
   "layers": [
     {
       "id": "terrain",
       "provider": "plateau",
       "url": "/world/generated/plateau-terrain.json",
-      "featureCount": 70000
+      "geometry": "connected-grid",
+      "featureCount": 69496
     },
     {
       "id": "transportation",
@@ -65,15 +66,14 @@
       "id": "buildings",
       "provider": "plateau",
       "url": "/world/generated/plateau-buildings.json",
-      "featureCount": 17421,
-      "fallback": "route18.json buildings"
+      "featureCount": 17421
     },
     {
       "id": "furniture",
       "provider": "plateau",
       "url": "/world/generated/plateau-furniture.json",
       "featureCount": 0,
-      "semanticFallback": "OSM signals"
+      "semanticFallback": "OSM route/network signals"
     },
     {
       "id": "osm-network",

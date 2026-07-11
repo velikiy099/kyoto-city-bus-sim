@@ -1,5 +1,6 @@
 import raw from "../data/route18.json";
 import terrainProfile from "../world/declarative/generated/route-elevation.json";
+import roadProfile from "../world/declarative/generated/road-elevation.json";
 import { RoutePath } from "./path.js";
 
 /** 路線データ一式(経路・停留所・橋・速度ゾーン) */
@@ -149,6 +150,9 @@ export function turnExclusions() {
 // デッキ区間は一定高、前後アプローチを smoothstep で擦り付ける。
 // 旧形式フォールバック: roadLayer>0 の在来線アンダーパス区間。
 const APPROACH_LEN = 50;
+// PLATEAU地形との丸め誤差や重なりで路面が部分的に侵食して見えるのを防ぐ
+// ため、道路・車両・交通AIが共有する路面基準を数cmだけ上げる。
+const ROAD_SURFACE_LIFT = 0.05;
 const elevSrc = raw.elevations?.length
   ? raw.elevations
   : (raw.railStructures ?? [])
@@ -176,9 +180,9 @@ function structuralElevationAt(s) {
   return 0;
 }
 
-function terrainElevationAt(s) {
-  const samples = terrainProfile?.samples;
-  if (!Array.isArray(samples) || samples.length === 0) return 0;
+function profileValue(profile, s, fallback = 0) {
+  const samples = profile?.samples;
+  if (!Array.isArray(samples) || samples.length === 0) return fallback;
   if (s <= samples[0][0]) return samples[0][1] ?? 0;
   if (s >= samples.at(-1)[0]) return samples.at(-1)[1] ?? 0;
   let lo = 0;
@@ -194,9 +198,24 @@ function terrainElevationAt(s) {
   return y0 + (y1 - y0) * t;
 }
 
+export function terrainElevationAt(s) {
+  return profileValue(terrainProfile, s, 0);
+}
+
 /** PLATEAU地形の高低差に、既存の橋・跨線橋プロファイルを加える。 */
 export function elevationAt(s) {
-  return terrainElevationAt(s) + structuralElevationAt(s);
+  return roadElevationAt(s);
+}
+
+/** PLATEAU交通面の道路標高。未取得区間だけ既存の構造プロファイルへ戻す。 */
+export function roadElevationAt(s) {
+  return (
+    profileValue(
+      roadProfile,
+      s,
+      terrainElevationAt(s) + structuralElevationAt(s),
+    ) + ROAD_SURFACE_LIFT
+  );
 }
 
 /** s 増加方向の路面勾配(dy/ds) */

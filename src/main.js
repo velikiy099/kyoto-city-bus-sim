@@ -6,6 +6,8 @@ import {
   speedLimitKmhAt,
   speedLimitAt,
   elevationAt,
+  terrainElevationAt,
+  roadElevationAt,
   gradeAt,
   halfWidthAt,
   laneCenterAt,
@@ -16,7 +18,13 @@ import {
 import { input } from "./input.js";
 import { BusPhysics } from "./bus/busPhysics.js";
 import { createBusModel } from "./bus/busModel.js";
-import { buildRoad, buildGround } from "./world/road.js";
+import { buildRoad } from "./world/road.js";
+import {
+  buildContinuousTerrain,
+  configureWorldHeightSamplers,
+  terrainHeightAtWorld,
+  roadHeightAtWorld,
+} from "./world/declarative/continuousTerrain.js";
 import { setupDebug, dbg, autoDriveInput, recordFrame } from "./debug.js";
 import { initHud, updateHud } from "./ui/hud.js";
 import { createMinimap } from "./ui/minimap.js";
@@ -38,6 +46,7 @@ import { buildRailways } from "./world/railways.js";
 import { buildExtraRoads } from "./world/extraRoads.js";
 import { buildTraffic } from "./world/traffic.js";
 import { buildWorldScenery } from "./world/declarative/buildWorldScenery.js";
+import { WORLD_CONFIG } from "./world/declarative/config.js";
 import * as sfx from "./audio/sfx.js";
 import {
   initAnnouncements,
@@ -50,6 +59,7 @@ import {
 const STEP = 1 / 60;
 const DOOR_OFFSET = CFG.bus.wheelbase + 1.2; // 後軸→前扉
 const path = route.path;
+configureWorldHeightSamplers(path, terrainElevationAt, roadElevationAt);
 
 // ---------------------------------------------------------------- renderer / scene
 const app = document.getElementById("app");
@@ -67,9 +77,12 @@ const sun = new THREE.DirectionalLight(0xfff2dd, 1.1);
 sun.position.set(-300, 400, -200);
 scene.add(sun);
 
-scene.add(buildGround(path, route.bridges, route.rivers));
-scene.add(buildRoad(path, route));
-const extraRoadTraffic = buildExtraRoads(scene); // existing feeder roads and traffic definitions stay intact
+const baseTerrain = buildContinuousTerrain(path, route.bridges, route.rivers);
+scene.add(baseTerrain);
+if (WORLD_CONFIG.render.osmRouteSurface) scene.add(buildRoad(path, route));
+const extraRoadTraffic = buildExtraRoads(scene, {
+  render: WORLD_CONFIG.render.osmExtraRoadSurfaces,
+}); // OSM feeder geometry remains available to traffic logic
 void buildWorldScenery(scene, path, route, {
   buildRailways,
   buildLandmarks,
@@ -77,6 +90,9 @@ void buildWorldScenery(scene, path, route, {
   buildBuildings,
   turnExclusions,
   elevationAt,
+  terrainHeightAtWorld,
+  roadHeightAtWorld,
+  baseTerrain,
 });
 
 // ---------------------------------------------------------------- bus / game objects
@@ -302,7 +318,14 @@ function tick(dt, ePressed) {
   scoring.tick(dt, bus, speedLimitAt(state.s));
   // 衝突判定は後軸でなく車体中心基準
   const [bfx, bfz] = bus.forward;
-  traffic.update(dt, state.s, [bus.x + bfx * 3.15, bus.z + bfz * 3.15], bus.v);
+  traffic.update(
+    dt,
+    state.s,
+    [bus.x + bfx * 3.15, bus.z + bfz * 3.15, elevationAt(state.s) + 1.6],
+    bus.v,
+    bus.heading,
+    state.lateral,
+  );
   stopsView.updateWalkers(dt);
 }
 

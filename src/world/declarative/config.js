@@ -1,23 +1,23 @@
 export const WORLD_CONFIG = Object.freeze({
   manifestUrl: "/world/world-manifest.json",
-  queryParameter: "world",
-  defaultMode: "hybrid",
-  validModes: ["hybrid", "plateau", "legacy"],
-  fallbackToLegacy: true,
+  defaultMode: "plateau",
+  fallbackToLegacy: false,
   render: {
-    // The DEM triangles are corridor-filtered and decimated independently per
-    // triangle, so they lose mesh connectivity and render as disconnected,
-    // gap-filled patches rather than a continuous ground surface. Route
-    // elevation (elevationAt) and building/road base-height snapping already
-    // consume the DEM data directly in the build step (route-elevation.json,
-    // baseHeight/tranSurfaceSnappedToTerrain) and do not depend on this mesh,
-    // so disabling the visual ground layer does not affect bus/road physics.
-    terrain: false,
+    // main.js creates the connected PLATEAU grid synchronously so all systems can
+    // sample it before asynchronous scenery loading. The renderer replaces that
+    // provisional mesh with the transportation-cut version once the manifest loads.
+    terrain: true,
+    // Visible road/sidewalk surfaces come exclusively from PLATEAU transportation.
+    // OSM remains route/network metadata for physics, stops, signals and traffic.
     transportation: true,
+    osmRouteSurface: false,
+    osmExtraRoadSurfaces: false,
     buildings: true,
-    bridges: true,
-    water: true,
-    vegetation: true,
-    furniture: true,
+    // The selected Kyoto PLATEAU tiles contain no usable features for these layers.
+    // Route structure annotations provide the fallback and are ground-snapped.
+    bridges: false,
+    water: false,
+    vegetation: false,
+    furniture: false,
   },
 });
