@@ -324,3 +324,41 @@ body {
   font-size: 20px;
   font-weight: 700;
 }
+
+/* ---------- ポーズオーバーレイ ---------- */
+#pause-overlay {
+  position: fixed;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+  z-index: 20;
+  pointer-events: auto;
+}
+.pause-card {
+  background: rgba(12, 24, 36, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 16px;
+  padding: 40px 72px;
+  text-align: center;
+  backdrop-filter: blur(6px);
+}
+.pause-title {
+  font-size: 52px;
+  font-weight: 900;
+  color: #ffd25e;
+  letter-spacing: 6px;
+  text-shadow: 0 0 24px rgba(255, 210, 94, 0.5);
+}
+.pause-hint {
+  margin-top: 12px;
+  font-size: 16px;
+  color: #9db4d8;
+  letter-spacing: 2px;
+}
+
+/* デモボタンホバー */
+#demo-btn:hover {
+  background: #235f8c !important;
+}

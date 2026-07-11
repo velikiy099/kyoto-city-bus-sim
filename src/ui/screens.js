@@ -16,22 +16,45 @@ export function showTitle(onStart) {
         <div><b>A・D / ←・→</b> ハンドル</div>
         <div><b>E</b> ドア開閉(停留所で停車中)</div>
         <div><b>C</b> カメラ切替(追従 / 運転席) <b>M</b> ミニマップ</div>
-        <div><b>R</b> 路上に復帰(コース外では -500点) <b>Shift+R</b> 最初からやり直し</div>
+        <div><b>R</b> 路上に復帰(コース外では -500点) <b>Shift+R</b> タイトルに戻る</div>
+        <div><b>P</b> ポーズ / 再開</div>
+        <div><b>.(ピリオド) 長押し</b> 停留所停車中のみ 4倍速</div>
       </div>
       <div style="font-size:13px;color:#9db4d8;line-height:1.8">
         後乗り・前降り・運賃230円均一。停止線に合わせて左に寄せて停車し、<br>
         乗降を終えたら定刻(主要停留所)を守って発車しましょう。<br>
         始発 ${fmtTime(schedule[0].time)} 発 ── 早発は大幅減点です。
       </div>
-      <button id="start-btn">乗務開始</button>
+      <div style="display:flex;gap:12px;justify-content:center;margin-top:4px">
+        <button id="start-btn">乗務開始</button>
+        <button id="demo-btn" style="background:#1a4a6e">O : デモ走行</button>
+      </div>
       <div class="src">経路・停留所データ: ${route.source}<br>ダイヤ・スコアはゲーム用に簡略化しています(距離スケール ${route.scale}x)</div>
     </div>
   `;
   document.body.appendChild(div);
-  div.querySelector("#start-btn").addEventListener("click", () => {
+
+  function startGame(demoMode) {
     div.remove();
-    onStart();
-  });
+    onStart(demoMode);
+  }
+
+  div.querySelector("#start-btn").addEventListener("click", () => startGame(false));
+  div.querySelector("#demo-btn").addEventListener("click", () => startGame(true));
+
+  // O キーでデモ走行
+  function onKeyDown(e) {
+    if (e.code === "KeyO" && !e.repeat) {
+      document.removeEventListener("keydown", onKeyDown);
+      startGame(true);
+    }
+    // Enter / Space でも乗務開始
+    if ((e.code === "Enter" || e.code === "Space") && !e.repeat) {
+      document.removeEventListener("keydown", onKeyDown);
+      startGame(false);
+    }
+  }
+  document.addEventListener("keydown", onKeyDown);
 }
 
 /** リザルト画面 */

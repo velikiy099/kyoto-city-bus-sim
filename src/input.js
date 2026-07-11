@@ -39,6 +39,10 @@ export const input = {
   pressed(code) {
     return pressedEdge.has(code);
   },
+  /** 長押し判定(押されている間ずっと true) */
+  held(code) {
+    return keys.has(code);
+  },
   /** フレーム終端で呼ぶ */
   endFrame() {
     pressedEdge.clear();

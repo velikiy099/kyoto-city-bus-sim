@@ -96,6 +96,8 @@ const state = {
   promptText: null,
   camMode: "chase",
   completed: false,
+  paused: false,
+  demoMode: false,
 };
 
 const pax = createPassengers(route.stops.length);
@@ -302,6 +304,68 @@ function tick(dt, ePressed) {
   stopsView.updateWalkers(dt);
 }
 
+// ---------------------------------------------------------------- pause overlay
+function createPauseOverlay() {
+  const div = document.createElement("div");
+  div.id = "pause-overlay";
+  div.innerHTML = `<div class="pause-card"><div class="pause-title">⏸ PAUSE</div><div class="pause-hint">P キーで再開</div></div>`;
+  document.body.appendChild(div);
+  return div;
+}
+let pauseOverlay = null;
+
+function setPaused(on) {
+  state.paused = on;
+  if (!pauseOverlay) pauseOverlay = createPauseOverlay();
+  pauseOverlay.style.display = on ? "flex" : "none";
+}
+
+// ---------------------------------------------------------------- return to title
+function returnToTitle() {
+  // ゲーム状態をリセットしてタイトル画面を再表示する
+  state.phase = "TITLE";
+  state.paused = false;
+  state.demoMode = false;
+  setPaused(false);
+  // 音声を停止
+  sfx.updateEngine(0, "off");
+  // 既存のタイトル画面以外のスクリーンを消す(リザルト等)
+  document.querySelectorAll(".screen").forEach((el) => el.remove());
+  // バスを始発位置に戻す
+  placeBusAtS(
+    Math.max(0.5, route.stops[0].s - DOOR_OFFSET),
+    curbStopLat(route.stops[0].s),
+  );
+  camInit = false;
+  // 乗客・スコア・時計をリセット
+  pax.reset?.();
+  scoring.reset?.();
+  state.score = 0;
+  state.fareTotal = 0;
+  state.nextStopIndex = 0;
+  state.doorState = "CLOSED";
+  state.buzzer = false;
+  state.promptText = null;
+  state.completed = false;
+  state.clock = firstDepartTime - 45;
+  ops.resetTo(0);
+  // タイトル再表示
+  showTitle((demoMode) => {
+    sfx.initAudio();
+    initAnnouncements();
+    if (demoMode) {
+      state.demoMode = true;
+      dbg.autoDrive = true;
+    } else {
+      state.demoMode = false;
+      dbg.autoDrive = false;
+    }
+    announceStart();
+    state.phase = "RUNNING";
+    state.clock = firstDepartTime - 45;
+  });
+}
+
 // ---------------------------------------------------------------- frame loop
 let minimap = null; // initHud() 後に生成
 let last = performance.now();
@@ -316,30 +380,40 @@ function frame(now) {
   const dt = dtMs / 1000;
 
   if (state.phase === "RUNNING") {
-    if (input.pressed("KeyC"))
-      state.camMode = state.camMode === "chase" ? "cockpit" : "chase";
-    if (input.pressed("KeyM")) {
-      const el = document.getElementById("minimap");
-      el.style.display = el.style.display === "none" ? "block" : "none";
-    }
-    if (input.pressed("KeyR")) {
-      if (state.offRoute)
-        scoring.add(CFG.score.offroadReset, "コース外から復帰");
-      placeBusAtS(state.s);
-      camInit = false;
-    }
+    // P キーでポーズトグル
+    if (input.pressed("KeyP")) setPaused(!state.paused);
 
-    let ePressed = input.pressed("KeyE");
-    acc += dt * dbg.timeScale;
-    let steps = 0;
-    const maxSteps = Math.ceil(6 * dbg.timeScale);
-    while (acc >= STEP && steps < maxSteps) {
-      tick(STEP, ePressed);
-      ePressed = false;
-      acc -= STEP;
-      steps++;
+    if (!state.paused) {
+      if (input.pressed("KeyC"))
+        state.camMode = state.camMode === "chase" ? "cockpit" : "chase";
+      if (input.pressed("KeyM")) {
+        const el = document.getElementById("minimap");
+        el.style.display = el.style.display === "none" ? "block" : "none";
+      }
+      if (input.pressed("KeyR") && !state.demoMode) {
+        if (state.offRoute)
+          scoring.add(CFG.score.offroadReset, "コース外から復帰");
+        placeBusAtS(state.s);
+        camInit = false;
+      }
+
+      // . キー長押し中、停留所停車中のみ時間4倍速
+      const dotHeld = input.held("Period");
+      const atStop = state.doorState !== "CLOSED" || state.waitingDepart;
+      const timeMultiplier = (dotHeld && atStop) ? 4 : 1;
+
+      let ePressed = input.pressed("KeyE");
+      acc += dt * dbg.timeScale * timeMultiplier;
+      let steps = 0;
+      const maxSteps = Math.ceil(6 * dbg.timeScale * timeMultiplier);
+      while (acc >= STEP && steps < maxSteps) {
+        tick(STEP, ePressed);
+        ePressed = false;
+        acc -= STEP;
+        steps++;
+      }
+      if (steps === maxSteps) acc = 0;
     }
-    if (steps === maxSteps) acc = 0;
   }
 
   busModel.update(bus, dt, elevationAt(state.s), gradeAt(state.s));
@@ -432,28 +506,25 @@ setupDebug({
   },
 });
 
-showTitle(() => {
+showTitle((demoMode) => {
   sfx.initAudio();
   initAnnouncements();
+  if (demoMode) {
+    state.demoMode = true;
+    dbg.autoDrive = true;
+  }
   announceStart();
   state.phase = "RUNNING";
   state.clock = firstDepartTime - 45;
 });
 
-// ---------------------------------------------------------------- reset (Shift+R)
-// リロードで全状態(乗客・交通・スコア・ダイヤ)を確実に初期化し、タイトルを飛ばして即再開する
-function resetGame() {
-  sessionStorage.setItem("bus18-restart", "1");
-  window.location.reload();
-}
-window.game.debug.reset = resetGame;
+// ---------------------------------------------------------------- Shift+R: タイトルへ戻る
+window.game.debug.returnToTitle = returnToTitle;
 window.addEventListener("keydown", (e) => {
-  if (e.code === "KeyR" && e.shiftKey && !e.repeat) resetGame();
+  if (e.code === "KeyR" && e.shiftKey && !e.repeat && state.phase === "RUNNING") {
+    returnToTitle();
+  }
 });
-if (sessionStorage.getItem("bus18-restart")) {
-  sessionStorage.removeItem("bus18-restart");
-  document.getElementById("start-btn")?.click();
-}
 
 window.addEventListener("resize", () => {
   camera.aspect = window.innerWidth / window.innerHeight;
