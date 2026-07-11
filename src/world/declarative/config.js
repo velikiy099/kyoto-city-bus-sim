@@ -5,19 +5,22 @@ export const WORLD_CONFIG = Object.freeze({
   validModes: ["hybrid", "plateau", "legacy"],
   fallbackToLegacy: true,
   render: {
-    // The DEM triangles are corridor-filtered and decimated independently per
-    // triangle, so they lose mesh connectivity and render as disconnected,
-    // gap-filled patches rather than a continuous ground surface. Route
-    // elevation (elevationAt) and building/road base-height snapping already
-    // consume the DEM data directly in the build step (route-elevation.json,
-    // baseHeight/tranSurfaceSnappedToTerrain) and do not depend on this mesh,
-    // so disabling the visual ground layer does not affect bus/road physics.
+    // The currently generated PLATEAU layers do not share a reliable vertical
+    // reference with the legacy ground/road mesh. Rendering them together causes
+    // buildings to float or sink, vehicles to appear buried, and overlapping road
+    // surfaces to produce visibly broken intersections.
+    //
+    // Keep the declarative loader and generated data available for diagnostics,
+    // but use the stable OSM-derived/hand-authored world until the converter emits
+    // a continuous terrain surface and validated building shells. With buildings
+    // disabled, buildWorldScenery automatically invokes the legacy building
+    // fallback; hybrid mode also retains the existing nature and landmarks.
     terrain: false,
-    transportation: true,
-    buildings: true,
-    bridges: true,
-    water: true,
-    vegetation: true,
-    furniture: true,
+    transportation: false,
+    buildings: false,
+    bridges: false,
+    water: false,
+    vegetation: false,
+    furniture: false,
   },
 });
