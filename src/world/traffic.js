@@ -14,8 +14,6 @@ import {
   speedLimitAt,
   fwdLanesAt,
   backLanesAt,
-  leftWidthAt,
-  rightWidthAt,
 } from "../route/routeData.js";
 import { RoutePath } from "../route/path.js";
 import { terrainHeightAtWorld, roadHeightAtWorld } from "./declarative/continuousTerrain.js";

@@ -78,7 +78,7 @@ function addStopFrame(group, x, z, tx, tz, baseY) {
 
 /**
  * 停留所(ポール・停止線・待ち客)を生成
- * 返り値: { setWaiting(i, n), boardOne(i), stopLatOffset }
+ * 返り値: { setWaiting(i, n), spawnAlighting(i), updateWalkers(dt) }
  */
 export function buildStops(scene, path, stops) {
   const group = new THREE.Group();

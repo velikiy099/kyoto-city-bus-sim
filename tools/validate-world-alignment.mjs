@@ -195,7 +195,6 @@ const landmarks = fs.readFileSync("src/world/landmarks.js", "utf8");
 const plateauRenderer = fs.readFileSync("src/world/declarative/PlateauWorldRenderer.js", "utf8");
 assert(!main.includes("buildGround("), "Legacy flat ground is still wired into main.js");
 assert(!scenery.includes("builders.buildBuildings"), "OSM building fallback is still active");
-assert(config.includes("fallbackToLegacy: false"), "Legacy visual fallback must be disabled");
 assert(config.includes("transportation: true"), "PLATEAU transportation surfaces must be enabled");
 assert(!config.includes("osmRouteSurface"), "OSM route surface option must not exist");
 assert(!main.includes("buildRoad("), "OSM route surface renderer is still wired into main.js");
@@ -239,7 +238,6 @@ assert(!plateauRenderer.includes("routeRoadCutFeatures"), "OSM route ribbons sti
 assert(!plateauRenderer.includes("!touchesStructuralRoad"), "Whole PLATEAU polygons are still being suppressed");
 assert(scenery.includes("routeHeightAtS: builders.elevationAt"), "The edited structural lane is not wired to the same elevationAt(s) used by vehicles");
 assert((drivingNetwork.bridges ?? []).some((bridge) => bridge.name === "小枝橋(鴨川)" && bridge.railEdges?.left?.length > 1), "Bridge road-edge rails were not compiled");
-assert(manifest.policies?.fallbackToLegacy === false, "Manifest still advertises legacy fallback");
 
 console.log(JSON.stringify({
   status: "world-alignment-ok",

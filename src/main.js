@@ -42,7 +42,6 @@ import { buildNature } from "./world/nature.js";
 import { buildRailways } from "./world/railways.js";
 import { buildTraffic } from "./world/traffic.js";
 import { buildWorldScenery } from "./world/declarative/buildWorldScenery.js";
-import { WORLD_CONFIG } from "./world/declarative/config.js";
 import * as sfx from "./audio/sfx.js";
 import {
   initAnnouncements,
@@ -290,13 +289,8 @@ function tick(dt, ePressed) {
   } else if (dbg.autoDrive) {
     const autoStop = autoStopTarget();
     const target = autoStop?.target ?? autoStopTargetS();
-    const near = target != null && target - state.s < 110;
     let effTarget = target;
     let vCap = Infinity;
-    if (target != null) {
-      const d = target - state.s;
-      // 停止目標に近いのに寄せが足りない → 目標を少し先送りし微速で寄せ直す
-    }
     // 赤信号の停止線が停留所より手前ならそちらを優先
     const redS = traffic.redStopTarget(state.s, bus.v);
     if (redS != null && (effTarget == null || redS < effTarget))
@@ -388,8 +382,6 @@ function returnToTitle() {
   placeBusAtS(Math.max(0.5, route.stops[0].s - DOOR_OFFSET));
   camInit = false;
   // 乗客・スコア・時計をリセット
-  pax.reset?.();
-  scoring.reset?.();
   state.score = 0;
   state.fareTotal = 0;
   state.nextStopIndex = 0;

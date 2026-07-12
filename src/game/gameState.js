@@ -1,5 +1,5 @@
 import { CFG } from "../config.js";
-import { schedule, fmtTime, delayInfo } from "./timetable.js";
+import { schedule, fmtTime } from "./timetable.js";
 import { setPrompt, setDoorStatus, showToast } from "../ui/hud.js";
 
 export const DOOR = {
@@ -108,9 +108,6 @@ export function createOps(ctx) {
   }
 
   return {
-    get doorState() {
-      return state.doorState;
-    },
     /** teleport 用: 業務状態を指定停留所の手前走行中に合わせる */
     resetTo(stopIndex) {
       state.nextStopIndex = stopIndex;

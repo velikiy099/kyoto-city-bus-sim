@@ -4,7 +4,6 @@ export const CFG = {
   bus: {
     length: 10.29,
     width: 2.49,
-    height: 3.14,
     wheelbase: 4.8,
     rearOverhang: 3.15, // 後軸から車体後端まで
     maxAccel: 1.2, // [m/s^2]
@@ -22,7 +21,6 @@ export const CFG = {
   },
   // --- 道路 ---
   road: {
-    halfWidth: 4.0, // 最小の片側幅(センターまで)。実効値は routeData の halfWidthAt(s)
     offroadMargin: 1.0, // 道路端からこれ以上で場外
   },
   // --- 運行 ---
@@ -69,11 +67,5 @@ export const CFG = {
     sky: 0xbfe3f2,
     fog: 0xcfe0ea,
     ground: 0x9aa77c,
-    road: 0x565a60,
-    roadLine: 0xe8e8e8,
-    curb: 0xb9bdb9,
-    busCream: 0xf2efe1,
-    busGreen: 0x1e7a4f,
-    busDarkGreen: 0x145c3a,
   },
 };

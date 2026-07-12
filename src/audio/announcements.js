@@ -118,7 +118,3 @@ export function announceTerminal() {
 export function announceStart() {
   speak("乗務を開始します。");
 }
-
-export function announceDepart() {
-  speak("発車します。ご注意ください。");
-}

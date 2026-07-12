@@ -717,25 +717,6 @@ function compiledTrafficPaths() {
       })),
   ];
 }
-function surfaceHalfWidthAtRaw(rawS) {
-  let index = 0;
-  while (index < center.length - 2 && center[index + 1].rawS < rawS) index++;
-  const a = center[index], b = center[index + 1];
-  const dx = b.x - a.x, dz = b.z - a.z;
-  const length = Math.hypot(dx, dz) || 1;
-  const nx = -dz / length, nz = dx / length;
-  const covered = (x, z) => candidates(x, z).some((feature) => contains(feature.points, x, z));
-  const extent = (side) => {
-    let last = 0;
-    for (let d = 0; d <= 18; d += 0.1) {
-      if (!covered(a.x + nx * side * d, a.z + nz * side * d)) break;
-      last = d;
-    }
-    return last;
-  };
-  return +Math.min(extent(-1), extent(1)).toFixed(2);
-}
-
 function compiledSections() {
   if (!nijoRotary) return (route.roadSections ?? []).map(compiledRouteObject);
   const rejoinRawS = nijoRotary.rejoin.index * 2;
@@ -1504,9 +1485,6 @@ const network = {
     },
     roads: roadOverlays,
   },
-  customObjects: [
-    { id: "toji-five-story-pagoda", kind: "landmark", anchor: "terrain" },
-  ],
 };
 
 // The bus path and both lateral corners must be covered by selected PLATEAU

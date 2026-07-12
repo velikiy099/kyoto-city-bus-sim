@@ -105,9 +105,3 @@ export function coin() {
   blip(2600, 0.09, "square", 0.05);
   blip(3400, 0.16, "sine", 0.07, 0.05);
 }
-
-/** 正着チャイム */
-export function ding() {
-  blip(1319, 0.16, "sine", 0.1);
-  blip(1760, 0.4, "sine", 0.1, 0.13);
-}

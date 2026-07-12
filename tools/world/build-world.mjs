@@ -42,7 +42,6 @@ run(python, [
   "--furniture", resolveRoot(out.plateauFurniture),
   "--water", resolveRoot(out.plateauWater),
   "--vegetation", resolveRoot(out.plateauVegetation),
-  "--osm-network", resolveRoot(out.osmNetwork),
   "--osm-visual-source", osmVisualSource,
   "--osm-overlays", resolveRoot(out.osmOverlays),
   "--route-elevation", resolveRoot(out.routeElevation),
