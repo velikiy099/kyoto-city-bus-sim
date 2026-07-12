@@ -45,11 +45,20 @@ export function initAudio() {
 /** 毎フレーム: 速度・アクセルに応じたエンジン音 */
 export function updateEngine(vKmh, throttle) {
   if (!engine) return;
-  const load = Math.min(1, Math.abs(vKmh) / 50);
-  engine.osc.frequency.value = 40 + load * 65 + throttle * 14;
-  engine.oscGain.gain.value = 0.035 + load * 0.045 + throttle * 0.02;
+  const speed = Number.isFinite(vKmh) ? vKmh : 0;
+  const load = Math.min(1, Math.abs(speed) / 50);
+  const throttleLevel = Number.isFinite(throttle) ? throttle : 0;
+  engine.osc.frequency.value = 40 + load * 65 + throttleLevel * 14;
+  engine.oscGain.gain.value = 0.035 + load * 0.045 + throttleLevel * 0.02;
   engine.noiseGain.gain.value = 0.015 + load * 0.05;
   engine.noiseFilter.frequency.value = 100 + load * 420;
+}
+
+/** タイトル画面・結果画面ではエンジン音を止める */
+export function stopEngine() {
+  if (!engine) return;
+  engine.oscGain.gain.value = 0;
+  engine.noiseGain.gain.value = 0;
 }
 
 function blip(freq, dur, type = "sine", gain = 0.12, when = 0) {

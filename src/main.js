@@ -383,7 +383,7 @@ function returnToTitle() {
   state.demoMode = false;
   setPaused(false);
   // 音声を停止
-  sfx.updateEngine(0, "off");
+  sfx.stopEngine();
   // 既存のタイトル画面以外のスクリーンを消す(リザルト等)
   document.querySelectorAll(".screen").forEach((el) => el.remove());
   // バスを始発位置に戻す
@@ -477,7 +477,11 @@ function frame(now) {
     kujoOmiyaS,
   );
   updateCamera(dt);
-  sfx.updateEngine(bus.speedKmh, bus.throttleState);
+  if (state.phase === "RUNNING") {
+    sfx.updateEngine(bus.speedKmh, bus.throttleState);
+  } else {
+    sfx.stopEngine();
+  }
 
   hudTimer -= dt;
   if (hudTimer <= 0 && state.phase !== "TITLE") {
@@ -577,13 +581,20 @@ showTitle((demoMode) => {
 
 // ---------------------------------------------------------------- Shift+R: タイトルへ戻る
 window.game.debug.returnToTitle = returnToTitle;
-window.addEventListener("keydown", (e) => {
-  if (
-    e.code === "KeyR" &&
-    e.shiftKey &&
+function isReturnToTitleShortcut(e) {
+  // Keyboard layouts may expose either `code` or the shifted character in
+  // `key`; accept both so the documented shortcut works consistently.
+  return (
     !e.repeat &&
-    state.phase === "RUNNING"
-  ) {
+    e.shiftKey &&
+    (e.code === "KeyR" || e.key?.toLowerCase() === "r")
+  );
+}
+window.addEventListener("keydown", (e) => {
+  // The shortcut is also useful from the result screen, and should be
+  // ignored only while the title screen is already visible.
+  if (isReturnToTitleShortcut(e) && state.phase !== "TITLE") {
+    e.preventDefault();
     returnToTitle();
   }
 });
