@@ -34,7 +34,11 @@ export function showTitle(onStart) {
   `;
   document.body.appendChild(div);
 
+  let started = false;
   function startGame(demoMode) {
+    if (started) return;
+    started = true;
+    document.removeEventListener("keydown", onKeyDown);
     div.remove();
     onStart(demoMode);
   }

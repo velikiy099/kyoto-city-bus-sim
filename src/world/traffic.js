@@ -482,7 +482,35 @@ function buildGraphTraffic(scene, path, events, signalTools) {
       }
       collisionCooldown = Math.max(0, collisionCooldown - dt);
     },
-    leadGapAhead() { return null; },
+    /**
+     * autoDrive用: グラフ上のNPCのうち、本線上で自車と同方向・同車線に
+     * 近い車両までの実車間を返す。交差道路上の車は進行方向が一致しない
+     * ため除外し、交差点付近の横切り車を同行車と誤認しない。
+     */
+    leadGapAhead(busS, busLat, maxDist = 80) {
+      let best = null;
+      for (const agent of agents) {
+        if (!agent.path || agent.path.connector) continue;
+        const projection = path.closestS(
+          [agent.outer.position.x, agent.outer.position.z],
+          busS,
+          Math.max(150, maxDist + 50),
+        );
+        if (projection.s <= busS || projection.s - busS > maxDist) continue;
+        if (projection.dist > 9 || Math.abs(projection.lateral - busLat) > 2.5) continue;
+        const tangent = path.getTangent(projection.s);
+        const heading = agent.outer.rotation.y;
+        const forward = [Math.sin(heading), Math.cos(heading)];
+        if (forward[0] * tangent[0] + forward[1] * tangent[1] < 0.8) continue;
+        // Reject a geometrically nearby road at a different height, such as a
+        // bridge or underpass crossing the bus route.
+        const busY = elevationAt(busS);
+        if (Math.abs(agent.outer.position.y - busY) > 2.5) continue;
+        const gap = projection.s - busS - (agent.length + 11.4) * 0.5;
+        if (gap > 0 && gap < maxDist && (best == null || gap < best)) best = gap;
+      }
+      return best;
+    },
     nextSignal(busS) {
       let best = null;
       for (const sig of signalTools.signals) {
