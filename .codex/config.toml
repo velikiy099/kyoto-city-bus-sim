@@ -1,0 +1,3 @@
+[mcp_servers.blender]
+command = "/opt/homebrew/bin/uvx"
+args = ["blender-mcp"]
