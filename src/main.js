@@ -516,6 +516,7 @@ setupDebug({
   bus,
   path,
   route,
+  traffic,
   scene,
   camera,
   tick: (dt, e) => {

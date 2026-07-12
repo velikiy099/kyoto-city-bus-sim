@@ -5,6 +5,7 @@ import {
   laneCenterAt,
   halfWidthAt,
 } from "../../route/routeData.js";
+import { signalStopLineS, busSignalStopTargetS } from "./dynamics.js";
 
 const mat = (color) => new THREE.MeshLambertMaterial({ color });
 const signalMat = (color) => new THREE.MeshBasicMaterial({ color });
@@ -26,6 +27,15 @@ function makeCylinderBetween(a, b, radius, color) {
 }
 
 const stopS = (name) => route.stops.find((st) => st.name === name)?.s ?? null;
+
+export const nodePhase = (id) =>
+  [...String(id ?? "")].reduce(
+    (hash, character) => (hash * 33 + character.charCodeAt(0)) % 42,
+    0,
+  );
+
+export const isNpcStopPhase = (nodeId, simulationTime) =>
+  ((simulationTime + nodePhase(nodeId)) % 42) >= 22;
 
 function fallbackSignalPositions(path) {
   const SIG_STOPS = [
@@ -188,5 +198,54 @@ export function buildSignals(group, path) {
     });
   }
 
-  return { signals, paintHead };
+  let lastBusS = 0;
+  const update = (dt, busS = 0, busV = 0, onRedLight) => {
+    for (const sig of signals) {
+      sig.phase = (sig.phase + dt) % CYCLE;
+      const state = sig.phase < GREEN ? "green" : sig.phase < GREEN + YELLOW ? "yellow" : "red";
+      if (state !== sig.state) {
+        sig.state = state;
+        for (const head of sig.mainHeads) paintHead(head, state);
+      }
+      const crossState = sig.phase >= 26 && sig.phase < 40
+        ? (sig.phase < 38 ? "green" : "yellow")
+        : "red";
+      if (crossState !== sig.crossState) {
+        sig.crossState = crossState;
+        for (const head of sig.crossHeads) paintHead(head, crossState);
+      }
+      const lineS = signalStopLineS(sig.s);
+      if (state === "red" && lastBusS < lineS && busS >= lineS && busV > 1.5) {
+        onRedLight?.();
+      }
+    }
+    lastBusS = busS;
+  };
+
+  const nextSignal = (busS) => {
+    let best = null;
+    for (const sig of signals) {
+      const d = sig.s - busS;
+      if (d > -5 && (!best || d < best.d)) best = { d, state: sig.state };
+    }
+    return best;
+  };
+
+  const redStopTarget = (busS, busV) => {
+    for (const sig of signals) {
+      const target = busSignalStopTargetS(sig.s);
+      const d = target - busS;
+      if (d >= 0 && d < 90 && sig.state !== "green") return busS + d;
+    }
+    return null;
+  };
+
+  return {
+    signals,
+    paintHead,
+    update,
+    isNpcStopPhase,
+    nextSignal,
+    redStopTarget,
+  };
 }

@@ -188,7 +188,8 @@ const scenery = fs.readFileSync("src/world/declarative/buildWorldScenery.js", "u
 const config = fs.readFileSync("src/world/declarative/config.js", "utf8");
 const traffic = [
   fs.readFileSync("src/world/traffic/dynamics.js", "utf8"),
-  fs.readFileSync("src/world/traffic/graphTraffic.js", "utf8"),
+  fs.readFileSync("src/world/traffic/agents.js", "utf8"),
+  fs.readFileSync("src/world/traffic/graph.js", "utf8"),
 ].join("\n");
 const routeDataSource = fs.readFileSync("src/route/routeData.js", "utf8");
 const heightSampler = fs.readFileSync("src/world/declarative/continuousTerrain.js", "utf8");
@@ -202,11 +203,11 @@ assert(config.includes("transportation: true"), "PLATEAU transportation surfaces
 assert(!config.includes("osmRouteSurface"), "OSM route surface option must not exist");
 assert(!main.includes("buildRoad("), "OSM route surface renderer is still wired into main.js");
 assert(plateauRenderer.includes("compiledRoadDetailMeshes"), "Compiled OSM road details are not rendered on PLATEAU surfaces");
-for (const marker of ["idmAcceleration", "orientedBoxesOverlap", "junctionBusy", "chooseConnector"]) {
+for (const marker of ["idmAcceleration", "orientedBoxesOverlap", "junctionBusy", "chooseNextConnector"]) {
   assert(traffic.includes(marker), `Traffic safety feature missing: ${marker}`);
 }
 assert(railways.includes("terrainHeightAtWorld"), "Railway/viaduct ground structures are not PLATEAU-ground-aware");
-assert(traffic.includes("sample(agent.path, agent.distance)"), "NPC pose is not sampled from compiled lane geometry");
+assert(traffic.includes("agent.cursor.pose()"), "NPC pose is not sampled from compiled lane geometry");
 assert(routeDataSource.includes('import drivingNetwork from "../data/generated/driving-network.json"'), "Runtime does not use the compiled driving network");
 assert(routeDataSource.includes("return networkNodeAt(s).y;"), "Road height is not read from the compiled PLATEAU driving network");
 assert(routeDataSource.includes("export function surfaceElevationAt(s)"), "Vehicles do not use the compiled PLATEAU road surface");

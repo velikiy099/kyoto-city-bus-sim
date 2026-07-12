@@ -23,6 +23,25 @@ export const CFG = {
   road: {
     offroadMargin: 1.0, // 道路端からこれ以上で場外
   },
+  // --- NPC交通 ---
+  traffic: {
+    // 次エッジの highway 種別でコネクタを選ぶ重み
+    routeWeights: {
+      motorway: 6,
+      motorway_link: 2,
+      trunk: 5,
+      primary: 4,
+      secondary: 3,
+      tertiary: 2,
+      unclassified: 1,
+      residential: 0.7,
+      service: 0.2,
+    },
+    driver: {
+      turnWeightFactor: 0.35, // 旋回コネクタの重み係数(直進=1.0)
+      minStraightAfterTurn: 100, // 旋回後に再旋回しない距離 [m]
+    },
+  },
   // --- 運行 ---
   ops: {
     doorTime: 1.8, // ドア開閉アニメ [s]

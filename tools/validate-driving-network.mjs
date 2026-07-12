@@ -215,7 +215,8 @@ const scenery = fs.readFileSync("src/world/declarative/buildWorldScenery.js", "u
 const landmarks = fs.readFileSync("src/world/landmarks.js", "utf8");
 const traffic = [
   fs.readFileSync("src/world/traffic/index.js", "utf8"),
-  fs.readFileSync("src/world/traffic/graphTraffic.js", "utf8"),
+  fs.readFileSync("src/world/traffic/agents.js", "utf8"),
+  fs.readFileSync("src/world/traffic/graph.js", "utf8"),
 ].join("\n");
 const plateauRenderer = fs.readFileSync("src/world/declarative/PlateauWorldRenderer.js", "utf8");
 assert(routeData.includes('import drivingNetwork from "../data/generated/driving-network.json"'), "Runtime does not load the compiled network");

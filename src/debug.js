@@ -4,7 +4,7 @@ import { speedLimitAt } from "./route/routeData.js";
 
 /**
  * デバッグ/自動運転。window.game に API を公開する。
- * ctx: { bus, path, route, getState } — getState() は毎回最新のゲーム状態を返す
+ * ctx: { bus, path, route, traffic, getState } — getState() は毎回最新のゲーム状態を返す
  */
 export const dbg = {
   autoDrive: false,
@@ -84,6 +84,7 @@ export function setupDebug(ctx) {
   const { bus, path, route } = ctx;
   window.game = {
     _ctx: ctx,
+    traffic: ctx.traffic,
     input: {
       override: (o) => input.setOverride(o),
       clear: () => input.setOverride(null),
