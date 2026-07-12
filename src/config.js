@@ -30,6 +30,7 @@ export const CFG = {
       physicsRadius: 120, // 自車からこれ以内で物理LODへ昇格 [m]
       simpleRadius: 160, // これ以遠で簡易LODへ降格 [m](ヒステリシス40m)
       maxPhysicsVehicles: 20, // 物理LODの同時台数上限
+      cullRadius: 700, // これ以遠は走行更新を続けつつ描画しない [m]
     },
     physics: {
       // NpcPhysicsのパラメータ(車種別)。意味はCFG.busと同じ。
@@ -100,6 +101,8 @@ export const CFG = {
       maxLatAccel: 2.5, // カーブ減速の横加速度上限 [m/s²]
       lookAheadMin: 5, // pure pursuit先読み距離の下限 [m]
       lookAheadMax: 22, // pure pursuit先読み距離の上限 [m]
+      headway: 1.35, // IDMの希望車間時間 [s]
+      minGap: 3.2, // IDMの停止時最小車間 [m]
     },
   },
   // --- 運行 ---

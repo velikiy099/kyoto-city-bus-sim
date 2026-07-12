@@ -54,6 +54,14 @@ export function createGraphRuntime(trafficGraph) {
   for (const connector of graph.connectors ?? []) {
     makePath(connector.id, tessellateBezier(connector.points), { connector });
   }
+  const edgeEndHeading = new Map();
+  for (const edge of graph.edges ?? []) {
+    const path = paths.get(edge.id);
+    if (!path || path.points.length < 2) continue;
+    const a = path.points.at(-2);
+    const b = path.points.at(-1);
+    edgeEndHeading.set(edge.id, Math.atan2(b[0] - a[0], b[2] - a[2]));
+  }
 
   const pointInPolygon = (x, z, polygon) => {
     if (!Array.isArray(polygon) || polygon.length < 3) return false;
@@ -182,6 +190,7 @@ export function createGraphRuntime(trafficGraph) {
     edgeById,
     nodeById,
     connectorsByEdge,
+    edgeEndHeading,
     spawnEdges,
     sinkNodeIds,
     regionMultiplier,
@@ -376,12 +385,81 @@ export class RouteCursor {
           while (deltaHeading < -Math.PI) deltaHeading += 2 * Math.PI;
           headingErr = Math.abs(deltaHeading);
         }
+        const headingCompatible = referenceHeading == null || headingErr <= Math.PI / 3;
+        if (
+          !best
+          || (headingCompatible && !best.headingCompatible)
+          || (
+            headingCompatible === best.headingCompatible
+            && (
+              lateral < best.lateral - 1e-9
+              || (Math.abs(lateral - best.lateral) <= 1e-9 && deltaArc > best.deltaArc)
+            )
+          )
+        ) {
+          best = { deltaArc, lateral, headingErr, headingCompatible };
+        }
+      }
+
+      offsetToStart += entryIndex === 0 ? item.length - this.distance : item.length;
+      if (offsetToStart > lookAhead) break;
+    }
+    return best;
+  }
+
+  /** 任意の平面位置を、現在位置から前方の経路へ射影する。 */
+  projectPoint(x, z, maxAhead = 6) {
+    if (!this.current || !Number.isFinite(x) || !Number.isFinite(z)) return null;
+    const lookAhead = Math.max(0, Number.isFinite(maxAhead) ? maxAhead : 6);
+    let offsetToStart = 0;
+    let best = null;
+
+    for (let entryIndex = 0; entryIndex < this.entries.length; entryIndex++) {
+      const item = this.entries[entryIndex].item;
+      const localStart = entryIndex === 0 ? this.distance : 0;
+      const localEnd = entryIndex === 0
+        ? Math.min(item.length, this.distance + lookAhead)
+        : Math.min(item.length, lookAhead - offsetToStart);
+      if (localEnd < localStart) {
+        if (entryIndex > 0) break;
+        continue;
+      }
+
+      for (let segmentIndex = 0; segmentIndex < item.points.length - 1; segmentIndex++) {
+        const a = item.points[segmentIndex];
+        const b = item.points[segmentIndex + 1];
+        const dx = b[0] - a[0];
+        const dz = b[2] - a[2];
+        const segmentLength = Math.hypot(dx, dz);
+        if (!(segmentLength > 1e-9)) continue;
+        const segmentStart = item.cumulative[segmentIndex];
+        const segmentEnd = item.cumulative[segmentIndex + 1];
+        const rangeStart = Math.max(segmentStart, localStart);
+        const rangeEnd = Math.min(segmentEnd, localEnd);
+        if (rangeEnd < rangeStart) continue;
+
+        const lenSq = dx * dx + dz * dz;
+        const rawT = ((x - a[0]) * dx + (z - a[2]) * dz) / lenSq;
+        const rangeT0 = (rangeStart - segmentStart) / segmentLength;
+        const rangeT1 = (rangeEnd - segmentStart) / segmentLength;
+        const t = Math.max(rangeT0, Math.min(rangeT1, rawT));
+        const px = a[0] + dx * t;
+        const pz = a[2] + dz * t;
+        const lateral = Math.hypot(x - px, z - pz);
+        const distanceOnItem = segmentStart + segmentLength * t;
+        const arcAhead = entryIndex === 0
+          ? Math.max(0, distanceOnItem - this.distance)
+          : Math.max(0, offsetToStart + distanceOnItem);
         if (
           !best
           || lateral < best.lateral - 1e-9
-          || (Math.abs(lateral - best.lateral) <= 1e-9 && deltaArc > best.deltaArc)
+          || (Math.abs(lateral - best.lateral) <= 1e-9 && arcAhead > best.arcAhead)
         ) {
-          best = { deltaArc, lateral, headingErr };
+          best = {
+            arcAhead,
+            lateral,
+            segmentHeading: Math.atan2(dx, dz),
+          };
         }
       }
 

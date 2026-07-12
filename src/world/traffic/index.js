@@ -27,6 +27,7 @@ export function buildTraffic(scene, path, events = {}) {
         spawnPointCount: 0,
         blockedTails: 0,
         physicsCount: 0,
+        visibleCount: 0,
         snapBacks: 0,
       },
       update(dt, busS, _busPos, busV) {
@@ -38,6 +39,7 @@ export function buildTraffic(scene, path, events = {}) {
     };
   }
 
+  signalsApi.attachNodes(runtime);
   const spawner = createSpawner(runtime);
   const agentsApi = createTrafficAgents(scene, path, runtime, events, signalsApi, spawner);
   return {

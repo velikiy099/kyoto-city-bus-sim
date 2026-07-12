@@ -198,6 +198,44 @@ export function buildSignals(group, path) {
     });
   }
 
+  const nodeSignalMap = new Map();
+  const attachNodes = (runtime) => {
+    nodeSignalMap.clear();
+    const signalNodes = [...(runtime?.nodeById?.values() ?? [])]
+      .filter((node) => node.signal === true);
+    for (const node of signalNodes) {
+      const [nx, nz] = node.point ?? [];
+      if (!Number.isFinite(nx) || !Number.isFinite(nz)) continue;
+      let best = null;
+      for (const sig of signals) {
+        const [sx, sz] = path.getPoint(sig.s);
+        const distance = Math.hypot(nx - sx, nz - sz);
+        if (distance <= 25 && (!best || distance < best.distance)) {
+          best = { sig, distance };
+        }
+      }
+      if (best) {
+        nodeSignalMap.set(node.id, {
+          sig: best.sig,
+          mainTangent: path.getTangent(best.sig.s),
+        });
+      }
+    }
+    console.debug("signal nodes mapped:", nodeSignalMap.size, "/", signalNodes.length);
+  };
+
+  const shouldNpcStop = (nodeId, approachHeading, simulationTime) => {
+    const mapping = nodeSignalMap.get(nodeId);
+    if (!mapping) return isNpcStopPhase(nodeId, simulationTime);
+    const forward = [Math.sin(approachHeading), Math.cos(approachHeading)];
+    const [tx, tz] = mapping.mainTangent;
+    const mainDot = forward[0] * tx + forward[1] * tz;
+    const state = Math.abs(mainDot) > 0.7
+      ? mapping.sig.state
+      : mapping.sig.crossState;
+    return state !== "green";
+  };
+
   let lastBusS = 0;
   const update = (dt, busS = 0, busV = 0, onRedLight) => {
     for (const sig of signals) {
@@ -245,6 +283,8 @@ export function buildSignals(group, path) {
     paintHead,
     update,
     isNpcStopPhase,
+    attachNodes,
+    shouldNpcStop,
     nextSignal,
     redStopTarget,
   };
