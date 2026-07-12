@@ -1,7 +1,5 @@
 export const WORLD_CONFIG = Object.freeze({
   manifestUrl: "/world/world-manifest.json",
-  defaultMode: "plateau",
-  fallbackToLegacy: false,
   render: {
     // main.js creates the connected PLATEAU grid synchronously so all systems can
     // sample it before asynchronous scenery loading. The renderer replaces that

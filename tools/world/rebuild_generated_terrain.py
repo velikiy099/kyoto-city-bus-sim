@@ -287,7 +287,6 @@ def main():
         "generatedAt": terrain_doc.get("generatedAt"),
         "source": source,
         "grid": grid,
-        "triangles": [],
     }
     OUTPUT_PUBLIC.write_text(json.dumps(output, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     OUTPUT_RUNTIME.parent.mkdir(parents=True, exist_ok=True)

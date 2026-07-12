@@ -36,9 +36,6 @@ const sections = (drivingNetwork.sections ?? []).map((section) => ({
 
 export const route = {
   name: raw.routeName,
-  operator: raw.operator,
-  destination: raw.destination,
-  originName: raw.origin,
   source: raw.source,
   scale: raw.scale,
   path,
@@ -56,12 +53,9 @@ export const route = {
   intersections: drivingNetwork.intersections ?? [],
   turnIntersections: drivingNetwork.turnIntersections ?? [],
   signals: drivingNetwork.signals ?? [],
-  buildings: raw.buildings ?? [],
   osmVegetation,
-  osmStationRoads: drivingNetwork.overlays?.nijoRotary?.stationRoads ?? [],
   railStructures: drivingNetwork.railStructures ?? [],
   elevations: drivingNetwork.structures ?? [],
-  umekojiTrees: raw.umekojiTrees,
   drivingNetwork,
 };
 
@@ -107,14 +101,6 @@ export function driveBoundsAt(s) {
 // The compiled path is already the bus lane. No runtime lateral lane model or
 // bridge-specific merge is permitted.
 export function laneCenterAt() { return 0; }
-export function curbStopLat() { return 0; }
-
-export function turnAllowanceAt(s) {
-  for (const turn of route.turnIntersections) {
-    if (s > turn.sIn - 5 && s < turn.sOut + 30) return (turn.crossWidth ?? 8) / 2 + 5;
-  }
-  return 0;
-}
 export function turnExclusions() {
   const result = [];
   for (const turn of route.turnIntersections) {
@@ -125,7 +111,6 @@ export function turnExclusions() {
 }
 
 export function terrainElevationAt(s) { return networkNodeAt(s).y; }
-export function structuralElevationAt() { return 0; }
 export function elevationAt(s) { return networkNodeAt(s).y; }
 export function surfaceElevationAt(s) { return networkNodeAt(s).y; }
 export function roadAttachmentHalfWidthAt(s) {

@@ -857,8 +857,6 @@ def convert(args) -> dict:
     ) if terrain_raw else None
     stats["terrainSourceTriangles"] = len(terrain_raw)
     stats["terrainGridVertices"] = len(terrain_grid["heights"]) if terrain_grid else 0
-    # Keep the legacy field empty so old renderers cannot display disconnected shards.
-    terrain_triangles = []
     terrain_points_relative = [[p[0], p[1] - datum, p[2]] for p in terrain_points]
     terrain_index = PointElevationIndex(terrain_points_relative) if terrain_points_relative else None
 
@@ -976,7 +974,7 @@ def convert(args) -> dict:
     outputs = {
         "buildings": {"version": 2, "generatedAt": generated_at, "source": source_common, "materials": materials, "features": buildings},
         "transportation": {"version": 2, "generatedAt": generated_at, "source": source_common, "features": transportation},
-        "terrain": {"version": 3, "generatedAt": generated_at, "source": source_common, "grid": terrain_grid, "triangles": terrain_triangles},
+        "terrain": {"version": 3, "generatedAt": generated_at, "source": source_common, "grid": terrain_grid},
         "bridges": {"version": 2, "generatedAt": generated_at, "source": source_common, "features": bridges},
         "furniture": {"version": 2, "generatedAt": generated_at, "source": source_common, "features": furniture},
         "water": {"version": 2, "generatedAt": generated_at, "source": source_common, "features": water},
@@ -988,16 +986,11 @@ def convert(args) -> dict:
         int(cfg["plateau"].get("routeElevationSmoothingWindow", 7)),
     )
     route_profile.update({"generatedAt": generated_at, "source": "PLATEAU dem", "verticalDatumSourceMeters": round(datum, 3)})
-    osm_network = {
-        "version": 2, "generatedAt": generated_at,
-        "source": {"provider": "OpenStreetMap", "relationId": cfg["osm"]["relationId"], "license": cfg["osm"]["license"], "generatedAt": route.get("generatedAt")},
-        "authority": cfg["osm"]["authority"],
-        "route": {"name": route.get("routeName"), "path": route.get("path", []), "roadSections": route.get("roadSections", [])},
-        "stops": route.get("stops", []), "intersections": route.get("intersections", []),
-        "turnIntersections": route.get("turnIntersections", []), "signals": route.get("signals", []),
-        "extraRoads": route.get("extraRoads", []), "speedZones": route.get("speedZones", []),
-        "osmStationRoads": route.get("osmStationRoads", []),
-        "osmVegetation": route.get("osmVegetation", {}),
+    osm_source = {
+        "provider": "OpenStreetMap",
+        "relationId": cfg["osm"]["relationId"],
+        "license": cfg["osm"]["license"],
+        "generatedAt": route.get("generatedAt"),
     }
     osm_overlay_document = {
         "version": 1,
@@ -1016,15 +1009,14 @@ def convert(args) -> dict:
     for key, output in outputs.items():
         write_json(output_paths[key], output)
     write_json(args.route_elevation, route_profile)
-    write_json(args.osm_network, osm_network)
     write_json(args.osm_overlays, osm_overlay_document)
 
-    counts = {key: len(value.get("features", value.get("triangles", []))) for key, value in outputs.items()}
+    counts = {key: len(value.get("features", [])) for key, value in outputs.items()}
     if terrain_grid:
         counts["terrain"] = max(0, (terrain_grid["width"] - 1) * (terrain_grid["height"] - 1) * 2)
     manifest = {
         "version": 3, "generatedAt": generated_at, "status": "ready",
-        "sources": {"osm": osm_network["source"], "plateau": source_common},
+        "sources": {"osm": osm_source, "plateau": source_common},
         "policies": cfg["integration"],
         "layers": [
             {"id": "terrain", "provider": "plateau", "url": "/world/generated/plateau-terrain.json", "geometry": "connected-grid", "featureCount": counts["terrain"]},
@@ -1035,7 +1027,6 @@ def convert(args) -> dict:
             {"id": "buildings", "provider": "plateau", "url": "/world/generated/plateau-buildings.json", "featureCount": counts["buildings"]},
             {"id": "furniture", "provider": "plateau", "url": "/world/generated/plateau-furniture.json", "featureCount": counts["furniture"], "semanticFallback": "OSM route/network signals"},
             {"id": "osm-road-overlays", "provider": "osm-derived-clipped-to-plateau", "url": "/world/generated/osm-road-overlays.json", "featureCount": osm_overlay_stats["overlayFeatures"]},
-            {"id": "osm-network", "provider": "osm", "url": "/world/generated/osm-network.json"},
         ],
     }
     write_json(args.manifest, manifest)
@@ -1066,7 +1057,6 @@ def main() -> int:
     parser.add_argument("--furniture", type=Path, required=True)
     parser.add_argument("--water", type=Path, required=True)
     parser.add_argument("--vegetation", type=Path, required=True)
-    parser.add_argument("--osm-network", type=Path, required=True)
     parser.add_argument("--osm-visual-source", type=Path, required=True)
     parser.add_argument("--osm-overlays", type=Path, required=True)
     parser.add_argument("--route-elevation", type=Path, required=True)

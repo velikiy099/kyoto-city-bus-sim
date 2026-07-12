@@ -2285,22 +2285,6 @@ out body geom;`,
 );
 out body geom;`,
   );
-  const umekojiTreesData = await loadCachedOrFetch(
-    "umekoji_park_trees.json",
-    `[out:json][timeout:60];
-area["name"="梅小路公園"]["leisure"="park"]->.park;
-(
-  node(area.park)["natural"="tree"];
-  way(area.park)["natural"~"wood|scrub|tree_row"];
-  way(area.park)["landuse"="forest"];
-);
-out geom;
-(
-  way["name"="梅小路公園"]["leisure"="park"];
-  relation["name"="梅小路公園"]["leisure"="park"];
-);
-out geom;`,
-  );
   const ways = rel.members.filter(
     (m) =>
       m.type === "way" &&
@@ -2541,7 +2525,6 @@ out geom;`,
     waterElements,
     extraRoadWays,
     expresswayWays: visualWays,
-    umekojiTreesData,
     source: `OpenStreetMap relations ${RELATION_ID} (route geometry) and ${SOUTHBOUND_RELATION_ID} (southbound stops) © OpenStreetMap contributors (ODbL)`,
   };
 }
@@ -2600,7 +2583,6 @@ function buildFallback() {
     waterElements: [],
     extraRoadWays: EXTRA_ROADS_FALLBACK,
     expresswayWays: [],
-    umekojiTreesData: null,
     source: "fallback: OSM実測停留所座標の直結近似",
   };
 }
@@ -2621,7 +2603,6 @@ async function main() {
     waterElements,
     extraRoadWays,
     expresswayWays,
-    umekojiTreesData,
     source,
   } = fallback ? buildFallback() : await buildFromOSM();
 
@@ -3075,41 +3056,8 @@ async function main() {
 
   const buildings = buildingMetadata(path, cumLen, origin, buildingWays, hwAtS);
 
-  const umekojiTrees = { trees: [], forests: [], treeRows: [] };
-  if (umekojiTreesData) {
-    for (const e of umekojiTreesData.elements) {
-      if (e.type === "node" && e.tags?.natural === "tree") {
-        const pt = project([[e.lat, e.lon]], origin)[0];
-        umekojiTrees.trees.push([
-          +(pt[0] * SCALE).toFixed(1),
-          +(pt[1] * SCALE).toFixed(1),
-        ]);
-      } else if (e.type === "way" && e.tags?.landuse === "forest") {
-        let pts = project(
-          e.geometry.map((p) => [p.lat, p.lon]),
-          origin,
-        ).map((p) => [p[0] * SCALE, p[1] * SCALE]);
-        if (pts.length > 0 && dist2(pts[0], pts[pts.length - 1]) < 0.05)
-          pts.pop();
-        pts = rdp(pts, 1.0 * SCALE);
-        umekojiTrees.forests.push(
-          pts.map((p) => [+p[0].toFixed(1), +p[1].toFixed(1)]),
-        );
-      } else if (e.type === "way" && e.tags?.natural === "tree_row") {
-        const pts = project(
-          e.geometry.map((p) => [p.lat, p.lon]),
-          origin,
-        ).map((p) => [+(p[0] * SCALE).toFixed(1), +(p[1] * SCALE).toFixed(1)]);
-        umekojiTrees.treeRows.push(pts);
-      }
-    }
-  }
-
   const out = {
     routeName: "18号系統",
-    operator: "京都市交通局(横大路営業所)",
-    destination: "大宮通 久我石原町",
-    origin: "二条駅西口",
     source,
     generatedAt: new Date().toISOString(),
     scale: SCALE,
@@ -3140,7 +3088,6 @@ async function main() {
     buildings,
     railStructures,
     elevations,
-    umekojiTrees,
     osmVegetation,
     osmStationRoads: osmVisual.stationRoads,
   };
@@ -3164,9 +3111,6 @@ async function main() {
   );
   console.log(
     `道路区間: ${roadSections.length}  交差点: ${intersections.length}  OSM信号: ${signals.length}  OSM建物: ${buildings.length}  鉄道構造: ${railStructures.length}`,
-  );
-  console.log(
-    `梅小路公園 樹木: 単木${umekojiTrees.trees.length} 樹林${umekojiTrees.forests.length} 並木${umekojiTrees.treeRows.length}`,
   );
   console.log(`右左折交差点: ${turnIntersections.length}`);
   for (const t of turnIntersections) {

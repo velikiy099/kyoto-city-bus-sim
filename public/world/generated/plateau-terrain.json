@@ -1,6 +1,6 @@
 {
   "version": 3,
-  "generatedAt": "2026-07-12T15:19:12.613757+00:00",
+  "generatedAt": "2026-07-12T16:57:03.744614+00:00",
   "source": {
     "provider": "Project PLATEAU",
     "municipalityCode": "26100",
@@ -35193,6 +35193,5 @@
     "connected": true,
     "sourceInfluenceCorridorMeters": 420,
     "extrapolationPaddingMeters": 650.0
-  },
-  "triangles": []
+  }
 }

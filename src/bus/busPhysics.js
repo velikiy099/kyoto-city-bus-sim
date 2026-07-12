@@ -32,12 +32,6 @@ export class BusPhysics {
     return [Math.sin(this.heading), Math.cos(this.heading)];
   }
 
-  /** 前軸(前扉付近)のワールド位置 */
-  frontPos() {
-    const [fx, fz] = this.forward;
-    return [this.x + fx * CFG.bus.wheelbase, this.z + fz * CFG.bus.wheelbase];
-  }
-
   step(dt, { throttle = 0, brake = 0, steer = 0 }) {
     const B = CFG.bus;
     if (this.throttleLocked) throttle = 0;

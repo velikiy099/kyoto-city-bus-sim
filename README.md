@@ -1,122 +1,149 @@
 # 京都市バス 18号系統 運転シミュレーター
 
-京都市バス **18号系統(上鳥羽線)** — 二条駅西口 → 久我石原町(南行き全29停留所)— を運転する
-ブラウザ 3D シミュレーターゲームです。
+京都市バス18号系統（上鳥羽線）の運転シミュレーターです。二条駅西口から久我石原町までの南行き経路を、OpenStreetMapの経路・停留所・交通情報と、京都市の2025年PLATEAU CityGMLデータを使って描画します。
 
-経路の形状と停留所の位置は **OpenStreetMap の実データ**(relation 13027168, © OpenStreetMap
-contributors, ODbL)に基づいています。上鳥羽地区の一方通行(小枝橋〜上鳥羽塔ノ森は南行きと
-北行きで通る道が異なる)も、南行きの実経路(千本通・城南宮道・赤池経由)で再現しています。
-距離は OSM 実距離どおり(約 10.5km)です。
-沿線には東寺五重塔・京都水族館・鴨川(小枝橋)・桂川(久我橋)などが登場します。
+経路は約10.7km、ゲーム内では29停留所を運行します。東寺五重塔、京都水族館、鴨川、桂川などの沿線要素を含みます。
 
-## 遊び方
+## 起動
 
 ```bash
 npm install
-npm run dev   # http://localhost:5173
+npm run dev
 ```
 
-| キー        | 操作                                     |
-| ----------- | ---------------------------------------- |
-| W / ↑       | アクセル                                 |
-| S / ↓       | ブレーキ(停止中に押し直して長押しで後退) |
-| A・D / ←・→ | ハンドル                                 |
-| E           | ドア開閉(停留所に停車中)                 |
-| C           | カメラ切替(追従 / 運転席)                |
-| M           | ミニマップ表示切替                       |
-| R           | 路上に復帰(コース外からは -500点)        |
-| Shift+R     | ゲームリセット(最初からやり直し)         |
+ブラウザで `http://localhost:5173` を開きます。
 
-**運行ルール**: 後乗り・前降り・運賃 230 円均一(実物と同じ)。停止線に前扉を合わせ、
-左に寄せて停車(±1m で「正着!」)。乗降を終えたら、各停留所で定刻を守って発車
-(早発は -300 点)。信号無視・速度超過・急ブレーキ・対向車接触も減点対象です。
-終点到着でスコアとランク(S〜D)が表示されます。
+## 操作
 
-## 路線データの再生成
+| キー | 操作 |
+| --- | --- |
+| W / ↑ | アクセル |
+| S / ↓ | ブレーキ。停止中に押し直して長押しすると後退 |
+| A・D / ←・→ | ハンドル |
+| E | ドア開閉。停留所停車中のみ |
+| C | カメラ切替 |
+| M | ミニマップ表示切替 |
+| R | コース上へ復帰。コース外では減点 |
+| Shift+R | タイトル画面へ戻る |
+
+後乗り・前降り、運賃230円均一、停車位置、定刻発車、信号、速度、急ブレーキ、接触を運行ルールとして扱います。終点到着後にスコアとランクを表示します。
+
+## 路線データ
 
 ```bash
-node tools/build-route-data.mjs            # キャッシュ→なければ Overpass API から取得
-node tools/build-route-data.mjs --fallback # ネット不通時(停留所実座標の直結近似)
+npm run build-data
 ```
 
-Overpass API から 18号系統のリレーション(北行き)を取得し、way 連結 → 南行き反転 →
-一方通行区間の差し替え → 投影 → 交差点フィレット(緩い折れ R18m / 55°以上の右左折は
-R12m+交差点データ化)→ 平滑化 → 2m リサンプル → 停留所・橋・速度ゾーン・交差点・
-信号設置座標・鉄道構造の弧長射影、を行って `src/data/route18.json` を生成します
-(生成物はコミット済み。再生成しなくても遊べます)。描画に必要な情報(右左折交差点の
-形状、信号の柱・灯器のワールド座標、線路の交差方位など)はすべて JSON に入っています。
+OpenStreetMapの関係・way・停留所・交通情報から、次のデータを生成します。
 
-## 完成MAP上面図（ゲームと同じ生成データを確認）
+- `src/data/route18.json`: 経路以外の河川、水域、植生、橋梁、鉄道・高架などの補助メタデータ
+- `src/data/generated/driving-network.json`: 走行経路、路面、停留所、車線、交通グラフ、速度区間
+
+ネットワークへ接続できない場合は、内蔵の停留所座標を使う次のコマンドを実行できます。
 
 ```bash
-npm run map                                   # 全区間 → tools/map.svg(ブラウザで開く)
+node tools/build-route-data.mjs --fallback
+```
+
+## PLATEAUワールドデータ
+
+現行のワールドはPLATEAUを地形・道路面・建物の基準にし、OpenStreetMapを経路・交通・道路詳細・自然要素の補助データとして使用します。
+
+- 地形: PLATEAU DEMを30m間隔の連続グリッドとして使用
+- 道路面・歩道面: PLATEAU `tran`
+- 建物: PLATEAU `bldg` のfootprintと高さ
+- 走行経路・車線・停留所・信号・交通グラフ: OpenStreetMapから生成した driving network
+- 道路詳細: OSM由来の歩道オーバーレイ、コンパイル済みの車線・区画線・横断歩道
+- 河川・水域・植生・橋梁構造・鉄道・高架: 路線データの構造メタデータと自然要素
+
+現在の生成データは、建物17,363件、交通ポリゴン3,988件、地形35,160頂点・69,496三角形、OSM歩道オーバーレイ423件です。選択したPLATEAU範囲では `brid`、`wtr`、`veg`、`frn` の特徴数は0で、該当要素は路線データとOSM由来の描画で補います。
+
+### CityGMLの取得・選択・変換
+
+通常はプロジェクトの設定にあるPLATEAU URLから取得します。
+
+```bash
+npm run world:download
+npm run world:build
+```
+
+DownloadsなどにあるZIPを直接指定する場合は、ZIPをコピーせずに次のように実行できます。
+
+```bash
+npm run world:build -- --archive "$HOME/Downloads/26100_kyoto-shi_city_2025_citygml_1_op.zip"
+```
+
+`world:build` は経路周辺のCityGMLだけを `data/work/plateau/selected` に展開し、PLATEAUレイヤー、連続地形、路面ネットワーク、マニフェストを生成します。選択処理だけを実行する場合は次のコマンドを使います。
+
+```bash
+npm run world:select -- --archive /path/to/26100_kyoto-shi_city_2025_citygml_1_op.zip
+```
+
+OpenStreetMapの経路データを更新してワールドを再生成する場合は次を使います。
+
+```bash
+npm run world:refresh
+```
+
+生成先は次のとおりです。
+
+- `public/world/generated/plateau-terrain.json`
+- `public/world/generated/plateau-transportation.json`
+- `public/world/generated/plateau-buildings.json`
+- `public/world/generated/plateau-bridges.json`
+- `public/world/generated/plateau-water.json`
+- `public/world/generated/plateau-vegetation.json`
+- `public/world/generated/plateau-furniture.json`
+- `public/world/generated/osm-road-overlays.json`
+- `src/world/declarative/generated/terrain-grid.json`
+- `src/world/declarative/generated/route-elevation.json`
+- `public/world/world-manifest.json`
+
+## マップ確認
+
+```bash
+npm run map
+npm run map-check
+```
+
+`npm run map` は `tools/map.svg` を生成します。`map-check` はdriving network、路面、車線、標高、地形接続、道路外ポリゴンを検査します。区間を指定して描画する場合は次のように実行します。
+
+```bash
 node tools/render-map.mjs --from 3400 --to 4250 --terrain-step 1 --out tools/map-omiya.svg
-npm run map-check                             # 車線の急折れ・高度断絶・路面外経路などを検査
 ```
 
-完成品と同じ `driving-network.json`、PLATEAU道路・建物・地形、OSM由来の歩道・
-横断歩道・河川・歩道橋を読みます。自車／同行車、対向車、物理道路中心、NPC交通グラフ、路面補間
-パッチ、高度急変を診断色で重ねるため、生成後の車線ずれをSVG上でも確認できます。
-ワールドデータを再生成したら `npm run map && npm run map-check` を実行してください。
+## デバッグAPI
 
-## デバッグ API(ブラウザコンソール)
+ブラウザコンソールから次のAPIを使用できます。
 
 ```js
-game.debug.autoDrive(true); // 自動運転(全業務を自動でこなす)
-game.debug.timeScale(4); // 倍速
-game.debug.teleport(11); // 停留所11(東寺南門前)の手前へ
-game.debug.fastForward(600); // ゲーム内10分を同期実行(回帰テスト用)
-game.debug.status(); // 現在の運行状態
+game.debug.autoDrive(true);       // 自動運転
+game.debug.timeScale(4);           // 時間倍率
+game.debug.teleport(11);           // 停留所11の手前へ移動
+game.debug.teleportS(5000);        // 経路上の距離[m]へ移動
+game.debug.fastForward(600);       // ゲーム内時間を600秒進める
+game.debug.status();               // 現在の状態
+game.debug.returnToTitle();        // タイトル画面へ戻る
 ```
 
-## 出典・注記
-
-- 経路・停留所: © OpenStreetMap contributors (ODbL) — relation 13027168
-- 系統・運行形態(上鳥羽線、二条駅西口〜久我石原町、後払い230円均一等)は
-  京都市交通局の公開情報を参考にしたゲーム的再現です
-- ダイヤ・乗客数・スコアはゲーム用の創作であり、実際の運行とは異なります
-
-## PLATEAU統合ワールド
-
-通常起動では、PLATEAUを地形・建物・標高の基準として使用します。
-
-- 旧来の標高0m固定の巨大平面は使用しません。
-- PLATEAU DEMを35,160頂点・69,496三角形の単一連続グリッドへ再構成しています。
-- 経路から420mまではPLATEAU由来標高の影響を保持し、その外側は勾配を減衰させながら
-  650m余白まで外挿しています。
-- 建物17,363件はPLATEAUの外形と高さを使用します。京都市データに多かった水平面1枚だけの
-  不完全シェルは破棄し、OSM建物と同じ押し出し方式で立体化します。
-- OSMは経路、車線、一方通行、停留所、信号、交差点、交通接続と区画線のトポロジに使用します。道路面・歩道面・地上高はPLATEAUを使用します。
-  通常起動でOSM建物やOSM平面地面へフォールバックしません。
-- 河川は水色の水面と護岸を描画し、同じ範囲の連続地形を谷状に下げています。
-- 河川・水域・名神高速道路・森林/低木林/樹木・建物の補助表示はOSMのway/relationを使用します。PLATEAUにない桂川も、OSM relation 9459116のメンバーwayを展開して描画します。
-- 河川橋・跨線橋・鉄道高架・高速高架は、PLATEAU地表とデッキ標高を分離し、橋脚をその間に配置します。
-- 大宮跨線橋は大宮木津屋橋交差点の30m南 (`s=3303.7`) を北側の側道分岐・上り坂開始点とし、JR在来線交点 (`s=3543.4`) を唯一の最高点とする絶対路面曲線を使います。自動運転経路は交差点 (`s=3273.7`) から中央車線へ寄せ、橋開始点で合流します。外側側道はPLATEAU地表高のままです。
-- 他車はIDM型の追従、安全間隔付き合流、交差点予約、交差点腕からの動的分岐、
-  安全確認付き車線変更、立体交差を区別する衝突判定を使用します。
-
-アップロード元に含まれていた生成済みDEMは、旧変換処理により経路近傍へすでに切り詰められていました。
-同梱済みの連続グリッドは、残存DEMにPLATEAU建物基部・交通面の標高を加えて再構成しています。
-元のCityGMLを用いて `npm run world:build` を実行した場合は、420mコリドーのDEMを三角形枚数で
-切り捨てず、直接連続グリッドへ変換します。
-
-### 検証
+## 検証
 
 ```bash
 npm run world:validate
 npm run validate:plateau-integration
 npm run validate:terrain-fix
 npm run validate:world-alignment
+npm run validate:structural-road
+npm run validate:driving-network
+npm run validate:bridge-water-alignment
+npm run map-check
 npm run build
 ```
 
-詳細は [`docs/plateau-data-format.md`](docs/plateau-data-format.md) を参照してください。
+データ形式と各レイヤーの役割は [`docs/plateau-data-format.md`](docs/plateau-data-format.md) に記載しています。
 
-### 上面図SVG
+## 出典
 
-```bash
-npm run map
-node tools/render-map.mjs --from 7800 --to 10887.6 --out tools/map-koga.svg
-```
-
-`tools/map.svg` はPLATEAUの道路・建物・地形に加え、OSM道路/水域/植生、歩道橋、横断歩道、独自配置物を別レイヤーで表示します。OSM建物はPLATEAU建物との照合用に取得しますが、ゲーム内・SVGには表示しません。路面補間パッチの赤い診断矩形は表示しません。
+- 経路・停留所・交通情報: © OpenStreetMap contributors（ODbL）、relation 13027168
+- 地形・道路面・建物: Project PLATEAU 京都市2025 CityGML
+- 運賃、ダイヤ、乗客数、スコア: シミュレーター用の設定

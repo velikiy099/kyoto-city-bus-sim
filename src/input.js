@@ -3,17 +3,6 @@ const keys = new Set();
 const pressedEdge = new Set(); // このフレームで押されたキー
 let override = null; // {throttle, brake, steer, door, ...} debug用
 
-const KEYMAP = {
-  KeyW: "throttle",
-  ArrowUp: "throttle",
-  KeyS: "brake",
-  ArrowDown: "brake",
-  KeyA: "left",
-  ArrowLeft: "left",
-  KeyD: "right",
-  ArrowRight: "right",
-};
-
 window.addEventListener("keydown", (e) => {
   if (e.repeat) return;
   keys.add(e.code);

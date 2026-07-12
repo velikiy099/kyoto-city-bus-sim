@@ -191,7 +191,7 @@ if (CHECK) {
   const result = mapChecks();
   for (const message of result.failures) console.error(`FAIL  ${message}`);
   for (const message of result.warnings) console.warn(`WARN  ${message}`);
-  console.log(`\n=== MAP check: FAIL ${result.failures.length} / WARN ${result.warnings.length} ===`);
+console.log(`\n=== MAP check: ${result.failures.length ? "FAIL" : "OK"} ${result.failures.length} / WARN ${result.warnings.length} ===`);
   process.exit(result.failures.length ? 1 : 0);
 }
 

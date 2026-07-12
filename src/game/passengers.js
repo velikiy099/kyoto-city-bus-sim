@@ -58,9 +58,6 @@ export function createPassengers(nStops, seed = (Math.random() * 1e9) | 0) {
     get totalCarried() {
       return totalCarried;
     },
-    demandAt(i) {
-      return { board: board[i], alight: alight[i] };
-    },
     /** 停留所 i に停車義務があるか */
     mustStopAt(i) {
       return board[i] > 0 || alight[i] > 0;

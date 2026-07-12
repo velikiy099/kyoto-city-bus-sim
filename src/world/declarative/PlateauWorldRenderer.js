@@ -140,20 +140,6 @@ function clipPolygonByEdge(polygon, a, b, keepPositive) {
   return clipped;
 }
 
-function clipPolygonToTriangle(polygon, triangle) {
-  const keepPositive = area2d(triangle) >= 0;
-  let clipped = polygon;
-  for (let i = 0; i < triangle.length && clipped.length >= 3; i++) {
-    clipped = clipPolygonByEdge(
-      clipped,
-      triangle[i],
-      triangle[(i + 1) % triangle.length],
-      keepPositive,
-    );
-  }
-  return clipped;
-}
-
 function pointInPolygon(point, polygon) {
   let inside = false;
   for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
@@ -250,36 +236,6 @@ function polygonBounds(polygon) {
 
 function boundsOverlap(a, b) {
   return a.maxX >= b.minX && a.minX <= b.maxX && a.maxZ >= b.minZ && a.minZ <= b.maxZ;
-}
-
-function polygonSamples(polygon, spacing = 8) {
-  const samples = [];
-  let centerX = 0;
-  let centerZ = 0;
-  for (let i = 0; i < polygon.length; i++) {
-    const a = polygon[i];
-    const b = polygon[(i + 1) % polygon.length];
-    centerX += a[0];
-    centerZ += a[2];
-    const length = Math.hypot(b[0] - a[0], b[2] - a[2]);
-    const divisions = Math.max(1, Math.ceil(length / spacing));
-    for (let j = 0; j < divisions; j++) {
-      const t = j / divisions;
-      samples.push([a[0] + (b[0] - a[0]) * t, a[2] + (b[2] - a[2]) * t]);
-    }
-  }
-  samples.push([centerX / polygon.length, centerZ / polygon.length]);
-  return samples;
-}
-
-/** Clip a 2D polygon to a convex corridor quad. */
-function clipPolygonToConvex(polygon, clip) {
-  const keepPositive = area2d(clip) >= 0;
-  let clipped = polygon;
-  for (let i = 0; i < clip.length && clipped.length >= 3; i++) {
-    clipped = clipPolygonByEdge(clipped, clip[i], clip[(i + 1) % clip.length], keepPositive);
-  }
-  return clipped;
 }
 
 function triangulatedXZ(polygon) {
