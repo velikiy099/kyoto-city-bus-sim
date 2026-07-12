@@ -25,6 +25,29 @@ export const CFG = {
   },
   // --- NPC交通 ---
   traffic: {
+    maxVehicles: 64, // 同時存在数の上限
+    spawn: {
+      minDist: 90, // 自車からこれ未満の端点では発生しない [m]
+      maxDist: 1400, // 自車からこれ超の端点では発生しない [m]
+      despawnRadius: 1600, // 自車からこれ以遠に離れた車は消滅 [m]
+      initialFraction: 0.8, // 起動時に maxVehicles×この割合まで初期配置
+      // 端点1レーンあたりの流入量 [台/分]
+      baseRatePerMinute: {
+        motorway: 6,
+        motorway_link: 3,
+        trunk: 6,
+        primary: 5,
+        secondary: 4,
+        tertiary: 3,
+        unclassified: 1.6,
+        residential: 1.0,
+        service: 0.3,
+      },
+    },
+    // 地域ポリゴン(world x-z 座標)。エッジ中点で判定し、
+    // スポーン量と経路重みに掛かる。
+    regions: [],
+    defaultRegionMultiplier: 1.0,
     // 次エッジの highway 種別でコネクタを選ぶ重み
     routeWeights: {
       motorway: 6,

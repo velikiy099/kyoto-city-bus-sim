@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { CFG } from "../../config.js";
 import { elevationAt, laneCenterAt } from "../../route/routeData.js";
 import { makeCar, makeTruck } from "./vehicleModels.js";
 import {
@@ -9,12 +10,13 @@ import {
   SIGNAL_STOP_GAP,
 } from "./dynamics.js";
 import { RouteCursor } from "./graph.js";
+import { createSpawner } from "./spawner.js";
 
 /**
  * コンパイル済みグラフ上を走る NPC エージェント群。
  * 車両の位置は RouteCursor のパスサンプルにスナップしたままにする。
  */
-export function createTrafficAgents(scene, path, runtime, events = {}, signalsApi) {
+export function createTrafficAgents(scene, path, runtime, events = {}, signalsApi, spawner) {
   const group = new THREE.Group();
   scene.add(group);
 
@@ -25,26 +27,29 @@ export function createTrafficAgents(scene, path, runtime, events = {}, signalsAp
     { make: () => makeCar(0x704044), length: 4.5, width: 1.82, height: 1.8, vMax: 11.5 },
     { make: () => makeCar(0x9aa3ab), length: 4.5, width: 1.82, height: 1.8, vMax: 10.5 },
   ];
-  const eligibleEdges = [...runtime.paths.values()].filter((item) => item.edge && item.length > 30);
+  const trafficSpawner = spawner ?? createSpawner(runtime);
   const agents = [];
-  const stats = { horizonFailures: 0 };
+  const stats = {
+    active: 0,
+    spawned: 0,
+    despawned: { sink: 0, blocked: 0, radius: 0, stuck: 0 },
+    spawnPointCount: trafficSpawner.spawnPoints.length,
+    blockedTails: 0,
+  };
+  const maxVehicles = Math.max(0, Math.floor(CFG.traffic.maxVehicles));
   let serial = 0;
   let simulationTime = 0;
   let collisionCooldown = 0;
+  let initialSeeded = false;
   const junctionBusy = new Map();
 
-  const distanceTo = (item, point) => {
-    let best = Infinity;
-    for (const samplePoint of item.points) {
-      best = Math.min(best, Math.hypot(samplePoint[0] - point[0], samplePoint[2] - point[1]));
-    }
-    return best;
-  };
+  const countActive = () => agents.reduce((count, agent) => count + (agent.active ? 1 : 0), 0);
 
   const makeAgent = (index) => {
     const def = defs[index % defs.length];
     const inner = def.make();
     const outer = new THREE.Group();
+    outer.visible = false;
     outer.add(inner);
     group.add(outer);
     return {
@@ -52,44 +57,60 @@ export function createTrafficAgents(scene, path, runtime, events = {}, signalsAp
       outer,
       inner,
       ...def,
+      active: false,
       cursor: null,
-      v: 5 + Math.random() * 2,
+      v: 0,
+      stuckTime: 0,
     };
   };
 
+  for (let i = 0; i < maxVehicles; i++) agents.push(makeAgent(i));
+
   const place = (agent) => {
-    const pose = agent.cursor.pose();
-    if (!pose) return;
+    const pose = agent.cursor ? agent.cursor.pose() : null;
+    if (!pose) return false;
     agent.outer.position.set(pose.x, pose.y + 0.04, pose.z);
     agent.outer.rotation.y = pose.heading;
     agent.inner.rotation.x = pose.pitch;
+    return true;
   };
 
-  const respawn = (agent, busPoint) => {
-    if (!eligibleEdges.length) {
+  /** 端点の先頭20mに車がいる場合は、そこへの流入を受け付けない。 */
+  const tryActivate = (startPath, startDistance = 3, initialSpeed = 5) => {
+    if (!startPath?.id || !runtime.paths.has(startPath.id)) return false;
+    const entryOccupied = agents.some((agent) => agent.active
+      && agent.cursor?.current?.id === startPath.id
+      && agent.cursor.distance < 20);
+    if (entryOccupied) return false;
+
+    const agent = agents.find((candidate) => !candidate.active);
+    if (!agent) return false;
+    const cursor = new RouteCursor(runtime, startPath, startDistance);
+    agent.cursor = cursor;
+    agent.v = Number.isFinite(initialSpeed) ? Math.max(0, initialSpeed) : 5;
+    agent.stuckTime = 0;
+    if (!place(agent)) {
       agent.cursor = null;
-      return;
+      agent.v = 0;
+      return false;
     }
-    const candidates = eligibleEdges
-      .map((item) => ({ item, distance: distanceTo(item, busPoint) }))
-      .filter((item) => item.distance > 75 && item.distance < 1250)
-      .sort((a, b) => a.distance - b.distance);
-    const chosen = (
-      candidates[Math.floor(Math.random() * Math.min(candidates.length, 80))]
-      ?? { item: eligibleEdges[Math.floor(Math.random() * eligibleEdges.length)] }
-    ).item;
-    const distance = Math.min(
-      Math.max(3, 8 + Math.random() * Math.max(1, chosen.length - 26)),
-      Math.max(3, chosen.length - 8),
-    );
-    agent.cursor = new RouteCursor(runtime, chosen, distance);
-    agent.v = 4 + Math.random() * 3;
-    place(agent);
+    agent.active = true;
+    agent.outer.visible = true;
+    stats.spawned++;
+    stats.active++;
+    return true;
   };
 
-  for (let i = 0; i < Math.min(64, Math.max(18, Math.ceil(eligibleEdges.length / 18))); i++) {
-    agents.push(makeAgent(i));
-  }
+  const deactivate = (agent, reason) => {
+    if (!agent.active) return;
+    agent.active = false;
+    agent.cursor = null;
+    agent.v = 0;
+    agent.stuckTime = 0;
+    agent.outer.visible = false;
+    if (stats.despawned[reason] != null) stats.despawned[reason]++;
+    stats.active = countActive();
+  };
 
   const busPose = (busS, busPos, busV, busHeading, busLat) => ({
     x: busPos[0],
@@ -117,6 +138,7 @@ export function createTrafficAgents(scene, path, runtime, events = {}, signalsAp
   const buildPathBuckets = () => {
     const buckets = new Map();
     for (const agent of agents) {
+      if (!agent.active) continue;
       const item = agent.cursor?.current;
       if (!item) continue;
       if (!buckets.has(item.id)) buckets.set(item.id, []);
@@ -133,7 +155,7 @@ export function createTrafficAgents(scene, path, runtime, events = {}, signalsAp
     const bucket = buckets.get(current.id) ?? [];
     const ownDistance = agent.cursor.distance;
     for (const other of bucket) {
-      if (other === agent) continue;
+      if (other === agent || !other.active) continue;
       if (other.cursor.distance > ownDistance) {
         return other.cursor.distance - ownDistance - (agent.length + other.length) * 0.5;
       }
@@ -142,7 +164,7 @@ export function createTrafficAgents(scene, path, runtime, events = {}, signalsAp
     let distanceToEntry = agent.cursor.remainingOnCurrent();
     for (const entry of agent.cursor.entries.slice(1)) {
       const futureBucket = buckets.get(entry.item.id) ?? [];
-      const lead = futureBucket.find((other) => other !== agent);
+      const lead = futureBucket.find((other) => other !== agent && other.active);
       if (lead) {
         return distanceToEntry
           + lead.cursor.distance
@@ -153,6 +175,22 @@ export function createTrafficAgents(scene, path, runtime, events = {}, signalsAp
     return Infinity;
   };
 
+  const horizontalDistanceToBus = (agent, busPoint) => Math.hypot(
+    agent.outer.position.x - busPoint[0],
+    agent.outer.position.z - busPoint[1],
+  );
+
+  const terminalNodeId = (agent) => {
+    const item = agent.cursor?.current;
+    if (item?.edge) return item.edge.to;
+    if (item?.connector) {
+      return runtime.edgeById.get(item.connector.to)?.from ?? item.connector.node;
+    }
+    return null;
+  };
+
+  const endReason = (agent) => runtime.sinkNodeIds.has(terminalNodeId(agent)) ? "sink" : "blocked";
+
   return {
     agents,
     stats,
@@ -160,12 +198,19 @@ export function createTrafficAgents(scene, path, runtime, events = {}, signalsAp
       simulationTime += dt;
       const bus = busPose(busS, busPos, busV, busHeading, busLat);
       const busPoint = [bus.x, bus.z];
-      for (const agent of agents) if (!agent.cursor?.current) respawn(agent, busPoint);
+
+      // 初回だけ、現在の自車位置を基準に全エッジへ初期配置する。
+      if (!initialSeeded) {
+        trafficSpawner.seedInitial(busPoint, tryActivate);
+        initialSeeded = true;
+      }
+      trafficSpawner.update(dt, busPoint, countActive(), tryActivate);
       const buckets = buildPathBuckets();
+      let blockedTails = 0;
 
       for (const agent of agents) {
-        if (!agent.cursor?.current) continue;
-        if (!agent.cursor.ensureHorizon(Math.max(40, agent.v * 4))) stats.horizonFailures++;
+        if (!agent.active || !agent.cursor?.current) continue;
+        const hasHorizon = agent.cursor.ensureHorizon(Math.max(40, agent.v * 4));
 
         const current = agent.cursor.current;
         let gap = gapToLead(agent, buckets);
@@ -203,14 +248,32 @@ export function createTrafficAgents(scene, path, runtime, events = {}, signalsAp
         if (res.enteredConnector) {
           junctionBusy.set(res.enteredConnector.node, simulationTime + 2.5);
         }
-        if (res.ended) respawn(agent, busPoint);
+        if (res.ended) {
+          deactivate(agent, endReason(agent));
+          continue;
+        }
 
         place(agent);
+        const busDistance = horizontalDistanceToBus(agent, busPoint);
+        if (busDistance > CFG.traffic.spawn.despawnRadius) {
+          deactivate(agent, "radius");
+          continue;
+        }
+        if (agent.v < 0.05 && busDistance >= 200) agent.stuckTime += dt;
+        else agent.stuckTime = 0;
+        if (agent.stuckTime >= 120) {
+          deactivate(agent, "stuck");
+          continue;
+        }
+        if (!hasHorizon) blockedTails++;
+
         if (collisionCooldown <= 0 && orientedBoxesOverlap(agentPose(agent), bus)) {
           collisionCooldown = 4;
           events.onCollision?.();
         }
       }
+      stats.blockedTails = blockedTails;
+      stats.active = countActive();
       collisionCooldown = Math.max(0, collisionCooldown - dt);
     },
 
@@ -222,6 +285,7 @@ export function createTrafficAgents(scene, path, runtime, events = {}, signalsAp
     leadGapAhead(busS, busLat, maxDist = 80) {
       let best = null;
       for (const agent of agents) {
+        if (!agent.active) continue;
         const current = agent.cursor?.current;
         if (!current || current.connector) continue;
         const projection = path.closestS(

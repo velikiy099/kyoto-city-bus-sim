@@ -34,6 +34,73 @@ export function createGraphRuntime(trafficGraph) {
   for (const edge of graph.edges ?? []) makePath(edge.id, edge.points, { edge });
   for (const connector of graph.connectors ?? []) makePath(connector.id, connector.points, { connector });
 
+  const pointInPolygon = (x, z, polygon) => {
+    if (!Array.isArray(polygon) || polygon.length < 3) return false;
+    let inside = false;
+    for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+      const a = polygon[i], b = polygon[j];
+      if (!Array.isArray(a) || !Array.isArray(b)) continue;
+      const ax = Number(a[0]), az = Number(a[1]);
+      const bx = Number(b[0]), bz = Number(b[1]);
+      if (![ax, az, bx, bz].every(Number.isFinite)) continue;
+      if ((az > z) !== (bz > z) && x < ((bx - ax) * (z - az)) / (bz - az) + ax) {
+        inside = !inside;
+      }
+    }
+    return inside;
+  };
+
+  // 地域倍率はエッジの中央点で一度だけ判定し、経路選択から参照する。
+  const regions = Array.isArray(CFG.traffic.regions) ? CFG.traffic.regions : [];
+  const configuredDefaultMultiplier = Number(CFG.traffic.defaultRegionMultiplier);
+  const defaultRegionMultiplier = Number.isFinite(configuredDefaultMultiplier)
+    ? configuredDefaultMultiplier
+    : 1;
+  const regionMultipliers = new Map();
+  for (const edge of graph.edges ?? []) {
+    const points = edge.points ?? [];
+    const midpoint = points[Math.floor(points.length / 2)];
+    let multiplier = defaultRegionMultiplier;
+    if (midpoint) {
+      for (const region of regions) {
+        if (!pointInPolygon(midpoint[0], midpoint[2], region?.polygon)) continue;
+        const candidate = Number(region.multiplier);
+        if (Number.isFinite(candidate)) multiplier = candidate;
+        break;
+      }
+    }
+    regionMultipliers.set(edge.id, multiplier);
+  }
+  const regionMultiplier = (edgeId) => regionMultipliers.get(edgeId) ?? defaultRegionMultiplier;
+
+  const spawnEdges = [];
+  const sinkNodeIds = new Set();
+  const isDeadEndNode = (node) => {
+    const incoming = node.incoming ?? [];
+    const outgoing = node.outgoing ?? [];
+    const connectedIds = [...incoming, ...outgoing];
+    if (connectedIds.length > 2) return false;
+    const wayIds = new Set();
+    for (const edgeId of connectedIds) {
+      const edge = edgeById.get(edgeId);
+      if (!edge || edge.wayId == null) return false;
+      wayIds.add(String(edge.wayId));
+    }
+    return wayIds.size === 1;
+  };
+  for (const node of graph.nodes ?? []) {
+    const incoming = node.incoming ?? [];
+    const outgoing = node.outgoing ?? [];
+    const deadEnd = isDeadEndNode(node);
+    if (outgoing.length > 0 && (incoming.length === 0 || deadEnd)) {
+      for (const edgeId of outgoing) {
+        const edge = edgeById.get(edgeId);
+        if (edge && paths.has(edge.id)) spawnEdges.push(edge);
+      }
+    }
+    if (incoming.length > 0 && (outgoing.length === 0 || deadEnd)) sinkNodeIds.add(node.id);
+  }
+
   const sample = (item, distance) => {
     if (!item) return null;
     const target = clamp(distance, 0, item.length);
@@ -75,7 +142,9 @@ export function createGraphRuntime(trafficGraph) {
     const weights = candidates.map((connector) => {
       const toEdge = edgeById.get(connector.to);
       const highwayWeight = CFG.traffic.routeWeights[toEdge?.highway] ?? 1;
-      return highwayWeight * (isTurnConnector(connector) ? CFG.traffic.driver.turnWeightFactor : 1);
+      return highwayWeight
+        * (isTurnConnector(connector) ? CFG.traffic.driver.turnWeightFactor : 1)
+        * regionMultiplier(connector.to);
     });
     const total = weights.reduce((sum, weight) => sum + Math.max(0, weight), 0);
     if (!(total > 0)) return candidates[Math.floor(rng() * candidates.length)] ?? null;
@@ -92,6 +161,9 @@ export function createGraphRuntime(trafficGraph) {
     edgeById,
     nodeById,
     connectorsByEdge,
+    spawnEdges,
+    sinkNodeIds,
+    regionMultiplier,
     sample,
     isTurnConnector,
     chooseNextConnector,
