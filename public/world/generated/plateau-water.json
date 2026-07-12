@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "generatedAt": "2026-07-12T15:19:12.613757+00:00",
+  "source": {
+    "provider": "Project PLATEAU",
+    "municipalityCode": "26100",
+    "municipality": "京都市",
+    "year": 2025,
+    "format": "CityGML",
+    "downloadUrl": "https://assets.cms.plateau.reearth.io/assets/c8/4c6540-2bcf-4773-b21d-74ad2d9f1ba1/26100_kyoto-shi_city_2025_citygml_1_op.zip",
+    "crs": [
+      "EPSG:6697"
+    ],
+    "verticalDatumSourceMeters": 35.485
+  },
+  "features": []
+}

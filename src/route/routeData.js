@@ -1,7 +1,39 @@
-import raw from '../data/route18.json';
-import { RoutePath } from './path.js';
+import raw from "../data/route18.json";
+import drivingNetwork from "../data/generated/driving-network.json";
+import { RoutePath } from "./path.js";
 
-/** 路線データ一式(経路・停留所・橋・速度ゾーン) */
+/**
+ * Runtime reads only this compiled network for driving geometry, road height,
+ * stop poses and traffic semantics.  raw is retained solely for non-driving
+ * OSM metadata such as building source records used when matching PLATEAU
+ * attributes, and vegetation source records.
+ */
+const path = new RoutePath(drivingNetwork.path);
+const surfacePath = new RoutePath(
+  drivingNetwork.surfacePath ?? drivingNetwork.path,
+  2,
+  drivingNetwork.surfaceS,
+);
+const compiledNijoVegetation = drivingNetwork.overlays?.nijoRotary?.vegetation ?? [];
+const osmVegetation = raw.osmVegetation
+  ? {
+      ...raw.osmVegetation,
+      greenAreas: [
+        ...(raw.osmVegetation.greenAreas ?? []).filter((area) => !compiledNijoVegetation.some((compiled) => compiled.id === area.id)),
+        ...compiledNijoVegetation,
+      ],
+    }
+  : null;
+const FALLBACK_SECTION = { from: 0, to: Infinity, lanes: 2, lanesF: 1, lanesB: 1, wL: 4, wR: 4, center: "line" };
+const sections = (drivingNetwork.sections ?? []).map((section) => ({
+  ...FALLBACK_SECTION,
+  ...section,
+  lanesF: section.lanesF ?? Math.max(1, Math.floor((section.lanes ?? 2) / 2)),
+  lanesB: section.lanesB ?? Math.max(1, Math.ceil((section.lanes ?? 2) / 2)),
+  wL: section.wL ?? 4,
+  wR: section.wR ?? 4,
+}));
+
 export const route = {
   name: raw.routeName,
   operator: raw.operator,
@@ -9,161 +41,101 @@ export const route = {
   originName: raw.origin,
   source: raw.source,
   scale: raw.scale,
-  path: new RoutePath(raw.path),
-  // 上鳥羽村山町は北行きのみ停車(南行きは通過)のため除外
-  stops: raw.stops.filter((st) => st.name !== '上鳥羽村山町'), // [{name, s}]
-  bridges: raw.bridges, // [{name, s, length}]
-  speedZones: raw.speedZones, // [{from, to, limit(km/h)}]
-  roadSections: raw.roadSections ?? [], // [{from, to, lanes}]
-  intersections: raw.intersections ?? [], // [{s, heading, width, lanes}]
-  // 右左折交差点 [{s, sIn, sOut, x, z, headingIn, headingOut, angleDeg, crossName, crossWidth, crossLanes}]
-  turnIntersections: raw.turnIntersections ?? [],
-  signals: raw.signals ?? [], // [{s, name}]
-  buildings: raw.buildings ?? [], // [{footprint:[[x,z]], height, color}]
-  railStructures: raw.railStructures ?? [], // [{kind, s, heading, layer}]
+  path,
+  surfacePath,
+  terminalStop: raw.terminalStop ?? null,
+  stops: (drivingNetwork.stops ?? []).filter((stop) => stop.name !== "上鳥羽村山町"),
+  bridges: drivingNetwork.bridges ?? [],
+  rivers: raw.rivers ?? [],
+  waterPolygons: raw.waterPolygons ?? [],
+  osmExpressways: raw.osmExpressways ?? [],
+  trafficPaths: drivingNetwork.trafficPaths ?? [],
+  trafficGraph: drivingNetwork.trafficGraph ?? null,
+  speedZones: drivingNetwork.speedZones ?? [],
+  roadSections: sections,
+  intersections: drivingNetwork.intersections ?? [],
+  turnIntersections: drivingNetwork.turnIntersections ?? [],
+  signals: drivingNetwork.signals ?? [],
+  buildings: raw.buildings ?? [],
+  osmVegetation,
+  osmStationRoads: drivingNetwork.overlays?.nijoRotary?.stationRoads ?? [],
+  railStructures: drivingNetwork.railStructures ?? [],
+  elevations: drivingNetwork.structures ?? [],
+  umekojiTrees: raw.umekojiTrees,
+  drivingNetwork,
 };
 
-// ---- 車線構成(roadSections 由来。build-route-data.mjs の LANE_PLAN が生成) ----
-// {from, to, lanesF(進行方向), lanesB(対向。0=一方通行), wL(左幅), wR(右幅), center:'line'|'none'}
-const FALLBACK_SECTION = { from: 0, to: Infinity, lanes: 2, lanesF: 1, lanesB: 1, wL: 4.0, wR: 4.0, center: 'line' };
-const sections = raw.roadSections?.length
-  ? raw.roadSections.map((sec) => ({
-      ...FALLBACK_SECTION,
-      ...sec,
-      // 旧形式(lanes のみ)へのフォールバック
-      lanesF: sec.lanesF ?? Math.max(1, Math.floor((sec.lanes || 2) / 2)),
-      lanesB: sec.lanesB ?? Math.max(1, Math.ceil((sec.lanes || 2) / 2)),
-      wL: sec.wL ?? Math.max(4.0, (sec.lanes || 2) * 1.6 + 0.8),
-      wR: sec.wR ?? Math.max(4.0, (sec.lanes || 2) * 1.6 + 0.8),
-    }))
-  : [FALLBACK_SECTION];
+function networkNodeAt(s) {
+  const nodes = drivingNetwork.nodes;
+  if (!nodes?.length) return { y: 0 };
+  const step = nodes.length > 1 ? nodes[1].s - nodes[0].s : 2;
+  let index = Math.max(0, Math.min(nodes.length - 2, Math.floor(s / Math.max(step, 0.1))));
+  while (index > 0 && nodes[index].s > s) index--;
+  while (index < nodes.length - 2 && nodes[index + 1].s < s) index++;
+  const a = nodes[index], b = nodes[index + 1];
+  const t = Math.max(0, Math.min(1, (s - a.s) / Math.max(1e-6, b.s - a.s)));
+  return { y: a.y + (b.y - a.y) * t };
+}
 
-/** s 位置の車線区間 */
 export function sectionAt(s) {
-  for (const sec of sections) {
-    if (s >= sec.from && s < sec.to) return sec;
-  }
-  return s < sections[0].from ? sections[0] : sections.at(-1);
+  return sections.find((section) => s >= section.from && s < section.to)
+    ?? (s < sections[0]?.from ? sections[0] : sections.at(-1) ?? FALLBACK_SECTION);
+}
+export function lanesAt(s) { const sec = sectionAt(s); return sec.lanesF + sec.lanesB; }
+export function fwdLanesAt(s) { return sectionAt(s).lanesF; }
+export function backLanesAt(s) { return sectionAt(s).lanesB; }
+export function leftWidthAt(s) { return sectionAt(s).wL; }
+export function rightWidthAt(s) { return sectionAt(s).wR; }
+export function halfWidthAt(s) { const sec = sectionAt(s); return Math.max(sec.wL, sec.wR); }
+
+function driveBoundAt(s, side) {
+  const bounds = drivingNetwork.driveBounds;
+  if (!bounds?.length) return halfWidthAt(s);
+  let index = Math.max(0, Math.min(bounds.length - 2, Math.floor(s / 2)));
+  while (index > 0 && bounds[index].s > s) index--;
+  while (index < bounds.length - 2 && bounds[index + 1].s < s) index++;
+  const a = bounds[index], b = bounds[index + 1];
+  const t = Math.max(0, Math.min(1, (s - a.s) / Math.max(1e-6, b.s - a.s)));
+  return a[side] + (b[side] - a[side]) * t;
 }
 
-/** s 位置の車線数(往復合計、最低1) */
-export function lanesAt(s) {
-  const sec = sectionAt(s);
-  return sec.lanesF + sec.lanesB;
+/** Physical PLATEAU road extents from the already lane-centred driving path. */
+export function driveBoundsAt(s) {
+  return { left: driveBoundAt(s, "left"), right: driveBoundAt(s, "right") };
 }
 
-/** s 位置の進行方向(南行き)車線数 */
-export function fwdLanesAt(s) {
-  return sectionAt(s).lanesF;
-}
+// The compiled path is already the bus lane. No runtime lateral lane model or
+// bridge-specific merge is permitted.
+export function laneCenterAt() { return 0; }
+export function curbStopLat() { return 0; }
 
-/** s 位置の対向(北行き)車線数(0=一方通行) */
-export function backLanesAt(s) {
-  return sectionAt(s).lanesB;
-}
-
-/** s 位置の左側(進行方向)幅: センター〜左路端 [m] */
-export function leftWidthAt(s) {
-  return sectionAt(s).wL;
-}
-
-/** s 位置の右側(対向)幅: センター〜右路端 [m] */
-export function rightWidthAt(s) {
-  return sectionAt(s).wR;
-}
-
-/** s 位置の道路半幅(広い側。対称前提の互換用)[m] */
-export function halfWidthAt(s) {
-  const sec = sectionAt(s);
-  return Math.max(sec.wL, sec.wR);
-}
-
-/** s 位置の標準走行位置(左端車線の中心)の横偏差(左=負)。一方通行は道路中央 */
-export function laneCenterAt(s) {
-  const sec = sectionAt(s);
-  if (!sec.lanesB) return 0;
-  return -(((sec.wL - 0.55) * (sec.lanesF - 0.5)) / sec.lanesF);
-}
-
-/** 停留所への寄せ目標(縁石ギャップ約0.45m) */
-export function curbStopLat(s) {
-  return -(leftWidthAt(s) - 1.7);
-}
-
-/** 右左折交差点付近の追加コース外マージン(交差点ボックス内は舗装が広がるため広く許容) */
 export function turnAllowanceAt(s) {
-  for (const t of route.turnIntersections) {
-    if (s > t.sIn - 5 && s < t.sOut + 30) return (t.crossWidth ?? 8) / 2 + 5;
+  for (const turn of route.turnIntersections) {
+    if (s > turn.sIn - 5 && s < turn.sOut + 30) return (turn.crossWidth ?? 8) / 2 + 5;
   }
   return 0;
 }
-
-/** 右左折交差点のスタブ道路を覆う除外円 [{x,z,r}](街路樹・建物の配置回避用) */
 export function turnExclusions() {
-  const out = [];
-  for (const t of route.turnIntersections) {
-    const hwIn = halfWidthAt(t.sIn);
-    const hwOut = halfWidthAt(t.sOut);
-    out.push({ x: t.x, z: t.z, r: Math.max(hwIn, hwOut) + (t.crossWidth ?? 8) / 2 + 3 });
-    // 直進スタブ(headingIn 前方)と退出道路の後方延長に沿って円を並べる
-    const arms = [
-      [Math.sin(t.headingIn), Math.cos(t.headingIn), hwIn],
-      [-Math.sin(t.headingOut), -Math.cos(t.headingOut), hwOut],
-    ];
-    for (const [dx, dz, hw] of arms) {
-      for (const d of [14, 27, 40]) out.push({ x: t.x + dx * d, z: t.z + dz * d, r: hw + 3.5 });
-    }
+  const result = [];
+  for (const turn of route.turnIntersections) {
+    const halfWidth = Math.max(halfWidthAt(turn.sIn), halfWidthAt(turn.sOut));
+    result.push({ x: turn.x, z: turn.z, r: halfWidth + (turn.crossWidth ?? 8) / 2 + 3 });
   }
-  return out;
+  return result;
 }
 
-// ---- 跨線橋の標高プロファイル ----
-// raw.elevations([{from, to, height, approachIn, approachOut}])で道路を持ち上げる。
-// デッキ区間は一定高、前後アプローチを smoothstep で擦り付ける。
-// 旧形式フォールバック: roadLayer>0 の在来線アンダーパス区間。
-const APPROACH_LEN = 50;
-const elevSrc = raw.elevations?.length
-  ? raw.elevations
-  : (raw.railStructures ?? [])
-      .filter((r) => r.kind === 'conventional-underpass' && (r.roadLayer ?? 0) > 0)
-      .map((r) => ({ from: r.fromS, to: r.toS, height: 4.0 }));
-const elevRamps = elevSrc.map((r) => ({
-  a0: r.from - (r.approachIn ?? APPROACH_LEN),
-  a1: r.from,
-  b0: r.to,
-  b1: r.to + (r.approachOut ?? APPROACH_LEN),
-  h: r.height ?? 4.0,
-}));
-const smoothstep = (t) => t * t * (3 - 2 * t);
-
-/** s 位置の路面標高 [m](跨線橋以外は 0) */
-export function elevationAt(s) {
-  for (const r of elevRamps) {
-    if (s <= r.a0 || s >= r.b1) continue;
-    if (s < r.a1) return r.h * smoothstep((s - r.a0) / (r.a1 - r.a0));
-    if (s <= r.b0) return r.h;
-    return r.h * smoothstep((r.b1 - s) / (r.b1 - r.b0));
-  }
-  return 0;
+export function terrainElevationAt(s) { return networkNodeAt(s).y; }
+export function structuralElevationAt() { return 0; }
+export function elevationAt(s) { return networkNodeAt(s).y; }
+export function surfaceElevationAt(s) { return networkNodeAt(s).y; }
+export function roadAttachmentHalfWidthAt(s) {
+  const section = sectionAt(s);
+  return Math.max(section.wL, section.wR) + (section.sidewalk === "none" ? 0.75 : 3.4);
 }
-
-/** s 増加方向の路面勾配(dy/ds) */
-export function gradeAt(s) {
-  return (elevationAt(s + 3) - elevationAt(s - 3)) / 6;
-}
-
-/** s 位置の制限速度 [m/s] */
+export function gradeAt(s) { return (elevationAt(s + 3) - elevationAt(s - 3)) / 6; }
 export function speedLimitAt(s) {
-  for (const z of route.speedZones) {
-    if (s >= z.from && s < z.to) return z.limit / 3.6;
-  }
-  return 40 / 3.6;
+  return (route.speedZones.find((zone) => s >= zone.from && s < zone.to)?.limit ?? 40) / 3.6;
 }
-
-/** s 位置の制限速度 [km/h](HUD表示用) */
 export function speedLimitKmhAt(s) {
-  for (const z of route.speedZones) {
-    if (s >= z.from && s < z.to) return z.limit;
-  }
-  return 40;
+  return route.speedZones.find((zone) => s >= zone.from && s < zone.to)?.limit ?? 40;
 }

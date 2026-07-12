@@ -1,9 +1,10 @@
-import { CFG } from '../config.js';
+import { CFG } from "../config.js";
 
 function mulberry32(seed) {
   let a = seed >>> 0;
   return () => {
-    a |= 0; a = (a + 0x6d2b79f5) | 0;
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
     let t = Math.imul(a ^ (a >>> 15), 1 | a);
     t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
@@ -20,8 +21,12 @@ export function createPassengers(nStops, seed = (Math.random() * 1e9) | 0) {
 
   const poisson = (lambda) => {
     const L = Math.exp(-lambda);
-    let k = 0, p = 1;
-    do { k++; p *= rand(); } while (p > L);
+    let k = 0,
+      p = 1;
+    do {
+      k++;
+      p *= rand();
+    } while (p > L);
     return k - 1;
   };
 
@@ -47,12 +52,25 @@ export function createPassengers(nStops, seed = (Math.random() * 1e9) | 0) {
     seed,
     board,
     alight,
-    get onboard() { return onboard; },
-    get totalCarried() { return totalCarried; },
-    demandAt(i) { return { board: board[i], alight: alight[i] }; },
+    get onboard() {
+      return onboard;
+    },
+    get totalCarried() {
+      return totalCarried;
+    },
+    demandAt(i) {
+      return { board: board[i], alight: alight[i] };
+    },
     /** 停留所 i に停車義務があるか */
-    mustStopAt(i) { return board[i] > 0 || alight[i] > 0; },
-    boardOne() { onboard++; totalCarried++; },
-    alightOne() { onboard = Math.max(0, onboard - 1); },
+    mustStopAt(i) {
+      return board[i] > 0 || alight[i] > 0;
+    },
+    boardOne() {
+      onboard++;
+      totalCarried++;
+    },
+    alightOne() {
+      onboard = Math.max(0, onboard - 1);
+    },
   };
 }

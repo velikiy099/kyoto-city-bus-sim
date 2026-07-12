@@ -1,0 +1,78 @@
+{
+  "version": 3,
+  "plateau": {
+    "municipalityCode": "26100",
+    "municipality": "京都市",
+    "year": 2025,
+    "format": "CityGML",
+    "downloadUrl": "https://assets.cms.plateau.reearth.io/assets/c8/4c6540-2bcf-4773-b21d-74ad2d9f1ba1/26100_kyoto-shi_city_2025_citygml_1_op.zip",
+    "archiveName": "26100_kyoto-shi_city_2025_citygml_1_op.zip",
+    "featureTypes": [
+      "bldg",
+      "tran",
+      "dem",
+      "brid",
+      "frn",
+      "wtr",
+      "veg"
+    ],
+    "corridorMeters": 240,
+    "terrainCorridorMeters": 420,
+    "minimumHeightMeters": 2.8,
+    "maximumHeightMeters": 180,
+    "maximumRoadSetbackMeters": 15,
+    "sourceCrsFallback": "EPSG:6697",
+    "routeElevationSampleMeters": 10,
+    "routeElevationSmoothingWindow": 7,
+    "maximumTerrainTriangleEdgeMeters": 220,
+    "maximumTerrainTriangles": 70000,
+    "terrainGridSpacingMeters": 30,
+    "terrainGridPaddingMeters": 650,
+    "maximumTerrainGridVertices": 160000,
+    "terrainGridSmoothingPasses": 2,
+    "maximumSurfacePolygonsPerLayer": 60000
+  },
+  "osm": {
+    "relationId": 13027168,
+    "routeFile": "src/data/route18.json",
+    "refreshCommand": "npm run build-data",
+    "trafficBranchMeters": 250,
+    "npcRoadScope": "motor-vehicle-accessible OSM roads; exclude private/parking/driveway and Omiya overpass side roads",
+    "provider": "OpenStreetMap",
+    "license": "ODbL",
+    "authority": {
+      "routeTopology": true,
+      "laneAndTrafficRules": true,
+      "signalsAndStops": true,
+      "roadAndIntersectionNames": true,
+      "visualRoadSurface": false,
+      "visualRoadMarkings": true,
+      "visualSidewalkGeometry": true
+    }
+  },
+  "integration": {
+    "roadVisualPolicy": "plateau-transportation-plus-osm-markings-sidewalks",
+    "terrainPolicy": "plateau-dem-with-route-profile",
+    "buildingPolicy": "plateau-only",
+    "bridgePolicy": "plateau-visual-plus-existing-structural-profile",
+    "signalPolicy": "osm-control-plus-plateau-visual-if-identifiable",
+    "fallbackToLegacy": false
+  },
+  "output": {
+    "publicDirectory": "public/world/generated",
+    "plateauBuildings": "public/world/generated/plateau-buildings.json",
+    "plateauTransportation": "public/world/generated/plateau-transportation.json",
+    "plateauTerrain": "public/world/generated/plateau-terrain.json",
+    "plateauBridges": "public/world/generated/plateau-bridges.json",
+    "plateauFurniture": "public/world/generated/plateau-furniture.json",
+    "plateauWater": "public/world/generated/plateau-water.json",
+    "plateauVegetation": "public/world/generated/plateau-vegetation.json",
+    "osmVisualSource": "data/osm/route18-corridor.json",
+    "osmOverlays": "public/world/generated/osm-road-overlays.json",
+    "osmNetwork": "public/world/generated/osm-network.json",
+    "routeElevation": "src/world/declarative/generated/route-elevation.json",
+    "drivingNetwork": "src/data/generated/driving-network.json",
+    "worldManifest": "public/world/world-manifest.json",
+    "report": "data/work/plateau/build-report.json"
+  }
+}

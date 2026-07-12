@@ -9,7 +9,20 @@
     "preview": "vite preview",
     "build-data": "node tools/build-route-data.mjs",
     "map": "node tools/render-map.mjs",
-    "map-check": "node tools/render-map.mjs --check"
+    "map-check": "node tools/render-map.mjs --check",
+    "world:download": "node tools/world/download-sources.mjs",
+    "world:select": "node tools/world/select-citygml.mjs",
+    "world:build": "node tools/world/build-world.mjs",
+    "world:refresh": "node tools/world/build-world.mjs --refresh-osm",
+    "world:validate": "node tools/world/validate-world-data.mjs",
+    "world:all": "npm run world:download && npm run world:build",
+    "validate:plateau-integration": "node tools/validate-plateau-integration.mjs",
+    "validate:terrain-fix": "node tools/validate-terrain-fix.mjs",
+    "validate:world-alignment": "node tools/validate-world-alignment.mjs",
+    "validate:structural-road": "node tools/validate-structural-road-runtime.mjs",
+    "validate:driving-network": "node tools/validate-driving-network.mjs",
+    "rebuild:route-elevation": "node tools/rebuild-route-elevation-from-grid.mjs",
+    "validate:bridge-water-alignment": "node tools/validate-bridge-water-alignment.mjs"
   },
   "dependencies": {
     "three": "^0.170.0"

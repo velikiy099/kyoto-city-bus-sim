@@ -1,6 +1,6 @@
-import { CFG } from './config.js';
-import { input } from './input.js';
-import { speedLimitAt, laneCenterAt } from './route/routeData.js';
+import { CFG } from "./config.js";
+import { input } from "./input.js";
+import { speedLimitAt } from "./route/routeData.js";
 
 /**
  * デバッグ/自動運転。window.game に API を公開する。
@@ -13,13 +13,25 @@ export const dbg = {
 };
 
 /** 経路追従オートパイロット(pure pursuit + 速度制御)。対向車AIにも流用 */
-export function autoDriveInput(bus, path, s, stopTargetS = null, targetLat = null, vCap = Infinity) {
+export function autoDriveInput(
+  bus,
+  path,
+  s,
+  stopTargetS = null,
+  targetLat = 0,
+  vCap = Infinity,
+) {
   const B = CFG.bus;
   // --- 操舵: 目標横位置を狙う pure pursuit ---
   const Ld = Math.max(8, Math.min(30, 6 + bus.v * 1.8));
   const sAhead = Math.min(s + Ld, path.length - 0.1);
-  const target = laneCenterPoint(path, sAhead, targetLat ?? laneCenterAt(sAhead));
-  const dx = target[0] - bus.x, dz = target[1] - bus.z;
+  const target = laneCenterPoint(
+    path,
+    sAhead,
+    targetLat,
+  );
+  const dx = target[0] - bus.x,
+    dz = target[1] - bus.z;
   const distT = Math.hypot(dx, dz) || 1e-6;
   const targetH = Math.atan2(dx, dz);
   let alpha = targetH - bus.heading;
@@ -35,7 +47,7 @@ export function autoDriveInput(bus, path, s, stopTargetS = null, targetLat = nul
     const k = Math.abs(path.curvatureAt(Math.min(s + ahead, path.length - 1)));
     if (k > 1e-4) {
       // 横G 2.2m/s^2 上限。遠いカーブほど今は速くてよい(間に減速余地)
-      const vCurve = Math.sqrt(2.2 / k) + Math.max(0, (ahead - 15)) * 0.09;
+      const vCurve = Math.sqrt(2.2 / k) + Math.max(0, ahead - 15) * 0.09;
       vTarget = Math.min(vTarget, Math.max(2.5, vCurve));
     }
   }
@@ -43,11 +55,16 @@ export function autoDriveInput(bus, path, s, stopTargetS = null, targetLat = nul
     const d = stopTargetS - s;
     if (d < 0.7) vTarget = 0;
     // 微速下限 0.9m/s を維持: 停止直前まで進みながら縁石へ寄せ続ける
-    else vTarget = Math.min(vTarget, Math.max(0.9, Math.sqrt(2 * 0.9 * (d - 0.6))));
+    else
+      vTarget = Math.min(
+        vTarget,
+        Math.max(0.9, Math.sqrt(2 * 0.9 * (d - 0.6))),
+      );
   }
   vTarget = Math.min(vTarget, vCap);
 
-  let throttle = 0, brake = 0;
+  let throttle = 0,
+    brake = 0;
   const dv = vTarget - bus.v;
   if (vTarget < 0.05 && Math.abs(bus.v) < 0.15) {
     // 完全停止: ブレーキも離す(踏み続けると後退アームの誤発動につながる)
@@ -57,11 +74,10 @@ export function autoDriveInput(bus, path, s, stopTargetS = null, targetLat = nul
   return { throttle, brake, steer };
 }
 
-function laneCenterPoint(path, s, lat = null) {
+function laneCenterPoint(path, s, lat = 0) {
   const [px, pz] = path.getPoint(s);
   const [tx, tz] = path.getTangent(s);
-  const l = lat ?? laneCenterAt(s);
-  return [px + -tz * l, pz + tx * l];
+  return [px + -tz * lat, pz + tx * lat];
 }
 
 export function setupDebug(ctx) {
@@ -88,7 +104,7 @@ export function setupDebug(ctx) {
       },
       teleport(stopIndex, offset = -30) {
         const stop = route.stops[stopIndex];
-        if (!stop) return 'no such stop';
+        if (!stop) return "no such stop";
         const s = Math.max(0, stop.s + offset);
         const p = laneCenterPoint(path, s);
         const [tx, tz] = path.getTangent(s);
@@ -100,9 +116,23 @@ export function setupDebug(ctx) {
         ctx.onTeleport?.(s, stopIndex);
         return `teleported to ${stop.name} ${offset}m`;
       },
+      teleportS(targetS) {
+        const s = Math.max(0, Math.min(path.length - 0.1, Number(targetS) || 0));
+        const p = laneCenterPoint(path, s);
+        const [tx, tz] = path.getTangent(s);
+        bus.x = p[0];
+        bus.z = p[1];
+        bus.heading = Math.atan2(tx, tz);
+        bus.v = 0;
+        bus.delta = 0;
+        ctx.onTeleport?.(s, null);
+        return `teleported to s=${s.toFixed(1)}`;
+      },
       fps() {
         const a = dbg.fpsSamples;
-        return a.length ? +(a.reduce((x, y) => x + y, 0) / a.length).toFixed(1) : 0;
+        return a.length
+          ? +(a.reduce((x, y) => x + y, 0) / a.length).toFixed(1)
+          : 0;
       },
       /**
        * ゲーム内時間を同期的に一気に進める(描画なし・タブ非表示でも動く)。
@@ -115,7 +145,11 @@ export function setupDebug(ctx) {
           ctx.tick?.(1 / 60, false);
           if (until && i % 30 === 0 && until(ctx.getState())) break;
         }
-        return { simulated: `${seconds}s`, wallMs: +(performance.now() - t0).toFixed(0), state: ctx.getState() };
+        return {
+          simulated: `${seconds}s`,
+          wallMs: +(performance.now() - t0).toFixed(0),
+          state: ctx.getState(),
+        };
       },
     },
   };

@@ -8,7 +8,7 @@ export function initAudio() {
   try {
     ctx = new (window.AudioContext || window.webkitAudioContext)();
   } catch {
-    console.info('[sfx] AudioContext unavailable — silent mode');
+    console.info("[sfx] AudioContext unavailable — silent mode");
     return;
   }
 
@@ -21,7 +21,7 @@ export function initAudio() {
   noise.buffer = buf;
   noise.loop = true;
   const noiseFilter = ctx.createBiquadFilter();
-  noiseFilter.type = 'lowpass';
+  noiseFilter.type = "lowpass";
   noiseFilter.frequency.value = 120;
   const noiseGain = ctx.createGain();
   noiseGain.gain.value = 0;
@@ -29,12 +29,12 @@ export function initAudio() {
   noise.start();
 
   const osc = ctx.createOscillator();
-  osc.type = 'sawtooth';
+  osc.type = "sawtooth";
   osc.frequency.value = 42;
   const oscGain = ctx.createGain();
   oscGain.gain.value = 0;
   const oscFilter = ctx.createBiquadFilter();
-  oscFilter.type = 'lowpass';
+  oscFilter.type = "lowpass";
   oscFilter.frequency.value = 220;
   osc.connect(oscFilter).connect(oscGain).connect(ctx.destination);
   osc.start();
@@ -45,14 +45,23 @@ export function initAudio() {
 /** 毎フレーム: 速度・アクセルに応じたエンジン音 */
 export function updateEngine(vKmh, throttle) {
   if (!engine) return;
-  const load = Math.min(1, Math.abs(vKmh) / 50);
-  engine.osc.frequency.value = 40 + load * 65 + throttle * 14;
-  engine.oscGain.gain.value = 0.035 + load * 0.045 + throttle * 0.02;
+  const speed = Number.isFinite(vKmh) ? vKmh : 0;
+  const load = Math.min(1, Math.abs(speed) / 50);
+  const throttleLevel = Number.isFinite(throttle) ? throttle : 0;
+  engine.osc.frequency.value = 40 + load * 65 + throttleLevel * 14;
+  engine.oscGain.gain.value = 0.035 + load * 0.045 + throttleLevel * 0.02;
   engine.noiseGain.gain.value = 0.015 + load * 0.05;
   engine.noiseFilter.frequency.value = 100 + load * 420;
 }
 
-function blip(freq, dur, type = 'sine', gain = 0.12, when = 0) {
+/** タイトル画面・結果画面ではエンジン音を止める */
+export function stopEngine() {
+  if (!engine) return;
+  engine.oscGain.gain.value = 0;
+  engine.noiseGain.gain.value = 0;
+}
+
+function blip(freq, dur, type = "sine", gain = 0.12, when = 0) {
   if (!ctx) return;
   const t = ctx.currentTime + when;
   const o = ctx.createOscillator();
@@ -73,10 +82,11 @@ export function doorAir() {
   const src = ctx.createBufferSource();
   const buf = ctx.createBuffer(1, ctx.sampleRate * dur, ctx.sampleRate);
   const d = buf.getChannelData(0);
-  for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / d.length);
+  for (let i = 0; i < d.length; i++)
+    d[i] = (Math.random() * 2 - 1) * (1 - i / d.length);
   src.buffer = buf;
   const f = ctx.createBiquadFilter();
-  f.type = 'highpass';
+  f.type = "highpass";
   f.frequency.value = 1800;
   const g = ctx.createGain();
   g.gain.value = 0.16;
@@ -86,18 +96,18 @@ export function doorAir() {
 
 /** 降車ボタン「ピンポーン」 */
 export function buzzer() {
-  blip(988, 0.28, 'sine', 0.14);
-  blip(784, 0.5, 'sine', 0.14, 0.22);
+  blip(988, 0.28, "sine", 0.14);
+  blip(784, 0.5, "sine", 0.14, 0.22);
 }
 
 /** 運賃箱「チャリン」 */
 export function coin() {
-  blip(2600, 0.09, 'square', 0.05);
-  blip(3400, 0.16, 'sine', 0.07, 0.05);
+  blip(2600, 0.09, "square", 0.05);
+  blip(3400, 0.16, "sine", 0.07, 0.05);
 }
 
 /** 正着チャイム */
 export function ding() {
-  blip(1319, 0.16, 'sine', 0.1);
-  blip(1760, 0.4, 'sine', 0.1, 0.13);
+  blip(1319, 0.16, "sine", 0.1);
+  blip(1760, 0.4, "sine", 0.1, 0.13);
 }
