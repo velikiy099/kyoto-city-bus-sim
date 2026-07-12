@@ -39,7 +39,6 @@ import {
 } from "./game/timetable.js";
 import { buildLandmarks } from "./world/landmarks.js";
 import { buildNature } from "./world/nature.js";
-import { buildBuildings } from "./world/buildings.js";
 import { buildRailways } from "./world/railways.js";
 import { buildTraffic } from "./world/traffic.js";
 import { buildWorldScenery } from "./world/declarative/buildWorldScenery.js";
@@ -87,7 +86,6 @@ void buildWorldScenery(scene, path, route, {
   buildRailways,
   buildLandmarks,
   buildNature,
-  buildBuildings,
   turnExclusions,
   elevationAt,
   terrainHeightAtWorld,

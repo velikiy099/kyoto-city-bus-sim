@@ -5,7 +5,8 @@ import { RoutePath } from "./path.js";
 /**
  * Runtime reads only this compiled network for driving geometry, road height,
  * stop poses and traffic semantics.  raw is retained solely for non-driving
- * OSM metadata such as building/vegetation source records.
+ * OSM metadata such as building source records used when matching PLATEAU
+ * attributes, and vegetation source records.
  */
 const path = new RoutePath(drivingNetwork.path);
 const surfacePath = new RoutePath(

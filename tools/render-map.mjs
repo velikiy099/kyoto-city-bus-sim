@@ -209,7 +209,7 @@ const height = viewBounds.maxZ - viewBounds.minZ;
 const selectedIds = new Set(network.selectedSurfaceIds ?? []);
 const layers = {
   terrain: [], water: [], osmRoads: [], vegetation: [], roads: [], sidewalks: [],
-  footbridges: [], crosswalks: [], osmBuildings: [], buildings: [], custom: [],
+  footbridges: [], crosswalks: [], buildings: [], custom: [],
   structures: [], patches: [], graph: [], bounds: [], lanes: [], grades: [], labels: [],
 };
 const number = (value) => Number(value).toFixed(2);
@@ -388,11 +388,6 @@ for (const crossing of network.overlays?.roads?.crosswalks ?? []) {
   }
 }
 
-for (const building of raw.buildings ?? []) {
-  const points = building.footprint ?? [];
-  if (points.length < 3 || !overlaps(boundsOfXZ(points), viewBounds)) continue;
-  layers.osmBuildings.push(polygonSvg(points, 'fill="#d39b7a" fill-opacity="0.16" stroke="#a9684f" stroke-width="0.28" stroke-dasharray="1.2 0.7"'));
-}
 for (const building of buildings.features ?? []) {
   const points = building.footprint ?? [];
   if (points.length < 3 || !overlaps(boundsOfXZ(points), viewBounds)) continue;
@@ -553,7 +548,6 @@ const legend = [
   ["#7b6959", "建物（濃色ほど高い）"],
   ["#8b918e", "OSM道路中心線"],
   ["#5d8552", "OSM森林・低木林・緑地"],
-  ["#a9684f", "OSM建物フットプリント"],
   ["#e7b86b", "独自配置物・建物"],
   [terrainColor((terrainMin + terrainMax) / 2), `地形高度 ${terrainMin.toFixed(0)}〜${terrainMax.toFixed(0)}m`],
   ["#4fa8d8", "河川・水域"],
@@ -586,7 +580,6 @@ const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${number(viewBound
 <g id="drive-bounds">${layers.bounds.join("\n")}</g>
 <g id="lane-paths">${layers.lanes.join("\n")}</g>
 <g id="steep-grades">${layers.grades.join("\n")}</g>
-<g id="osm-buildings">${layers.osmBuildings.join("\n")}</g>
 <g id="buildings">${layers.buildings.join("\n")}</g>
 <g id="custom-objects">${layers.custom.join("\n")}</g>
 <g id="labels" font-family="sans-serif">${layers.labels.join("\n")}</g>
@@ -595,4 +588,4 @@ const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${number(viewBound
 
 writeFileSync(OUT, svg);
 console.log(`OK → ${OUT}`);
-console.log(`runtime range ${S_FROM.toFixed(1)}..${S_TO.toFixed(1)}m / terrain ${layers.terrain.length} / water ${layers.water.length} / OSM roads ${layers.osmRoads.length} / OSM vegetation ${layers.vegetation.length} / roads ${layers.roads.length} / sidewalks ${layers.sidewalks.length} / footbridge parts ${layers.footbridges.length} / OSM buildings ${layers.osmBuildings.length} / buildings ${layers.buildings.length} / custom objects ${layers.custom.length} / crosswalk stripes ${layers.crosswalks.length} / lane overlays ${layers.lanes.length} / steep segments ${layers.grades.length}`);
+console.log(`runtime range ${S_FROM.toFixed(1)}..${S_TO.toFixed(1)}m / terrain ${layers.terrain.length} / water ${layers.water.length} / OSM roads ${layers.osmRoads.length} / OSM vegetation ${layers.vegetation.length} / roads ${layers.roads.length} / sidewalks ${layers.sidewalks.length} / footbridge parts ${layers.footbridges.length} / buildings ${layers.buildings.length} / custom objects ${layers.custom.length} / crosswalk stripes ${layers.crosswalks.length} / lane overlays ${layers.lanes.length} / steep segments ${layers.grades.length}`);

@@ -119,4 +119,4 @@ npm run map
 node tools/render-map.mjs --from 7800 --to 10887.6 --out tools/map-koga.svg
 ```
 
-`tools/map.svg` はPLATEAUの道路・建物・地形に加え、OSM道路/水域/植生/建物、歩道橋、横断歩道、独自配置物を別レイヤーで表示します。路面補間パッチの赤い診断矩形は表示しません。
+`tools/map.svg` はPLATEAUの道路・建物・地形に加え、OSM道路/水域/植生、歩道橋、横断歩道、独自配置物を別レイヤーで表示します。OSM建物はPLATEAU建物との照合用に取得しますが、ゲーム内・SVGには表示しません。路面補間パッチの赤い診断矩形は表示しません。
