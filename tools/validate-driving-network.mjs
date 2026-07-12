@@ -217,6 +217,8 @@ const traffic = [
   fs.readFileSync("src/world/traffic/index.js", "utf8"),
   fs.readFileSync("src/world/traffic/agents.js", "utf8"),
   fs.readFileSync("src/world/traffic/graph.js", "utf8"),
+  fs.readFileSync("src/world/traffic/npcPhysics.js", "utf8"),
+  fs.readFileSync("src/world/traffic/npcDriver.js", "utf8"),
 ].join("\n");
 const plateauRenderer = fs.readFileSync("src/world/declarative/PlateauWorldRenderer.js", "utf8");
 assert(routeData.includes('import drivingNetwork from "../data/generated/driving-network.json"'), "Runtime does not load the compiled network");

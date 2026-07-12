@@ -26,6 +26,40 @@ export const CFG = {
   // --- NPC交通 ---
   traffic: {
     maxVehicles: 64, // 同時存在数の上限
+    lod: {
+      physicsRadius: 120, // 自車からこれ以内で物理LODへ昇格 [m]
+      simpleRadius: 160, // これ以遠で簡易LODへ降格 [m](ヒステリシス40m)
+      maxPhysicsVehicles: 20, // 物理LODの同時台数上限
+    },
+    physics: {
+      // NpcPhysicsのパラメータ(車種別)。意味はCFG.busと同じ。
+      car: {
+        wheelbase: 2.7,
+        maxAccel: 2.2,
+        maxBrake: 4.5,
+        throttleTau: 0.15,
+        rollingDrag: 0.3,
+        speedDrag: 0.05,
+        maxSpeed: 16.7,
+        maxSteerDeg: 38,
+        steerSpeedFactor: 7,
+        steerRateDeg: 120,
+        centerRateDeg: 90,
+      },
+      truck: {
+        wheelbase: 3.8,
+        maxAccel: 1.4,
+        maxBrake: 3.8,
+        throttleTau: 0.2,
+        rollingDrag: 0.35,
+        speedDrag: 0.06,
+        maxSpeed: 13.9,
+        maxSteerDeg: 35,
+        steerSpeedFactor: 6,
+        steerRateDeg: 100,
+        centerRateDeg: 80,
+      },
+    },
     spawn: {
       minDist: 90, // 自車からこれ未満の端点では発生しない [m]
       maxDist: 1400, // 自車からこれ超の端点では発生しない [m]
@@ -63,6 +97,9 @@ export const CFG = {
     driver: {
       turnWeightFactor: 0.35, // 旋回コネクタの重み係数(直進=1.0)
       minStraightAfterTurn: 100, // 旋回後に再旋回しない距離 [m]
+      maxLatAccel: 2.5, // カーブ減速の横加速度上限 [m/s²]
+      lookAheadMin: 5, // pure pursuit先読み距離の下限 [m]
+      lookAheadMax: 22, // pure pursuit先読み距離の上限 [m]
     },
   },
   // --- 運行 ---

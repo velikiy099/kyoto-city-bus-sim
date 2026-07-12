@@ -10,22 +10,24 @@ import {
   SIGNAL_STOP_GAP,
 } from "./dynamics.js";
 import { RouteCursor } from "./graph.js";
+import { NpcPhysics } from "./npcPhysics.js";
+import { curveSpeedLimit, pedalsForAccel, steerInput } from "./npcDriver.js";
 import { createSpawner } from "./spawner.js";
 
 /**
  * コンパイル済みグラフ上を走る NPC エージェント群。
- * 車両の位置は RouteCursor のパスサンプルにスナップしたままにする。
+ * 遠方の車両はパスへスナップし、近傍の車両はキネマティック自転車で走行する。
  */
 export function createTrafficAgents(scene, path, runtime, events = {}, signalsApi, spawner) {
   const group = new THREE.Group();
   scene.add(group);
 
   const defs = [
-    { make: () => makeCar(0xd8dde2), length: 4.5, width: 1.82, height: 1.8, vMax: 11 },
-    { make: () => makeCar(0x4e637b), length: 4.5, width: 1.82, height: 1.8, vMax: 10.5 },
-    { make: () => makeTruck(0x7d8288), length: 6.6, width: 2.15, height: 2.8, vMax: 9.5 },
-    { make: () => makeCar(0x704044), length: 4.5, width: 1.82, height: 1.8, vMax: 11.5 },
-    { make: () => makeCar(0x9aa3ab), length: 4.5, width: 1.82, height: 1.8, vMax: 10.5 },
+    { make: () => makeCar(0xd8dde2), length: 4.5, width: 1.82, height: 1.8, vMax: 11, physics: "car" },
+    { make: () => makeCar(0x4e637b), length: 4.5, width: 1.82, height: 1.8, vMax: 10.5, physics: "car" },
+    { make: () => makeTruck(0x7d8288), length: 6.6, width: 2.15, height: 2.8, vMax: 9.5, physics: "truck" },
+    { make: () => makeCar(0x704044), length: 4.5, width: 1.82, height: 1.8, vMax: 11.5, physics: "car" },
+    { make: () => makeCar(0x9aa3ab), length: 4.5, width: 1.82, height: 1.8, vMax: 10.5, physics: "car" },
   ];
   const trafficSpawner = spawner ?? createSpawner(runtime);
   const agents = [];
@@ -35,6 +37,8 @@ export function createTrafficAgents(scene, path, runtime, events = {}, signalsAp
     despawned: { sink: 0, blocked: 0, radius: 0, stuck: 0 },
     spawnPointCount: trafficSpawner.spawnPoints.length,
     blockedTails: 0,
+    physicsCount: 0,
+    snapBacks: 0,
   };
   const maxVehicles = Math.max(0, Math.floor(CFG.traffic.maxVehicles));
   let serial = 0;
@@ -61,6 +65,8 @@ export function createTrafficAgents(scene, path, runtime, events = {}, signalsAp
       cursor: null,
       v: 0,
       stuckTime: 0,
+      lod: "simple",
+      phys: null,
     };
   };
 
@@ -71,6 +77,15 @@ export function createTrafficAgents(scene, path, runtime, events = {}, signalsAp
     if (!pose) return false;
     agent.outer.position.set(pose.x, pose.y + 0.04, pose.z);
     agent.outer.rotation.y = pose.heading;
+    agent.inner.rotation.x = pose.pitch;
+    return true;
+  };
+
+  const placePhysics = (agent) => {
+    const pose = agent.cursor ? agent.cursor.pose() : null;
+    if (!pose || !agent.phys) return false;
+    agent.outer.position.set(agent.phys.x, pose.y + 0.04, agent.phys.z);
+    agent.outer.rotation.y = agent.phys.heading;
     agent.inner.rotation.x = pose.pitch;
     return true;
   };
@@ -89,6 +104,8 @@ export function createTrafficAgents(scene, path, runtime, events = {}, signalsAp
     agent.cursor = cursor;
     agent.v = Number.isFinite(initialSpeed) ? Math.max(0, initialSpeed) : 5;
     agent.stuckTime = 0;
+    agent.lod = "simple";
+    agent.phys = null;
     if (!place(agent)) {
       agent.cursor = null;
       agent.v = 0;
@@ -107,6 +124,8 @@ export function createTrafficAgents(scene, path, runtime, events = {}, signalsAp
     agent.cursor = null;
     agent.v = 0;
     agent.stuckTime = 0;
+    agent.lod = "simple";
+    agent.phys = null;
     agent.outer.visible = false;
     if (stats.despawned[reason] != null) stats.despawned[reason]++;
     stats.active = countActive();
@@ -180,6 +199,61 @@ export function createTrafficAgents(scene, path, runtime, events = {}, signalsAp
     agent.outer.position.z - busPoint[1],
   );
 
+  const promoteToPhysics = (agent) => {
+    if (!agent.active || agent.lod === "physics" || !agent.cursor) return false;
+    const pose = agent.cursor.pose();
+    const params = CFG.traffic.physics[agent.physics] ?? CFG.traffic.physics.car;
+    if (!pose || !params) return false;
+    agent.phys = new NpcPhysics(params, pose.x, pose.z, pose.heading);
+    agent.phys.v = agent.v;
+    agent.lod = "physics";
+    return true;
+  };
+
+  const demoteToSimple = (agent) => {
+    if (agent.lod === "physics" && agent.phys) agent.v = agent.phys.v;
+    agent.phys = null;
+    agent.lod = "simple";
+  };
+
+  /** 自車との距離に応じて、近い車だけを物理LODへ昇格する。 */
+  const updateLod = (busPoint) => {
+    const physicsConfig = CFG.traffic.lod ?? {};
+    const physicsRadius = Number(physicsConfig.physicsRadius);
+    const simpleRadius = Number(physicsConfig.simpleRadius);
+    const maxPhysics = Math.max(0, Math.floor(Number(physicsConfig.maxPhysicsVehicles) || 0));
+    const ranked = agents
+      .filter((agent) => agent.active && agent.cursor?.current)
+      .map((agent) => ({ agent, distance: horizontalDistanceToBus(agent, busPoint) }))
+      .sort((a, b) => a.distance - b.distance);
+
+    for (const { agent, distance } of ranked) {
+      if (agent.lod === "physics" && !agent.phys) agent.lod = "simple";
+      if (agent.lod === "physics" && agent.phys && distance > simpleRadius) {
+        demoteToSimple(agent);
+      }
+    }
+
+    const physicsAgents = ranked
+      .filter(({ agent }) => agent.lod === "physics" && agent.phys)
+      .sort((a, b) => b.distance - a.distance);
+    while (physicsAgents.length > maxPhysics) {
+      demoteToSimple(physicsAgents.shift().agent);
+    }
+
+    let physicsCount = ranked.reduce(
+      (count, { agent }) => count + (agent.lod === "physics" && agent.phys ? 1 : 0),
+      0,
+    );
+    for (const { agent, distance } of ranked) {
+      if (physicsCount >= maxPhysics) break;
+      if (agent.lod === "simple" && distance < physicsRadius && promoteToPhysics(agent)) {
+        physicsCount++;
+      }
+    }
+    stats.physicsCount = physicsCount;
+  };
+
   const terminalNodeId = (agent) => {
     const item = agent.cursor?.current;
     if (item?.edge) return item.edge.to;
@@ -205,12 +279,15 @@ export function createTrafficAgents(scene, path, runtime, events = {}, signalsAp
         initialSeeded = true;
       }
       trafficSpawner.update(dt, busPoint, countActive(), tryActivate);
+      updateLod(busPoint);
       const buckets = buildPathBuckets();
       let blockedTails = 0;
 
       for (const agent of agents) {
         if (!agent.active || !agent.cursor?.current) continue;
-        const hasHorizon = agent.cursor.ensureHorizon(Math.max(40, agent.v * 4));
+        const isPhysics = agent.lod === "physics" && agent.phys;
+        const speed = isPhysics ? agent.phys.v : agent.v;
+        const hasHorizon = agent.cursor.ensureHorizon(Math.max(40, speed * 4));
 
         const current = agent.cursor.current;
         let gap = gapToLead(agent, buckets);
@@ -232,19 +309,63 @@ export function createTrafficAgents(scene, path, runtime, events = {}, signalsAp
           gap = Math.min(gap, Math.max(0, remaining - 3));
         }
 
-        const desired = Math.min(agent.vMax, current.edge?.speed ?? 8.5);
-        agent.v = clamp(
-          agent.v + idmAcceleration(
-            agent.v,
+        const desired = isPhysics
+          ? Math.min(
+            agent.vMax,
+            current.edge?.speed ?? 8.5,
+            curveSpeedLimit(agent.cursor, speed),
+          )
+          : Math.min(agent.vMax, current.edge?.speed ?? 8.5);
+        let res;
+        if (isPhysics) {
+          const accel = idmAcceleration(
+            agent.phys.v,
             desired,
             gap,
             gap < Infinity ? 0 : desired,
             { minimumGap: SIGNAL_STOP_GAP },
-          ) * dt,
-          0,
-          desired,
-        );
-        const res = agent.cursor.advance(agent.v * dt);
+          );
+          const pedals = pedalsForAccel(agent.phys, accel);
+          const steer = steerInput(agent.phys, agent.cursor);
+          agent.phys.step(dt, { ...pedals, steer });
+          const proj = agent.cursor.project(
+            agent.phys.x,
+            agent.phys.z,
+            agent.phys.v * dt * 4 + 4,
+            agent.phys.heading,
+          );
+          if (proj == null || proj.lateral > 3.0) {
+            const pose = agent.cursor.pose();
+            if (pose) {
+              agent.phys.x = pose.x;
+              agent.phys.z = pose.z;
+              agent.phys.heading = pose.heading;
+            }
+            agent.phys.delta = 0;
+            agent.phys.throttleState = 0;
+            agent.phys.v *= 0.5;
+            agent.v = agent.phys.v;
+            stats.snapBacks++;
+            place(agent);
+            if (!hasHorizon) blockedTails++;
+            continue;
+          }
+          agent.v = agent.phys.v;
+          res = agent.cursor.advance(proj.deltaArc);
+        } else {
+          agent.v = clamp(
+            agent.v + idmAcceleration(
+              agent.v,
+              desired,
+              gap,
+              gap < Infinity ? 0 : desired,
+              { minimumGap: SIGNAL_STOP_GAP },
+            ) * dt,
+            0,
+            desired,
+          );
+          res = agent.cursor.advance(agent.v * dt);
+        }
         if (res.enteredConnector) {
           junctionBusy.set(res.enteredConnector.node, simulationTime + 2.5);
         }
@@ -253,7 +374,8 @@ export function createTrafficAgents(scene, path, runtime, events = {}, signalsAp
           continue;
         }
 
-        place(agent);
+        if (isPhysics) placePhysics(agent);
+        else place(agent);
         const busDistance = horizontalDistanceToBus(agent, busPoint);
         if (busDistance > CFG.traffic.spawn.despawnRadius) {
           deactivate(agent, "radius");
@@ -274,6 +396,10 @@ export function createTrafficAgents(scene, path, runtime, events = {}, signalsAp
       }
       stats.blockedTails = blockedTails;
       stats.active = countActive();
+      stats.physicsCount = agents.reduce(
+        (count, agent) => count + (agent.active && agent.lod === "physics" && agent.phys ? 1 : 0),
+        0,
+      );
       collisionCooldown = Math.max(0, collisionCooldown - dt);
     },
 

@@ -16,6 +16,25 @@ export function createGraphRuntime(trafficGraph) {
   }
 
   const paths = new Map();
+  const tessellateBezier = (points, divisions = 12) => {
+    if (!Array.isArray(points) || points.length !== 4) return points;
+    const [a, ctrlA, ctrlB, b] = points;
+    const result = [];
+    for (let index = 0; index <= divisions; index++) {
+      const t = index / divisions;
+      const inv = 1 - t;
+      const w0 = inv ** 3;
+      const w1 = 3 * inv ** 2 * t;
+      const w2 = 3 * inv * t ** 2;
+      const w3 = t ** 3;
+      result.push([
+        w0 * a[0] + w1 * ctrlA[0] + w2 * ctrlB[0] + w3 * b[0],
+        w0 * a[1] + w1 * ctrlA[1] + w2 * ctrlB[1] + w3 * b[1],
+        w0 * a[2] + w1 * ctrlA[2] + w2 * ctrlB[2] + w3 * b[2],
+      ]);
+    }
+    return result;
+  };
   const makePath = (id, points, extra = {}) => {
     if (!points || points.length < 2) return;
     const cumulative = [0];
@@ -32,7 +51,9 @@ export function createGraphRuntime(trafficGraph) {
     });
   };
   for (const edge of graph.edges ?? []) makePath(edge.id, edge.points, { edge });
-  for (const connector of graph.connectors ?? []) makePath(connector.id, connector.points, { connector });
+  for (const connector of graph.connectors ?? []) {
+    makePath(connector.id, tessellateBezier(connector.points), { connector });
+  }
 
   const pointInPolygon = (x, z, polygon) => {
     if (!Array.isArray(polygon) || polygon.length < 3) return false;
@@ -302,5 +323,71 @@ export class RouteCursor {
     }
     const last = this.entries.at(-1).item;
     return this.runtime.sample(last, last.length);
+  }
+
+  /** 現在位置近傍の経路へ、前方限定で平面位置を射影する。 */
+  project(x, z, maxAhead = 6, heading = null) {
+    if (!this.current || !Number.isFinite(x) || !Number.isFinite(z)) return null;
+    const lookAhead = Math.max(6, Number.isFinite(maxAhead) ? maxAhead : 6);
+    const referenceHeading = Number.isFinite(heading) ? heading : null;
+    let offsetToStart = 0;
+    let best = null;
+
+    for (let entryIndex = 0; entryIndex < this.entries.length; entryIndex++) {
+      const item = this.entries[entryIndex].item;
+      const localStart = entryIndex === 0 ? this.distance : 0;
+      const localEnd = entryIndex === 0
+        ? Math.min(item.length, this.distance + lookAhead)
+        : Math.min(item.length, lookAhead - offsetToStart);
+      if (localEnd < localStart) {
+        if (entryIndex > 0) break;
+        continue;
+      }
+
+      for (let segmentIndex = 0; segmentIndex < item.points.length - 1; segmentIndex++) {
+        const a = item.points[segmentIndex];
+        const b = item.points[segmentIndex + 1];
+        const dx = b[0] - a[0];
+        const dz = b[2] - a[2];
+        const segmentLength = Math.hypot(dx, dz);
+        if (!(segmentLength > 1e-9)) continue;
+        const segmentStart = item.cumulative[segmentIndex];
+        const segmentEnd = item.cumulative[segmentIndex + 1];
+        const rangeStart = Math.max(segmentStart, localStart);
+        const rangeEnd = Math.min(segmentEnd, localEnd);
+        if (rangeEnd < rangeStart) continue;
+
+        const lenSq = dx * dx + dz * dz;
+        const rawT = ((x - a[0]) * dx + (z - a[2]) * dz) / lenSq;
+        const rangeT0 = (rangeStart - segmentStart) / segmentLength;
+        const rangeT1 = (rangeEnd - segmentStart) / segmentLength;
+        const t = Math.max(rangeT0, Math.min(rangeT1, rawT));
+        const px = a[0] + dx * t;
+        const pz = a[2] + dz * t;
+        const lateral = Math.hypot(x - px, z - pz);
+        const distanceOnItem = segmentStart + segmentLength * t;
+        const deltaArc = entryIndex === 0
+          ? Math.max(0, distanceOnItem - this.distance)
+          : Math.max(0, offsetToStart + distanceOnItem);
+        let headingErr = 0;
+        if (referenceHeading != null) {
+          let deltaHeading = Math.atan2(dx, dz) - referenceHeading;
+          while (deltaHeading > Math.PI) deltaHeading -= 2 * Math.PI;
+          while (deltaHeading < -Math.PI) deltaHeading += 2 * Math.PI;
+          headingErr = Math.abs(deltaHeading);
+        }
+        if (
+          !best
+          || lateral < best.lateral - 1e-9
+          || (Math.abs(lateral - best.lateral) <= 1e-9 && deltaArc > best.deltaArc)
+        ) {
+          best = { deltaArc, lateral, headingErr };
+        }
+      }
+
+      offsetToStart += entryIndex === 0 ? item.length - this.distance : item.length;
+      if (offsetToStart > lookAhead) break;
+    }
+    return best;
   }
 }

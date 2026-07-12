@@ -26,6 +26,8 @@ export function buildTraffic(scene, path, events = {}) {
         despawned: { sink: 0, blocked: 0, radius: 0, stuck: 0 },
         spawnPointCount: 0,
         blockedTails: 0,
+        physicsCount: 0,
+        snapBacks: 0,
       },
       update(dt, busS, _busPos, busV) {
         signalsApi.update(dt, busS, busV, events.onRedLight);

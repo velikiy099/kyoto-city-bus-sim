@@ -190,6 +190,8 @@ const traffic = [
   fs.readFileSync("src/world/traffic/dynamics.js", "utf8"),
   fs.readFileSync("src/world/traffic/agents.js", "utf8"),
   fs.readFileSync("src/world/traffic/graph.js", "utf8"),
+  fs.readFileSync("src/world/traffic/npcPhysics.js", "utf8"),
+  fs.readFileSync("src/world/traffic/npcDriver.js", "utf8"),
 ].join("\n");
 const routeDataSource = fs.readFileSync("src/route/routeData.js", "utf8");
 const heightSampler = fs.readFileSync("src/world/declarative/continuousTerrain.js", "utf8");
@@ -203,7 +205,7 @@ assert(config.includes("transportation: true"), "PLATEAU transportation surfaces
 assert(!config.includes("osmRouteSurface"), "OSM route surface option must not exist");
 assert(!main.includes("buildRoad("), "OSM route surface renderer is still wired into main.js");
 assert(plateauRenderer.includes("compiledRoadDetailMeshes"), "Compiled OSM road details are not rendered on PLATEAU surfaces");
-for (const marker of ["idmAcceleration", "orientedBoxesOverlap", "junctionBusy", "chooseNextConnector"]) {
+for (const marker of ["idmAcceleration", "orientedBoxesOverlap", "junctionBusy", "chooseNextConnector", "NpcPhysics", "steerInput"]) {
   assert(traffic.includes(marker), `Traffic safety feature missing: ${marker}`);
 }
 assert(railways.includes("terrainHeightAtWorld"), "Railway/viaduct ground structures are not PLATEAU-ground-aware");
