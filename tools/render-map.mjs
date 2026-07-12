@@ -503,6 +503,12 @@ for (const edge of network.trafficGraph?.edges ?? []) {
   if (points.length < 2 || !overlaps(boundsOfXZ(points), viewBounds)) continue;
   layers.graph.push(polylineSvg(points, 'stroke="#6a3da3" stroke-width="0.45" stroke-opacity="0.65"'));
 }
+for (const connector of network.trafficGraph?.connectors ?? []) {
+  const points = connector.points?.map(([x, , z]) => [x, z]) ?? [];
+  if (points.length < 2 || !overlaps(boundsOfXZ(points), viewBounds)) continue;
+  const color = connector.turnDirection === "straight" ? "#a66bd6" : "#e48735";
+  layers.graph.push(polylineSvg(points, `stroke="${color}" stroke-width="0.65" stroke-opacity="0.8" stroke-dasharray="1.8 1"`));
+}
 
 const leftBoundary = [], rightBoundary = [];
 for (const node of rangeNodes) {
@@ -568,6 +574,8 @@ const legend = [
   [terrainColor((terrainMin + terrainMax) / 2), `地形高度 ${terrainMin.toFixed(0)}〜${terrainMax.toFixed(0)}m`],
   ["#4fa8d8", "河川・水域"],
   ["#f0a04b", "歩道橋・階段"],
+  ["#6a3da3", "OSM物理車線・交差点コネクタ"],
+  ["#e48735", "OSM右左折コネクタ"],
   ["#ff173d", "12%超の高度急変"],
 ];
 const legendSvg = [`<rect x="${legendX}" y="${legendZ - 8}" width="120" height="${legend.length * 10 + 9}" rx="2" fill="#ffffff" fill-opacity="0.9" stroke="#62686a" stroke-width="0.25"/>`];

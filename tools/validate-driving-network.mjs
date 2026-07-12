@@ -48,7 +48,7 @@ assert(mainTrafficPaths.every((item) => item.active?.length === network.nodes.le
 const canonicalForward = mainTrafficPaths.find((item) => item.id === "main-forward-lane-0");
 assert(canonicalForward, "Canonical bus/shared forward lane is missing");
 assert(canonicalForward.points.every(([x, z], index) => x === network.nodes[index].x && z === network.nodes[index].z), "Self-driving path and shared NPC lane diverged");
-const sectionAt = (s) => network.sections.find((section) => s >= section.from - 1e-6 && s <= section.to + 1e-6) ?? network.sections.at(-1);
+const sectionAt = (s) => network.sections.find((section) => s >= section.from - 1e-6 && s < section.to - 1e-6) ?? network.sections.at(-1);
 let activeLaneMisses = 0;
 for (const item of mainTrafficPaths) {
   for (let index = 0; index < network.nodes.length; index++) {
@@ -79,6 +79,7 @@ assert(mainTrafficPaths.some((item) => item.laterals?.some((lateral) => Math.abs
 assert(network.trafficPaths?.some((item) => item.role === "merge"), "Connecting-road traffic paths were not compiled");
 assert(network.trafficGraph?.edges?.length > 500, "Unified OSM traffic graph was not compiled");
 assert(network.trafficGraph?.connectors?.length > 100, "Traffic graph junction connectors are missing");
+assert(network.trafficGraph.branchMeters === 250, "Traffic graph branch extent is not 250m");
 assert(
   network.trafficGraph.edges.every((edge) => !omiyaOverpassSideRoadWayIds.has(Number(edge.wayId))),
   "NPC traffic graph still includes Omiya overpass side-road edges",
@@ -106,22 +107,30 @@ const pointSegmentDistance = (x, z, a, b) => {
 const polylineDistance = (x, z, points) => Math.min(
   ...points.slice(1).map((point, index) => pointSegmentDistance(x, z, points[index], point)),
 );
+for (const name of ["御池通", "四条通", "五条通", "七条通"]) {
+  const intersection = network.intersections.find((item) => item.name === name);
+  assert(intersection, `${name} intersection is missing from the compiled route`);
+  const routeNode = network.nodes.reduce((best, node) => Math.abs(node.s - intersection.s) < Math.abs(best.s - intersection.s) ? node : best, network.nodes[0]);
+  const nearbyNodes = network.trafficGraph.nodes.filter((node) => Math.hypot(node.point[0] - routeNode.x, node.point[1] - routeNode.z) < 20);
+  const connector = network.trafficGraph.connectors.find((item) => nearbyNodes.some((node) => node.id === item.node)
+    && [item.from, item.to].some((edgeId) => String(network.trafficGraph.edges.find((edge) => edge.id === edgeId)?.name) === name));
+  assert(connector, `${name} has no OSM shared-node traffic connector`);
+}
 const kujoRouteSamples = network.nodes.filter((node) => node.s > kujoStart + 120 && node.s < kujoEnd - 50);
 const kujoWestboundDistances = kujoRouteSamples.map((node) => Math.min(
   ...kujoWestboundEdges.map((edge) => polylineDistance(node.x, node.z, edge.points)),
 ));
-assert(kujoWestboundEdges.length === 2, "Kujo westbound OSM carriageway edges are missing");
+assert(kujoWestboundEdges.length >= 4 && new Set(kujoWestboundEdges.map((edge) => edge.lane)).has(0) && new Set(kujoWestboundEdges.map((edge) => edge.lane)).has(1), "Kujo westbound OSM carriageway lane edges are missing");
 assert(kujoRouteSamples.length > 100 && Math.max(...kujoWestboundDistances) < 3.5, "Bus route is not on the Kujo westbound carriageway");
+const kujoStop = network.stops.find((stop) => stop.name === "九条大宮");
+const kujoCrossRoadEdges = network.trafficGraph.edges.filter((edge) => String(edge.name).includes("九条通"));
+assert(kujoStop && kujoCrossRoadEdges.length > 0 && Math.min(...kujoCrossRoadEdges.map((edge) => polylineDistance(kujoStop.pose.x, kujoStop.pose.z, edge.points))) < 90, "Kujo-Omiya cross-road branch is missing");
 const kujoSections = network.sections.filter((section) => section.to > kujoStart + 80 && section.from < kujoEnd - 30);
 assert(kujoSections.length > 0 && kujoSections.every((section) => section.lanesF === 2 && section.lanesB === 0), "Kujo route is not compiled as a two-lane westbound one-way");
-const graphEdgesById = new Map(network.trafficGraph.edges.map((edge) => [edge.id, edge]));
-const graphNodesById = new Map(network.trafficGraph.nodes.map((node) => [node.id, node]));
-const forbiddenUnsignalizedRightTurns = network.trafficGraph.connectors.filter((connector) => {
-  const node = graphNodesById.get(connector.node);
-  const roads = [graphEdgesById.get(connector.from), graphEdgesById.get(connector.to)];
-  return connector.right && !node?.signal && roads.some((edge) => /九条|大宮/.test(String(edge?.name)));
-});
-assert(forbiddenUnsignalizedRightTurns.length === 0, "Unsignalized right turns remain on Kujo/Omiya roads");
+// Right turns are not suppressed by road-name exceptions. Their legality is
+// decided by the OSM shared-node topology and signal/turn metadata; only
+// explicit U-turn connectors are prohibited for this NPC model.
+assert(network.trafficGraph.connectors.every((connector) => connector.turnDirection !== "uturn"), "Forbidden U-turn connectors remain in the traffic graph");
 assert((network.overlays?.roads?.medians ?? []).length > 0, "OSM central medians were not compiled");
 assert((network.overlays?.roads?.crosswalks ?? []).length > 0, "Explicit OSM zebra crossings were not compiled");
 const crosswalks = network.overlays?.roads?.crosswalks ?? [];

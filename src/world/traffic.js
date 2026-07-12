@@ -336,6 +336,7 @@ function buildGraphTraffic(scene, path, events, signalTools) {
   let collisionCooldown = 0;
   let lastBusS = 0;
   const junctionBusy = new Map();
+  const nodePhase = (id) => [...String(id ?? "")].reduce((hash, character) => (hash * 33 + character.charCodeAt(0)) % 42, 0);
   const eligibleEdges = [...paths.values()].filter((item) => item.edge && item.length > 30);
   const distanceTo = (item, point) => {
     let best = Infinity;
@@ -433,7 +434,7 @@ function buildGraphTraffic(scene, path, events, signalTools) {
         }
         const node = agent.path.edge ? nodeById.get(agent.path.edge.to) : null;
         const remaining = agent.path.length - agent.distance;
-        const phase = node?.signal ? ((simulationTime + Number.parseInt(node.id.split(":")[0], 10)) % 42) : 0;
+        const phase = node?.signal ? ((simulationTime + nodePhase(node.id)) % 42) : 0;
         const stopForSignal = node?.signal && phase >= 22 && remaining < 22;
         const busyUntil = node ? junctionBusy.get(node.id) ?? 0 : 0;
         const stopForJunction = !node?.signal && busyUntil > simulationTime && remaining < 10;
@@ -736,9 +737,9 @@ export function buildTraffic(scene, path, events = {}) {
     return best;
   }
 
-  // The lane-path traffic below is the runtime source of truth. The unified
-  // graph remains compiled for diagnostics and future cross-road expansion,
-  // but must not bypass the canonical lane paths used by the bus.
+  // The compiled OSM graph is the runtime source for all NPCs, including
+  // off-route roads. The bus still uses its canonical main lane path for
+  // physics, while NPC geometry is snapped to the same PLATEAU road surfaces.
   if (events.useTrafficGraph && events.trafficGraph?.edges?.length) {
     return buildGraphTraffic(scene, path, events, { signals, paintHead });
   }

@@ -19,6 +19,7 @@ const route = read(routeFile);
 const transport = read(transportFile);
 const terrain = read(terrainFile).grid;
 const osmSource = read(osmSourceFile);
+const TRAFFIC_BRANCH_METERS = Number(cfg.osm.trafficBranchMeters ?? 250);
 
 const CELL = 40;
 const SNAP_LIMIT = 12;
@@ -892,20 +893,26 @@ function graphRoadAllowed(road) {
   if (graphRoadCrossesOmiyaBridge(road)) return false;
   if (!GRAPH_ROAD_TYPES.has(tags.highway) || tags.area === "yes") return false;
   if (["no", "private"].includes(tags.access) || ["no", "private"].includes(tags.motor_vehicle)) return false;
+  if (["no", "private"].includes(tags.vehicle)) return false;
+  if (["driveway", "parking_aisle", "drive-through", "alley"].includes(tags.service)) return false;
   return (road.points?.length ?? 0) >= 2;
 }
-function graphLaneOffset(tags, direction) {
+function graphLaneCounts(tags, direction) {
   const oneway = ["yes", "1", "true", "-1"].includes(String(tags.oneway));
-  const lanes = Math.max(1, Math.round(numberTag(tags.lanes, oneway ? 1 : 2)));
-  const width = numberTag(tags.width, lanes * 3.2 + (oneway ? 0 : 0.4));
-  if (oneway) return 0;
-  // OSM road geometry represents the carriageway centre. Keep each direction
-  // on its own half without inventing a second physical road surface.
-  // `oriented` is reversed for direction -1 before this offset is applied.
-  // Keep the same local-side offset for both directions so the two generated
-  // paths occupy opposite physical halves instead of being snapped back onto
-  // the same carriageway centreline.
-  return -Math.max(0.8, width * 0.25);
+  if (oneway) return Math.max(1, Math.round(numberTag(tags.lanes, 1)));
+  const forward = numberTag(tags["lanes:forward"]);
+  const backward = numberTag(tags["lanes:backward"]);
+  if (forward || backward) return Math.max(1, Math.round(direction > 0 ? forward ?? 1 : backward ?? 1));
+  const total = Math.max(2, Math.round(numberTag(tags.lanes, 2)));
+  return Math.max(1, direction > 0 ? Math.ceil(total / 2) : Math.floor(total / 2));
+}
+function graphLaneOffset(tags, direction, laneIndex, laneCount) {
+  const oneway = ["yes", "1", "true", "-1"].includes(String(tags.oneway));
+  // graphLanePoints computes its normal from the oriented travel direction.
+  // Two-way lane zero is the inner lane; one-way lanes are centred on the way.
+  return oneway
+    ? 3.2 * (laneIndex - (laneCount - 1) / 2)
+    : 3.2 * (laneIndex + 0.5);
 }
 function graphLanePoints(points, offset) {
   let previousFeature = null;
@@ -946,57 +953,106 @@ function buildTrafficGraph() {
   const sourceRoads = (osmSource.roads ?? []).filter(graphRoadAllowed);
   const nodesByKey = new Map();
   const edges = [];
-  const addNode = (point) => {
-    const id = graphPointKey(point);
-    if (!nodesByKey.has(id)) nodesByKey.set(id, { id, point: [+point[0].toFixed(3), +point[1].toFixed(3)], incoming: [], outgoing: [] });
+  const nodeUse = new Map();
+  const pointUse = new Map();
+  for (const road of sourceRoads) {
+    const nodeIds = road.nodeIds ?? [];
+    for (let index = 0; index < road.points.length; index++) {
+      const nodeId = nodeIds[index];
+      if (nodeId != null) nodeUse.set(String(nodeId), (nodeUse.get(String(nodeId)) ?? 0) + 1);
+      const pointKey = graphPointKey(road.points[index]);
+      pointUse.set(pointKey, (pointUse.get(pointKey) ?? 0) + 1);
+    }
+  }
+  const addNode = (point, id, sourceNodeId = null) => {
+    if (!nodesByKey.has(id)) nodesByKey.set(id, {
+      id,
+      sourceNodeId,
+      point: [+point[0].toFixed(3), +point[1].toFixed(3)],
+      incoming: [],
+      outgoing: [],
+    });
     return id;
   };
   for (const road of sourceRoads) {
     const tags = road.tags ?? {};
     const sourcePoints = road.points.map(([x, z]) => [Number(x), Number(z)]);
-    const from = addNode(sourcePoints[0]);
-    const to = addNode(sourcePoints.at(-1));
+    const nodeIds = road.nodeIds ?? [];
+    const splitIndices = [0];
+    for (let index = 1; index < sourcePoints.length - 1; index++) {
+      const nodeId = nodeIds[index];
+      const sharedNode = nodeId != null && (nodeUse.get(String(nodeId)) ?? 0) > 1;
+      const sharedPoint = (pointUse.get(graphPointKey(sourcePoints[index])) ?? 0) > 1;
+      if (sharedNode || sharedPoint) splitIndices.push(index);
+    }
+    splitIndices.push(sourcePoints.length - 1);
     const directions = tags.oneway === "-1" ? [-1] : ["yes", "1", "true"].includes(String(tags.oneway)) ? [1] : [1, -1];
-    for (const direction of directions) {
-      const oriented = direction > 0 ? sourcePoints : [...sourcePoints].reverse();
-      let samples;
-      try {
-        samples = graphLanePoints(oriented, graphLaneOffset(tags, direction));
-      } catch {
-        continue;
+    for (let segmentIndex = 0; segmentIndex < splitIndices.length - 1; segmentIndex++) {
+      const start = splitIndices[segmentIndex];
+      const end = splitIndices[segmentIndex + 1];
+      if (end <= start) continue;
+      const segmentPoints = sourcePoints.slice(start, end + 1);
+      const startNodeId = nodeIds[start] ?? null;
+      const endNodeId = nodeIds[end] ?? null;
+      const fromKey = startNodeId != null
+        ? `osm:${startNodeId}`
+        : `point:${graphPointKey(segmentPoints[0])}`;
+      const toKey = endNodeId != null
+        ? `osm:${endNodeId}`
+        : `point:${graphPointKey(segmentPoints.at(-1))}`;
+      const from = addNode(segmentPoints[0], fromKey, startNodeId);
+      const to = addNode(segmentPoints.at(-1), toKey, endNodeId);
+      for (const direction of directions) {
+        const laneCount = graphLaneCounts(tags, direction);
+        const oriented = direction > 0 ? segmentPoints : [...segmentPoints].reverse();
+        for (let lane = 0; lane < laneCount; lane++) {
+          let samples;
+          try {
+            samples = graphLanePoints(oriented, graphLaneOffset(tags, direction, lane, laneCount));
+          } catch {
+            continue;
+          }
+          const length = graphCum(samples.map(([x, , z]) => [x, z])).at(-1);
+          if (!(length > 2)) continue;
+          const id = `way-${road.id}-${segmentIndex}-${direction > 0 ? "f" : "r"}-lane-${lane}`;
+          const edge = {
+            id,
+            wayId: road.id,
+            name: tags.name ?? "",
+            highway: tags.highway,
+            direction,
+            lane,
+            laneCount,
+            oneway: directions.length === 1,
+            from: direction > 0 ? from : to,
+            to: direction > 0 ? to : from,
+            sourceFromNode: direction > 0 ? startNodeId : endNodeId,
+            sourceToNode: direction > 0 ? endNodeId : startNodeId,
+            segmentIndex,
+            points: samples,
+            length: +length.toFixed(3),
+            speed: Math.max(15, numberTag(tags.maxspeed, tags.highway === "service" ? 20 : 40)) / 3.6,
+          };
+          edges.push(edge);
+          nodesByKey.get(edge.from).outgoing.push(id);
+          nodesByKey.get(edge.to).incoming.push(id);
+        }
       }
-      const id = `way-${road.id}-${direction > 0 ? "f" : "r"}`;
-      const edge = {
-        id,
-        wayId: road.id,
-        name: tags.name ?? "",
-        highway: tags.highway,
-        direction,
-        oneway: directions.length === 1,
-        from: direction > 0 ? from : to,
-        to: direction > 0 ? to : from,
-        points: samples,
-        length: +graphCum(samples.map(([x, , z]) => [x, z])).at(-1).toFixed(3),
-        speed: Math.max(15, numberTag(tags.maxspeed, tags.highway === "service" ? 20 : 40)) / 3.6,
-      };
-      edges.push(edge);
-      nodesByKey.get(edge.from).outgoing.push(id);
-      nodesByKey.get(edge.to).incoming.push(id);
     }
   }
   const edgeById = new Map(edges.map((edge) => [edge.id, edge]));
   const sourceSignals = osmSource.trafficSignals ?? [];
   const signalAt = (point) => sourceSignals.some((signal) => graphDistance(point, signal.point) < 14);
-  const normalizeName = (name) => String(name ?? "").replace(/[り通]/g, "");
   const connectors = [];
   for (const node of nodesByKey.values()) {
     node.signal = signalAt(node.point);
-    // Even if a crossing way was split into several OSM pieces, never create
-    // a junction at a point underneath the elevated bridge.
-    if (graphNodeOnOmiyaBridge(node.point)) continue;
     for (const incomingId of node.incoming) for (const outgoingId of node.outgoing) {
       const incoming = edgeById.get(incomingId), outgoing = edgeById.get(outgoingId);
-      if (!incoming || !outgoing || (incoming.wayId === outgoing.wayId && incoming.direction !== outgoing.direction)) continue;
+      if (!incoming || !outgoing || incoming.id === outgoing.id) continue;
+      if (incoming.wayId === outgoing.wayId && incoming.direction !== outgoing.direction) continue;
+      // The elevated Omiya carriageway may continue through its own split
+      // nodes, but a road from another way must never be connected there.
+      if (graphNodeOnOmiyaBridge(node.point) && incoming.wayId !== outgoing.wayId) continue;
       const inHeading = graphHeading(incoming.points.map(([x, , z]) => [x, z]), false);
       const outHeading = graphHeading(outgoing.points.map(([x, , z]) => [x, z]), true);
       let delta = outHeading - inHeading;
@@ -1009,8 +1065,6 @@ function buildTrafficGraph() {
       const isRight = delta > Math.PI / 5 && delta < Math.PI * 0.8;
       const isLeft = delta < -Math.PI / 5 && delta > -Math.PI * 0.8;
       const isTurn = isRight || isLeft;
-      const restrictedRoad = [incoming, outgoing].some((edge) => ["大宮", "九条"].includes(normalizeName(edge.name)));
-      if (!node.signal && isRight && restrictedRoad) continue;
       const a = incoming.points.at(-1), b = outgoing.points[0];
       const inVector = [Math.sin(inHeading), Math.cos(inHeading)];
       const outVector = [Math.sin(outHeading), Math.cos(outHeading)];
@@ -1028,7 +1082,7 @@ function buildTrafficGraph() {
       });
     }
   }
-  return { version: 1, nodes: [...nodesByKey.values()], edges, connectors };
+  return { version: 2, branchMeters: TRAFFIC_BRANCH_METERS, nodes: [...nodesByKey.values()], edges, connectors };
 }
 
 function buildRoadOverlays(graph, bridgeRanges = []) {
@@ -1435,7 +1489,7 @@ const network = {
   selectedSurfaceIds: [...new Set(nodes.map((n) => n.surfaceId))],
   // Every vehicle lane path is compiled with the map. Runtime self-driving,
   // same-direction traffic and lane markings consume these canonical paths;
-  // the unified OSM graph below is retained for diagnostics/future branches.
+  // the unified OSM graph supplies the off-route NPC branches.
   trafficPaths,
   trafficGraph,
   surfacePatches,

@@ -304,82 +304,7 @@ const SPEED_ZONES = [
   { fromStop: "久我", toStop: null, limit: 40 }, // 久我地区
 ];
 
-// ---------------- 車線プラン(実走調査による手動定義) ----------------
-// 南行き=F(バス進行方向)、北行き=B。B=0 は一方通行。center:'none' はセンターラインなし。
-// to: 区間終端の実座標アンカー。null は路線終端まで。区間はルート順。
-const LANE_PLAN = [
-  { to: "三条通", F: 2, B: 2, name: "千本通(三条以北)" },
-  { to: "四条通", F: 1, B: 1, name: "千本通・後院通(三条〜四条大宮)" },
-  { to: "七条通", F: 2, B: 2, name: "大宮通(四条〜七条)" },
-  { to: [34.97938, 135.74931], F: 3, B: 3, name: "大宮通(七条〜九条・跨線橋)" },
-  {
-    to: [34.9788, 135.74145],
-    F: 2,
-    B: 0,
-    center: "none",
-    name: "九条通(西行き一方通行2車線)",
-  },
-  { to: [34.9734, 135.7414], F: 1, B: 1, name: "新千本通" },
-  { to: [34.97335, 135.74254], F: 2, B: 2, name: "十条通" },
-  {
-    to: [34.96477, 135.74247],
-    F: 1,
-    B: 0,
-    sidewalk: "none",
-    name: "旧千本通(十条旧千本〜府道201・一方通行)",
-  },
-  {
-    to: [34.95866, 135.74266],
-    F: 1,
-    B: 1,
-    center: "none",
-    sidewalk: "none",
-    name: "旧千本通(府道201〜地蔵前手前)",
-  },
-  {
-    to: [34.9554, 135.74218],
-    F: 1,
-    B: 0,
-    sidewalk: "none",
-    name: "旧千本通(地蔵前手前〜合流・一方通行)",
-  },
-  {
-    to: [34.9511124, 135.7413116], // 小枝橋西詰の分岐点
-    F: 1,
-    B: 1,
-    center: "none",
-    name: "鳥羽街道(〜小枝橋西詰)",
-  },
-  {
-    // 小枝橋(way 621847405): 東行き一方通行2車線。西行きは並行する別の橋
-    // (way 621847402 — extraRoads.js で景観描画)を通るため対向車線は無い。
-    to: [34.951343, 135.742935], // 小枝橋東詰(千本通との交差点)
-    F: 2,
-    B: 0,
-    name: "羽束師墨染線(小枝橋・一方通行東行き)",
-  },
-  {
-    to: [34.9505492, 135.7431534], // 城南宮道交差点
-    F: 1,
-    B: 1,
-    center: "none",
-    name: "千本通(小枝橋東詰〜城南宮道)",
-  },
-  { to: [34.94645, 135.74301], F: 1, B: 1, name: "城南宮道通り(〜赤池)" },
-  { to: null, F: 1, B: 1, name: "府道202(赤池〜久我石原町)" },
-];
 const LANE_W = 3.2; // 1車線幅 [m]
-
-// 右折車線ゾーン: 範囲内の信号交差点の進入方向に+1車線(千本通北部=計5、府道202=計3 等)
-const APPROACH_ZONES = [
-  { from: [35.0117, 135.7425], to: "三条通", len: 65, name: "千本三条以北" },
-  {
-    from: [34.94645, 135.74301],
-    to: [34.9457, 135.7327],
-    len: 55,
-    name: "府道202(久我以東)",
-  },
-];
 
 // 交差道路の実勢オーバーライド(交差点スタブの幅・車線数を交通量調査どおりに)
 // arms: heading方向(side:1)/heading+PI方向(side:-1)ごとの実在・車線・歩行者専用の上書き。
@@ -888,10 +813,14 @@ function buildOsmVisualSource(ways, nodes, origin) {
   for (const way of ways ?? []) {
     const tags = way.tags ?? {};
     const geometry = way.geometry ?? [];
-    const points = rdp(
-      project(geometry.map((point) => [point.lat, point.lon]), origin)
-        .map(([x, z]) => [x * SCALE, z * SCALE]),
-      0.2,
+    const projected = project(geometry.map((point) => [point.lat, point.lon]), origin)
+      .map(([x, z]) => [x * SCALE, z * SCALE]);
+    const isSidewalk = tags.footway === "sidewalk" || tags["area:highway"] === "footway";
+    // RDP is useful for display-only geometry, but traffic topology needs the
+    // original OSM node sequence so way.nodes remains aligned with points.
+    const points = (VISUAL_ROAD_TYPES.includes(tags.highway) && !isSidewalk
+      ? projected
+      : rdp(projected, 0.2)
     ).map(([x, z]) => [+x.toFixed(2), +z.toFixed(2)]);
     if (points.length < 2) continue;
     const record = {
@@ -901,7 +830,6 @@ function buildOsmVisualSource(ways, nodes, origin) {
       tags: visualTags(tags),
       source: { provider: "OpenStreetMap", wayId: way.id },
     };
-    const isSidewalk = tags.footway === "sidewalk" || tags["area:highway"] === "footway";
     const isCrossing = tags.footway === "crossing"
       || tags.crossing === "marked"
       || tags["crossing:markings"] === "yes";
@@ -1422,80 +1350,131 @@ function overlayLanes(sections, from, to, mut) {
   return out;
 }
 
-/** LANE_PLAN と右折車線ゾーンから roadSections を生成 */
+/**
+ * OSM way の車線タグから routeSections を生成する。
+ *
+ * 以前は、交差点名・座標・現地推定を並べた LANE_PLAN が経路の車線の
+ * 正本になっていた。そのため本線のセンターラインと交差道路の接続が
+ * 別々に更新され、OSMの実形状から車線が外れていた。ここでは経路に
+ * 最近接し、進行方向が一致する OSM way を各断面で選び、lanes / oneway /
+ * sidewalk を連続区間へ畳み込む。PLATEAUの実路面へのスナップは後段の
+ * driving-network compiler が一括して行う。
+ */
 function buildLaneSections(
   path,
   cumLen,
   origin,
+  roads,
   signals,
   turnSpans,
   intersections,
   elevations = [],
 ) {
-  const toS = (anchor, fromS = 0) => {
-    if (typeof anchor === "string") {
-      const ix = intersections.find(
-        (i) => i.name === anchor && i.s >= fromS - 5,
-      );
-      if (!ix)
-        throw new Error(`車線プラン境界の交差点が見つからない: ${anchor}`);
-      return ix.s;
+  const projectedRoads = (roads ?? [])
+    .map((road) => ({
+      id: road.id,
+      tags: road.tags ?? {},
+      points: project(
+        (road.geometry ?? []).map((point) => [point.lat, point.lon]),
+        origin,
+      ).map(([x, z]) => [x * SCALE, z * SCALE]),
+    }))
+    .filter((road) => road.points.length > 1);
+  const profileAt = (s) => {
+    const point = pointAtPath(path, cumLen, s);
+    const routeHeading = routeHeadingAt(path, cumLen, s);
+    let best = null;
+    for (const road of projectedRoads) {
+      for (let index = 1; index < road.points.length; index++) {
+        const a = road.points[index - 1], b = road.points[index];
+        const hit = pointSegDistance(point, a, b);
+        const roadHeading = Math.atan2(b[0] - a[0], b[1] - a[1]);
+        const alignment = Math.min(angleDiff(roadHeading, routeHeading), angleDiff(roadHeading, routeHeading + Math.PI));
+        if (hit.d > 22 || alignment > 0.65) continue;
+        const score = hit.d + alignment * 9;
+        if (!best || score < best.score) best = { road, score, roadHeading };
+      }
     }
-    const pt = project([anchor], origin)[0].map((v) => v * SCALE);
-    const hit = projectToPath(path, cumLen, pt, fromS);
-    if (hit.dist > 60)
-      console.warn(
-        `  警告: 車線プラン境界の射影誤差 ${hit.dist.toFixed(0)}m @ [${anchor}]`,
-      );
-    return hit.s;
+    const tags = best?.road.tags ?? {};
+    const oneway = ["yes", "1", "true", "-1"].includes(String(tags.oneway));
+    const wayLanes = laneCount(tags);
+    const sameDirection = best
+      ? angleDiff(best.roadHeading, routeHeading) < Math.PI / 2
+      : true;
+    let lanesF;
+    let lanesB;
+    if (oneway) {
+      // The route relation is authoritative for which direction the bus uses;
+      // a reversed OSM way still describes a one-way carriageway, not an
+      // invitation to create an opposing lane.
+      lanesF = Math.max(1, wayLanes);
+      lanesB = 0;
+    } else {
+      const forward = parsePositive(tags["lanes:forward"]);
+      const backward = parsePositive(tags["lanes:backward"]);
+      const total = Math.max(2, wayLanes);
+      const f = forward ?? Math.ceil(total / 2);
+      const b = backward ?? Math.floor(total / 2);
+      lanesF = Math.max(1, Math.round(sameDirection ? f : b));
+      lanesB = Math.max(0, Math.round(sameDirection ? b : f));
+    }
+    return {
+      lanesF,
+      lanesB,
+      center: lanesB ? "line" : "none",
+      sidewalk: tags.sidewalk === "no" || tags["sidewalk:both"] === "no" ? "none" : "line",
+      sourceWay: best?.road.id ?? null,
+    };
   };
-  let sections = [];
-  let from = 0,
-    cursor = 0;
-  for (const seg of LANE_PLAN) {
-    const end = seg.to ? toS(seg.to, cursor) : cumLen.at(-1);
-    sections.push({
-      from,
-      to: end,
-      lanesF: seg.F,
-      lanesB: seg.B,
-      center: seg.center ?? (seg.B ? "line" : "none"),
-      sidewalk: seg.sidewalk ?? "line",
-    });
-    cursor = end;
-    from = end;
+  const total = cumLen.at(-1);
+  const samplePositions = new Set();
+  for (let s = 0; s <= total; s += 8) samplePositions.add(Math.min(total, s));
+  for (const s of [
+    ...turnSpans.flatMap((span) => [span.sIn, span.sOut]),
+    ...(intersections ?? []).map((intersection) => intersection.s),
+  ]) if (s > 0 && s < total) samplePositions.add(s);
+  const samples = [...samplePositions]
+    .sort((a, b) => a - b)
+    .map((s) => ({ s, profile: profileAt(s) }));
+  const sameProfile = (a, b) => a.lanesF === b.lanesF
+    && a.lanesB === b.lanesB
+    && a.center === b.center
+    && a.sidewalk === b.sidewalk;
+  const sections = [];
+  let from = samples[0]?.s ?? 0;
+  let current = samples[0]?.profile ?? { lanesF: 1, lanesB: 1, center: "line", sidewalk: "line" };
+  for (let index = 1; index < samples.length; index++) {
+    const next = samples[index];
+    if (sameProfile(current, next.profile)) continue;
+    sections.push({ from, to: next.s, ...current });
+    from = next.s;
+    current = next.profile;
   }
-  // 右折車線: 信号交差点の進入方向に+1車線(右左折交差点の円弧内はクランプ)
-  for (const zone of APPROACH_ZONES) {
-    const z0 = toS(zone.from),
-      z1 = toS(zone.to, z0);
-    for (const sig of signals) {
-      if (sig.s < z0 - 2 || sig.s > z1 + 2) continue;
-      const t = turnSpans.find(
-        (tt) => sig.s > tt.sIn - 30 && sig.s < tt.sOut + 30,
-      );
-      const f0 = Math.max(sig.s - zone.len, z0);
-      const f1 = Math.min(sig.s, t ? t.sIn - 2 : Infinity, z1);
-      if (f1 > f0)
-        sections = overlayLanes(sections, f0, f1, (sec) => ({
-          ...sec,
-          lanesF: sec.lanesF + 1,
-        }));
-      const b0 = Math.max(sig.s, t ? t.sOut + 2 : -Infinity, z0);
-      const b1 = Math.min(sig.s + zone.len, z1);
-      if (b1 > b0)
-        sections = overlayLanes(sections, b0, b1, (sec) => ({
-          ...sec,
-          lanesB: sec.lanesB + 1,
-        }));
-    }
-  }
+  sections.push({ from, to: total, ...current });
+  let normalized = sections;
   // 跨線橋区間: 中央の片道2車線だけを橋上車線とし、両外側の側道は地表に残す。
   // laneOverride が付いた elevations のみ対象(河川の小さな盛土は車線数を変えない)
   for (const e of elevations) {
     if (!e.laneOverride) continue;
-    sections = overlayLanes(
-      sections,
+    // A structural laneOverride describes the physical deck, while
+    // autoEntryFrom describes where the outer ground-level lane merges into
+    // that deck. Keep that merge as a data-driven transition rather than a
+    // hand-authored road-name section.
+    if (e.autoEntryFrom != null && e.autoEntryFrom < e.from) {
+      normalized = overlayLanes(
+        normalized,
+        e.autoEntryFrom,
+        e.from,
+        (sec) => ({
+          ...sec,
+          lanesF: Math.max(sec.lanesF, 2 + Number(e.laneOverride)),
+          lanesB: Math.max(sec.lanesB, 2 + Number(e.laneOverride)),
+          center: "line",
+        }),
+      );
+    }
+    normalized = overlayLanes(
+      normalized,
       e.from - (e.approachIn ?? 50),
       e.to + (e.approachOut ?? 50),
       (sec) => ({
@@ -1507,7 +1486,7 @@ function buildLaneSections(
       }),
     );
   }
-  return sections
+  return normalized
     .filter((sec) => sec.to - sec.from > 0.5)
     .map((sec) => ({
       from: +sec.from.toFixed(1),
@@ -2444,6 +2423,11 @@ out geom;`,
     ...detourRoadData.elements.filter(
       (e) => e.type === "way" && isMajorRoad(e.tags) && e.geometry?.length > 1,
     ),
+    // The route relation contains the opposite Kujo carriageway, while the
+    // actual southbound path is explicitly selected above. Keep that selected
+    // OSM geometry in the lane-section source as well.
+    ...kujoWestboundWays.filter(Boolean),
+    ...jujoWays,
   ]);
   const visualWays = byId(
     visualData.elements.filter(
@@ -2649,6 +2633,32 @@ async function main() {
     line.reduce((a, p) => a + p[1], 0) / line.length,
   ];
   const osmExpressways = buildOsmExpressways(expresswayWays, origin);
+  const riverSurfaceAnchors = BRIDGES.map((bridge) => ({
+    name: bridge.river,
+    point: bridge.anchor,
+  }));
+  const waterSurfaceName = (element) => {
+    const taggedName = element.tags?.name ?? element.tags?.["name:ja"] ?? null;
+    if (taggedName) return taggedName;
+    const isRiverSurface = element.tags?.waterway === "riverbank"
+      || element.tags?.water === "river"
+      || element.tags?.water === "canal";
+    if (!isRiverSurface || !element.geometry?.length) return null;
+    const center = element.geometry.reduce(
+      (sum, point) => [sum[0] + point.lat, sum[1] + point.lon],
+      [0, 0],
+    ).map((value) => value / element.geometry.length);
+    const nearest = riverSurfaceAnchors
+      .map((anchor) => ({
+        ...anchor,
+        distance: Math.hypot(
+          (center[0] - anchor.point[0]) * 111320,
+          (center[1] - anchor.point[1]) * 111320 * Math.cos((center[0] * Math.PI) / 180),
+        ),
+      }))
+      .sort((a, b) => a.distance - b.distance)[0];
+    return nearest?.distance <= 1800 ? nearest.name : null;
+  };
   const waterPolygons = waterElements.map((element) => {
     const polygon = project(
       element.geometry.map((point) => [point.lat, point.lon]),
@@ -2656,7 +2666,8 @@ async function main() {
     ).map(([x, z]) => [+(x * SCALE).toFixed(2), +(z * SCALE).toFixed(2)]);
     return {
       id: element.id,
-      name: element.tags?.name ?? null,
+      name: waterSurfaceName(element),
+      tags: visualTags(element.tags ?? {}),
       polygon,
     };
   }).filter((item) => item.polygon.length >= 3);
@@ -2933,6 +2944,7 @@ async function main() {
     path,
     cumLen,
     origin,
+    roads,
     signals,
     turnSpans,
     intersections,

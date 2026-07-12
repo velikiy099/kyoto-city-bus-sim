@@ -124,6 +124,7 @@ const scoring = createScoring(state);
 const traffic = buildTraffic(scene, path, {
   trafficPaths: route.trafficPaths,
   trafficGraph: route.trafficGraph,
+  useTrafficGraph: true,
   onCollision() {
     scoring.add(CFG.score.collision, "他車と接触!");
     (state.collisionLog ??= []).push(Math.round(state.s)); // 発生位置(デバッグ用)

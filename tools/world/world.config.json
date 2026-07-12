@@ -36,6 +36,8 @@
     "relationId": 13027168,
     "routeFile": "src/data/route18.json",
     "refreshCommand": "npm run build-data",
+    "trafficBranchMeters": 250,
+    "npcRoadScope": "motor-vehicle-accessible OSM roads; exclude private/parking/driveway and Omiya overpass side roads",
     "provider": "OpenStreetMap",
     "license": "ODbL",
     "authority": {
