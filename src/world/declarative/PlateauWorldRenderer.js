@@ -215,12 +215,6 @@ export function structuralRoadZones(path, routeData) {
         to: Math.min(path.length, Number(item.to) + Number(item.approachOut ?? 50)),
         reason: "structure",
       })),
-    ...(routeData?.roadSurfaceAlignments ?? []).map((item) => ({
-      ...item,
-      from: Math.max(0, Number(item.from)),
-      to: Math.min(path.length, Number(item.to)),
-      reason: "surface-alignment",
-    })),
   ];
   return inputs.map((item) => {
     const xs = [];
@@ -344,6 +338,43 @@ function appendXZSurface(polygon, positions, indices, heightAt, yOffset = 0) {
   for (const face of faces) indices.push(base + face[0], base + face[1], base + face[2]);
 }
 
+/**
+ * Tessellate a ground transportation polygon until its linear triangles track
+ * the authoritative PLATEAU terrain sampler.  A PLATEAU road feature often
+ * spans several terrain-grid cells; a single large triangle through its
+ * vertices otherwise cuts across the grid surface and leaves a visible gap
+ * under a vehicle even though both datasets use the same heights.
+ */
+function appendTerrainConformingXZSurface(polygon, positions, indices, heightAt, yOffset = 0) {
+  if (!Array.isArray(polygon) || polygon.length < 3) return;
+  const faces = THREE.ShapeUtils.triangulateShape(
+    polygon.map(([x, z]) => new THREE.Vector2(x, z)),
+    [],
+  );
+  const addTriangle = (a, b, c, depth = 0) => {
+    const ya = heightAt(a[0], a[1]);
+    const yb = heightAt(b[0], b[1]);
+    const yc = heightAt(c[0], c[1]);
+    const center = [(a[0] + b[0] + c[0]) / 3, (a[1] + b[1] + c[1]) / 3];
+    const planarY = (ya + yb + yc) / 3;
+    const terrainY = heightAt(center[0], center[1]);
+    if (depth < 7 && Math.abs(terrainY - planarY) > 0.003) {
+      const ab = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+      const bc = [(b[0] + c[0]) / 2, (b[1] + c[1]) / 2];
+      const ca = [(c[0] + a[0]) / 2, (c[1] + a[1]) / 2];
+      addTriangle(a, ab, ca, depth + 1);
+      addTriangle(ab, b, bc, depth + 1);
+      addTriangle(ca, bc, c, depth + 1);
+      addTriangle(ab, bc, ca, depth + 1);
+      return;
+    }
+    const base = positions.length / 3;
+    positions.push(a[0], ya + yOffset, a[1], b[0], yb + yOffset, b[1], c[0], yc + yOffset, c[1]);
+    indices.push(base, base + 1, base + 2);
+  };
+  for (const face of faces) addTriangle(polygon[face[0]], polygon[face[1]], polygon[face[2]]);
+}
+
 function structuralCorridorQuads(path, routeData, zones, step = 4) {
   const quads = [];
   for (const zone of zones) {
@@ -381,6 +412,327 @@ function structuralCorridorQuads(path, routeData, zones, step = 4) {
   return quads;
 }
 
+function lanePathMarkingMeshes(routeData, routeHeightAtS) {
+  const network = routeData?.drivingNetwork;
+  const paths = (network?.trafficPaths ?? []).filter((item) => item.role === "main");
+  if (!network?.nodes?.length || !paths.length) return [];
+  const distances = network.nodes.map((node) => node.s);
+  const byKey = new Map(paths.map((item) => [`${item.direction}:${item.lane}`, item]));
+  const centerPath = {
+    points: network.surfacePath ?? network.path,
+    active: distances.map(() => true),
+  };
+  const markingGaps = [
+    ...(routeData.intersections ?? []).map((item) => ({
+      from: item.s - Math.max(5, (Number(item.width) || 8) / 2 + 2),
+      to: item.s + Math.max(5, (Number(item.width) || 8) / 2 + 2),
+    })),
+    ...(routeData.turnIntersections ?? []).map((item) => ({
+      from: (item.sIn ?? item.s) - 3,
+      to: (item.sOut ?? item.s) + 3,
+    })),
+  ];
+  const insideMarkingGap = (s) => markingGaps.some((gap) => s >= gap.from && s <= gap.to);
+  const sample = (item, s) => {
+    if (!item) return null;
+    let lo = 0, hi = distances.length - 1;
+    const target = Math.max(0, Math.min(distances.at(-1), s));
+    while (lo + 1 < hi) {
+      const mid = (lo + hi) >> 1;
+      if (distances[mid] <= target) lo = mid;
+      else hi = mid;
+    }
+    if (item.active && (!item.active[lo] || !item.active[hi])) return null;
+    const t = (target - distances[lo]) / Math.max(1e-6, distances[hi] - distances[lo]);
+    const a = item.points[lo], b = item.points[hi];
+    return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+  };
+  const groups = new Map();
+  const addBoundary = (kind, from, to, first, second) => {
+    if (!first || !second || to - from < 1) return;
+    if (!groups.has(kind)) groups.set(kind, { positions: [], indices: [] });
+    const target = groups.get(kind);
+    let row = 0;
+    for (let s = from; ; s += 4) {
+      const ss = Math.min(s, to);
+      if (insideMarkingGap(ss)) {
+        row = 0;
+        if (ss >= to) break;
+        continue;
+      }
+      const a = sample(first, ss), b = sample(second, ss);
+      const nextA = sample(first, Math.min(to, ss + 0.5)) ?? a;
+      const nextB = sample(second, Math.min(to, ss + 0.5)) ?? b;
+      if (a && b) {
+        const x = (a[0] + b[0]) / 2;
+        const z = (a[1] + b[1]) / 2;
+        const tx = nextA[0] + nextB[0] - a[0] - b[0];
+        const tz = nextA[1] + nextB[1] - a[1] - b[1];
+        const length = Math.hypot(tx, tz) || 1;
+        const nx = -tz / length, nz = tx / length;
+        const halfWidth = 0.045;
+        const base = target.positions.length / 3;
+        const y = routeHeightAtS(ss) + 0.022;
+        target.positions.push(x - nx * halfWidth, y, z - nz * halfWidth);
+        target.positions.push(x + nx * halfWidth, y, z + nz * halfWidth);
+        if (row) {
+          target.indices.push(base - 2, base - 1, base, base - 1, base + 1, base);
+        }
+        row++;
+      }
+      if (ss >= to) break;
+    }
+  };
+  const meshes = [];
+  for (const section of routeData.roadSections ?? []) {
+    const from = Math.max(0, Number(section.from) || 0);
+    const to = Math.min(distances.at(-1), Number(section.to) || distances.at(-1));
+    const forwardCount = Math.max(1, Number(section.lanesF) || 1);
+    const backwardCount = Math.max(0, Number(section.lanesB) || 0);
+    const forward = (lane) => byKey.get(`1:${lane}`);
+    const backward = (lane) => byKey.get(`-1:${lane}`);
+    for (let lane = 0; lane < forwardCount - 1; lane++) {
+      addBoundary("lane", from, to, forward(lane), forward(lane + 1));
+    }
+    for (let lane = 0; lane < backwardCount - 1; lane++) {
+      addBoundary("lane", from, to, backward(lane), backward(lane + 1));
+    }
+    if (backwardCount && section.center !== "none") {
+      addBoundary("center", from, to, centerPath, centerPath);
+    }
+  }
+  const materials = { center: 0xd8a017, lane: 0xf4f4f0 };
+  for (const [kind, data] of groups) {
+    if (!data.indices.length) continue;
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.Float32BufferAttribute(data.positions, 3));
+    geometry.setIndex(data.indices);
+    geometry.computeVertexNormals();
+    const mesh = new THREE.Mesh(
+      geometry,
+      new THREE.MeshBasicMaterial({ color: materials[kind], side: THREE.DoubleSide }),
+    );
+    mesh.name = `plateau-lane-markings:${kind}`;
+    meshes.push(mesh);
+  }
+  return meshes;
+}
+
+/** OSM supplies lane topology only. These thin overlays are rendered on the
+ * PLATEAU transportation surface, never as a second OSM road plate. */
+function plateauRouteMarkingMeshes(path, routeData, routeHeightAtS) {
+  if (!path || !routeHeightAtS) return [];
+  if (routeData?.drivingNetwork?.trafficPaths?.length) {
+    return lanePathMarkingMeshes(routeData, routeHeightAtS);
+  }
+  const groups = new Map();
+  const addRibbon = (color, from, to, latFrom, latTo) => {
+    if (to - from < 1) return;
+    if (!groups.has(color)) groups.set(color, { positions: [], indices: [] });
+    const target = groups.get(color);
+    const base = target.positions.length / 3;
+    let row = 0;
+    for (let s = from; ; s += 4) {
+      const ss = Math.min(s, to);
+      const [x, z] = path.getPoint(ss);
+      const [tx, tz] = path.getTangent(ss);
+      const nx = -tz;
+      const nz = tx;
+      // A rendering-only lift prevents z-fighting; it is not an independent
+      // elevation model and the underlying height remains routeHeightAtS().
+      const y = routeHeightAtS(ss) + 0.022;
+      target.positions.push(x + nx * latFrom, y, z + nz * latFrom);
+      target.positions.push(x + nx * latTo, y, z + nz * latTo);
+      if (row) {
+        const b = base + row * 2;
+        target.indices.push(b - 2, b - 1, b, b - 1, b + 1, b);
+      }
+      row++;
+      if (ss >= to) break;
+    }
+  };
+
+  for (const section of routeData?.roadSections ?? []) {
+    const from = Math.max(0, Number(section.from) || 0);
+    const to = Math.min(path.length, Number(section.to) || path.length);
+    if (to <= from) continue;
+    const lanesF = Math.max(1, Number(section.lanesF) || 1);
+    const lanesB = Math.max(0, Number(section.lanesB) || 0);
+    const wL = Number(section.wL) || 4;
+    const wR = Number(section.wR) || 4;
+    const width = 0.09;
+    if (lanesB && section.center !== "none") addRibbon("center", from, to, -width, width);
+    const usable = Math.max(1, wL + wR - 1.1);
+    const forwardWidth = usable * (lanesF / (lanesF + lanesB || lanesF));
+    for (let lane = 1; lane < lanesF; lane++) {
+      const lateral = -forwardWidth * lane / lanesF;
+      addRibbon("lane", from, to, lateral - width / 2, lateral + width / 2);
+    }
+    const backwardWidth = usable - forwardWidth;
+    for (let lane = 1; lane < lanesB; lane++) {
+      const lateral = backwardWidth * lane / lanesB;
+      addRibbon("lane", from, to, lateral - width / 2, lateral + width / 2);
+    }
+  }
+  return [...groups].map(([kind, data]) => {
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.Float32BufferAttribute(data.positions, 3));
+    geometry.setIndex(data.indices);
+    geometry.computeVertexNormals();
+    const mesh = new THREE.Mesh(
+      geometry,
+      new THREE.MeshBasicMaterial({ color: kind === "center" ? 0xd8a017 : 0xffffff }),
+    );
+    mesh.name = `plateau-route-markings:${kind}`;
+    return mesh;
+  });
+}
+
+/** Small, build-authored joins between adjacent PLATEAU transportation
+ * polygons.  These are emitted by driving-network, never inferred while the
+ * simulator runs. */
+function drivingSurfacePatchMeshes(network) {
+  const meshFromRows = (rows, name, material, lift = 0.018) => {
+    const positions = [];
+    const indices = [];
+    for (const row of rows) {
+      for (const [x, y, z] of row) positions.push(x, y + lift, z);
+    }
+    for (let row = 1; row < rows.length; row++) {
+      const i = row * 2;
+      indices.push(i - 2, i - 1, i, i - 1, i + 1, i);
+    }
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+    geometry.setIndex(indices);
+    geometry.computeVertexNormals();
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.name = name;
+    return mesh;
+  };
+  const asphalt = new THREE.MeshLambertMaterial({ color: 0x55585a, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -1 });
+  const meshes = (network?.surfacePatches ?? []).map((patch, patchIndex) =>
+    meshFromRows(patch.rows ?? [], `driving-network-surface-patch:${patchIndex}`, asphalt),
+  );
+  const rotary = network?.overlays?.nijoRotary?.road;
+  if (rotary?.rows?.length >= 2)
+    meshes.push(meshFromRows(rotary.rows, "nijo-rotary-road", asphalt));
+  if (rotary?.laneDividerRows?.length >= 2) {
+    const white = new THREE.MeshBasicMaterial({ color: 0xf4f4f0, side: THREE.DoubleSide });
+    meshes.push(meshFromRows(rotary.laneDividerRows, "nijo-rotary-lane-divider", white, 0.04));
+  }
+  return meshes;
+}
+
+/** OSM topology details compiled with the driving network: medians, explicit
+ * zebra crossings and pedestrian bridges.  Their vertices already carry the
+ * selected PLATEAU road elevation, so they never resample a competing surface
+ * at runtime. */
+function compiledRoadDetailMeshes(network, terrainHeightAtWorld) {
+  const result = [];
+  const rowsMesh = (rows, name, material, lift = 0.03) => {
+    if (!rows || rows.length < 2) return null;
+    const positions = [], indices = [];
+    for (const row of rows) for (const [x, y, z] of row) positions.push(x, y + lift, z);
+    for (let row = 1; row < rows.length; row++) {
+      const i = row * 2;
+      indices.push(i - 2, i - 1, i, i - 1, i + 1, i);
+    }
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+    geometry.setIndex(indices);
+    geometry.computeVertexNormals();
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.name = name;
+    return mesh;
+  };
+  const details = network?.overlays?.roads ?? {};
+  const medianMat = new THREE.MeshLambertMaterial({ color: 0x85867c, side: THREE.DoubleSide });
+  const plantedMat = new THREE.MeshLambertMaterial({ color: 0x58743b });
+  for (const median of details.medians ?? []) {
+    const mesh = rowsMesh(median.rows, `osm-median:${median.id}`, medianMat, 0.075);
+    if (mesh) result.push(mesh);
+    if (!median.planted) continue;
+    const shrub = new THREE.IcosahedronGeometry(0.48, 1);
+    const group = new THREE.Group();
+    for (let i = 1; i < (median.rows?.length ?? 0) - 1; i += 2) {
+      const [a, b] = median.rows[i];
+      const x = (a[0] + b[0]) / 2, z = (a[2] + b[2]) / 2, y = (a[1] + b[1]) / 2 + 0.45;
+      const item = new THREE.Mesh(shrub, plantedMat);
+      item.position.set(x, y, z);
+      item.scale.set(1.25, 0.85, 1.25);
+      group.add(item);
+    }
+    group.name = `osm-median-shrubs:${median.id}`;
+    result.push(group);
+  }
+  const white = new THREE.MeshBasicMaterial({ color: 0xf7f7f2, side: THREE.DoubleSide });
+  for (const crossing of details.crosswalks ?? []) {
+    for (const stripe of crossing.stripes ?? []) {
+      if (stripe.length < 3) continue;
+      const shape = new THREE.BufferGeometry();
+      const positions = stripe.flatMap(([x, y, z]) => [x, y + 0.06, z]);
+      shape.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+      shape.setIndex([0, 1, 2, 0, 2, 3]);
+      shape.computeVertexNormals();
+      const mesh = new THREE.Mesh(shape, white);
+      mesh.name = `osm-crosswalk:${crossing.id}`;
+      result.push(mesh);
+    }
+  }
+  const deckMat = new THREE.MeshLambertMaterial({ color: 0x8c9194 });
+  const railMat = new THREE.MeshLambertMaterial({ color: 0xd8dde0 });
+  for (const structure of details.footbridges ?? []) {
+    const points = structure.points ?? [];
+    const group = new THREE.Group();
+    for (let i = 1; i < points.length; i++) {
+      const a = points[i - 1], b = points[i];
+      const dx = b[0] - a[0], dz = b[2] - a[2], length = Math.hypot(dx, dz);
+      if (length < 0.2) continue;
+      const heading = Math.atan2(dx, dz), pitch = -Math.atan2(b[1] - a[1], length);
+      const midY = (a[1] + b[1]) / 2;
+      if (structure.kind === "stairs") {
+        const count = Math.max(1, Math.ceil(length / 0.38));
+        for (let step = 0; step < count; step++) {
+          const t = (step + 0.5) / count;
+          const x = a[0] + dx * t, z = a[2] + dz * t, y = a[1] + (b[1] - a[1]) * t;
+          const box = new THREE.Mesh(new THREE.BoxGeometry(structure.width, 0.16, length / count + 0.03), deckMat);
+          box.position.set(x, y, z);
+          box.rotation.y = heading;
+          group.add(box);
+        }
+      } else {
+        const deck = new THREE.Mesh(new THREE.BoxGeometry(structure.width, 0.18, length + 0.04), deckMat);
+        deck.position.set((a[0] + b[0]) / 2, midY, (a[2] + b[2]) / 2);
+        deck.rotation.order = "YXZ";
+        deck.rotation.y = heading;
+        deck.rotation.x = pitch;
+        group.add(deck);
+      }
+      for (const side of [-1, 1]) {
+        const rail = new THREE.Mesh(new THREE.BoxGeometry(0.08, 1.05, length + 0.03), railMat);
+        rail.position.set((a[0] + b[0]) / 2 + Math.cos(heading) * side * (structure.width / 2 - 0.04), midY + 0.58, (a[2] + b[2]) / 2 - Math.sin(heading) * side * (structure.width / 2 - 0.04));
+        rail.rotation.order = "YXZ";
+        rail.rotation.y = heading;
+        rail.rotation.x = pitch;
+        group.add(rail);
+      }
+      if (structure.kind === "deck") for (let d = 6; d < length; d += 10) {
+        const t = d / length;
+        const x = a[0] + dx * t, z = a[2] + dz * t, y = a[1] + (b[1] - a[1]) * t;
+        const groundY = terrainHeightAtWorld?.(x, z) ?? 0;
+        const height = Math.max(1, y - groundY - 0.1);
+        const support = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.22, height, 8), deckMat);
+        support.position.set(x, groundY + height / 2, z);
+        group.add(support);
+      }
+    }
+    group.name = `osm-pedestrian-structure:${structure.id}`;
+    result.push(group);
+  }
+  return result;
+}
+
 /**
  * Build one PLATEAU transportation mesh with structural lanes edited in-place.
  *
@@ -398,7 +750,7 @@ export function transportationSurfaceMesh(
   routeData,
   routeHeightAtS,
   zones,
-  yOffset = 0.015,
+  yOffset = 0,
 ) {
   const positions = [];
   const indices = [];
@@ -409,14 +761,47 @@ export function transportationSurfaceMesh(
   for (const feature of features ?? []) {
     const polygon = feature.polygon ?? [];
     if (polygon.length < 3) continue;
+    const sourceId = feature.source?.gmlId ?? feature.id?.replace(/#.*$/, "");
+    const fullPolygonZone = (zones ?? []).find((zone) =>
+      (zone.sourceFeatureIds ?? []).includes(sourceId),
+    );
+    // Elevate a complete, authoritative PLATEAU road polygon in place for
+    // wide bridge decks, rather than leaving its outer fragments on ground.
+    if (fullPolygonZone) {
+      for (const sourceTriangle of triangulatedXZ(polygon)) {
+        appendTerrainConformingXZSurface(
+          sourceTriangle,
+          positions,
+          indices,
+          (x, z) => {
+            const projection = path.closestS([x, z], fullPolygonZone.centerS, fullPolygonZone.searchWindow);
+            // A PLATEAU source polygon can include the bridge approaches and
+            // the east-end junction as one feature.  Only its declared
+            // structural interval is a bridge surface; assigning the
+            // path-centre height to the rest made that ground road tilt and
+            // left a lateral height mismatch below vehicles.
+            return projection.s >= fullPolygonZone.from && projection.s <= fullPolygonZone.to
+              ? routeHeightAtS(projection.s)
+              : terrainHeightAtWorld(x, z);
+          },
+          yOffset,
+        );
+      }
+      continue;
+    }
     const featureBounds = polygonBounds(polygon);
     const candidates = quads.filter((quad) => boundsOverlap(featureBounds, quad.bounds));
 
     if (!candidates.length) {
-      appendSurface(
-        shiftedPolygon(polygon, terrainHeightAtWorld, true),
+      // Transportation is a horizontal surface in the map plane.  Use the
+      // same XZ triangulation as the clipped/structural branches; the former
+      // generic 3D polygon projection could create a long stray triangle at
+      // concave road and junction polygons.
+      appendTerrainConformingXZSurface(
+        polygon.map(([x, , z]) => [x, z]),
         positions,
         indices,
+        terrainHeightAtWorld,
         yOffset,
       );
       continue;
@@ -464,7 +849,7 @@ export function transportationSurfaceMesh(
       }
 
       for (const fragment of groundFragments) {
-        appendXZSurface(fragment, positions, indices, terrainHeightAtWorld, yOffset);
+        appendTerrainConformingXZSurface(fragment, positions, indices, terrainHeightAtWorld, yOffset);
       }
     }
   }
@@ -479,97 +864,9 @@ export function transportationSurfaceMesh(
   return mesh;
 }
 
-function ribbonCutFeature(a, b, wL, wR, id) {
-  const dx = b[0] - a[0];
-  const dz = b[1] - a[1];
-  const length = Math.hypot(dx, dz) || 1;
-  const nx = -dz / length;
-  const nz = dx / length;
-  const left = [
-    a[0] + nx * -wL,
-    0,
-    a[1] + nz * -wL,
-  ];
-  const leftNext = [
-    b[0] + nx * -wL,
-    0,
-    b[1] + nz * -wL,
-  ];
-  const rightNext = [
-    b[0] + nx * wR,
-    0,
-    b[1] + nz * wR,
-  ];
-  const right = [
-    a[0] + nx * wR,
-    0,
-    a[1] + nz * wR,
-  ];
-  return { id, kind: "osm-road-cut", polygon: [left, leftNext, rightNext, right] };
-}
-
-/**
- * Build terrain-cut polygons from the same OSM route ribbons used by the
- * simulator. PLATEAU transportation polygons remain the authoritative visible
- * road surfaces; these extra masks make the terrain follow the current route
- * shape even where the two datasets differ by a few metres.
- */
-function routeRoadCutFeatures(path, routeData) {
-  if (!path || !routeData) return [];
-  const features = [];
-  const step = 12;
-  const margin = 0.35;
-  for (let s = 0; s < path.length; s += step) {
-    const s0 = s;
-    const s1 = Math.min(path.length, s + step);
-    const p0 = path.getPoint(s0);
-    const p1 = path.getPoint(s1);
-    const w0 = roadSectionAt(routeData, s0);
-    const w1 = roadSectionAt(routeData, s1);
-    const dx0 = path.getTangent(s0)[0];
-    const dz0 = path.getTangent(s0)[1];
-    const dx1 = path.getTangent(s1)[0];
-    const dz1 = path.getTangent(s1)[1];
-    const n0 = Math.hypot(dx0, dz0) || 1;
-    const n1 = Math.hypot(dx1, dz1) || 1;
-    const left0 = [p0[0] - dz0 / n0 * (w0.wL + margin), p0[1] + dx0 / n0 * (w0.wL + margin)];
-    const right0 = [p0[0] + dz0 / n0 * (w0.wR + margin), p0[1] - dx0 / n0 * (w0.wR + margin)];
-    const left1 = [p1[0] - dz1 / n1 * (w1.wL + margin), p1[1] + dx1 / n1 * (w1.wL + margin)];
-    const right1 = [p1[0] + dz1 / n1 * (w1.wR + margin), p1[1] - dx1 / n1 * (w1.wR + margin)];
-    features.push({
-      id: `osm-route-cut-${s0.toFixed(1)}`,
-      kind: "osm-road-cut",
-      polygon: [
-        [left0[0], 0, left0[1]],
-        [left1[0], 0, left1[1]],
-        [right1[0], 0, right1[1]],
-        [right0[0], 0, right0[1]],
-      ],
-    });
-  }
-  for (const road of routeData.extraRoads ?? []) {
-    const points = road.points ?? [];
-    const halfWidth = (road.width ?? (road.lanes ?? 1) * 3.2) / 2 + margin;
-    for (let i = 0; i < points.length - 1; i++) {
-      const a = points[i];
-      const b = points[i + 1];
-      const feature = ribbonCutFeature(
-        a,
-        b,
-        halfWidth,
-        halfWidth,
-        `osm-extra-road-cut-${road.id ?? i}-${i}`,
-      );
-      features.push(feature);
-    }
-  }
-  return features;
-}
-
 export function terrainGridMesh(
   grid,
   roadFeatures = [],
-  routeCutFeatures = [],
   path = null,
   bridges = [],
   rivers = [],
@@ -584,7 +881,7 @@ export function terrainGridMesh(
   const indices = [];
   const riverDips = path ? buildRiverDips(path, bridges, rivers) : [];
   const roads = roadFeatureIndex(
-    [...roadFeatures, ...routeCutFeatures],
+    roadFeatures,
     originX,
     originZ,
     stepX,
@@ -596,8 +893,7 @@ export function terrainGridMesh(
     const x = originX + ix * stepX;
     const z = originZ + iz * stepZ;
     return Number(grid.heights[iz * width + ix] ?? 0)
-      - riverDipDepthAt(x, z, riverDips)
-      - 0.035;
+      - riverDipDepthAt(x, z, riverDips);
   };
   const heightAtTriangle = (point, triangle, values) => {
     const [a, b, c] = triangle;
@@ -608,95 +904,52 @@ export function terrainGridMesh(
     const wc = 1 - wa - wb;
     return wa * values[0] + wb * values[1] + wc * values[2];
   };
-  const roadTerrainMaxEdge = 10;
-  const roadMaskForTriangle = (triangle, candidates) => {
-    const outerArea = Math.abs(area2d(triangle));
-    if (outerArea < 1e-6) return;
-    const holes = [];
-    let fullyCovered = false;
-    for (const feature of candidates ?? []) {
-      const polygon = feature.polygon?.map((point) => [point[0], point[2]]);
-      if (!polygon || polygon.length < 3) continue;
-      const clipped = clipPolygonToTriangle(polygon, triangle);
-      const clippedArea = Math.abs(area2d(clipped));
-      if (clippedArea < 0.12) continue;
-      if (clippedArea >= outerArea * 0.985) {
-        fullyCovered = true;
-        break;
-      }
-      if (area2d(clipped) * area2d(triangle) > 0) clipped.reverse();
-      holes.push({ polygon: clipped, area: clippedArea });
+  const sourceTriangles = new WeakMap();
+  const trianglesFor = (feature) => {
+    if (!sourceTriangles.has(feature)) {
+      sourceTriangles.set(feature, triangulatedXZ(feature.polygon ?? []));
     }
-    if (fullyCovered) return { fullyCovered: true, holes: [] };
-
-    // TrafficArea and AuxiliaryTrafficArea polygons can touch or overlap at
-    // their boundaries. Keep the largest clipped ring when a smaller ring is
-    // wholly inside it so ear-clipping receives non-overlapping holes.
-    holes.sort((a, b) => b.area - a.area);
-    const accepted = [];
-    for (const hole of holes) {
-      const center = hole.polygon.reduce((sum, point) => [sum[0] + point[0] / hole.polygon.length, sum[1] + point[1] / hole.polygon.length], [0, 0]);
-      if (accepted.some((item) => pointInPolygon(center, item))) continue;
-      accepted.push(hole.polygon);
-    }
-    return { fullyCovered: false, holes: accepted };
+    return sourceTriangles.get(feature);
   };
-
-  const appendTriangle = (triangle, values, candidates, depth = 0) => {
-    const roadMask = roadMaskForTriangle(triangle, candidates);
-    if (!roadMask) return;
-    if (roadMask.fullyCovered) return;
-
-    const maxEdge = Math.max(
-      Math.hypot(triangle[0][0] - triangle[1][0], triangle[0][1] - triangle[1][1]),
-      Math.hypot(triangle[1][0] - triangle[2][0], triangle[1][1] - triangle[2][1]),
-      Math.hypot(triangle[2][0] - triangle[0][0], triangle[2][1] - triangle[0][1]),
-    );
-    // Refine only where a PLATEAU road polygon actually intersects the
-    // terrain. This keeps the connected terrain grid inexpensive while
-    // making the road boundary independent of the original 30m cell size.
-    if (roadMask.holes.length && depth < 2 && maxEdge > roadTerrainMaxEdge) {
-      const [a, b, c] = triangle;
-      const [va, vb, vc] = values;
-      const ab = [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5];
-      const bc = [(b[0] + c[0]) * 0.5, (b[1] + c[1]) * 0.5];
-      const ca = [(c[0] + a[0]) * 0.5, (c[1] + a[1]) * 0.5];
-      const vab = (va + vb) * 0.5;
-      const vbc = (vb + vc) * 0.5;
-      const vca = (vc + va) * 0.5;
-      appendTriangle([a, ab, ca], [va, vab, vca], candidates, depth + 1);
-      appendTriangle([ab, b, bc], [vab, vb, vbc], candidates, depth + 1);
-      appendTriangle([ca, bc, c], [vca, vbc, vc], candidates, depth + 1);
-      appendTriangle([ab, bc, ca], [vab, vbc, vca], candidates, depth + 1);
-      return;
-    }
-
-    const contours = [triangle, ...roadMask.holes];
-    const faces = roadMask.holes.length
-      ? THREE.ShapeUtils.triangulateShape(
-          triangle.map((point) => new THREE.Vector2(...point)),
-          roadMask.holes.map((hole) => hole.map((point) => new THREE.Vector2(...point))),
-        )
-      : [[0, 1, 2]];
-    if (!faces.length) {
-      // Never restore the complete terrain triangle after a road mask was
-      // found. That fallback was the source of terrain reappearing over
-      // narrow/overlapping PLATEAU road polygons. The road surface remains
-      // responsible for covering the masked area.
-      return;
-    }
-    const offsets = [];
-    let offset = 0;
-    for (const contour of contours) {
-      offsets.push(offset);
-      for (const point of contour) {
-        const y = heightAtTriangle(point, triangle, values);
-        positions.push(point[0], y, point[1]);
-        offset++;
+  const appendTriangle = (triangle, values, candidates) => {
+    // Subtract every PLATEAU transportation triangle in sequence. This is a
+    // true polygon union by repeated difference, so overlapping TrafficArea
+    // rings cannot leave terrain slivers or require a jagged OSM route mask.
+    let groundFragments = [triangle];
+    for (const feature of candidates ?? []) {
+      for (const roadTriangle of trianglesFor(feature)) {
+        if (!groundFragments.length) break;
+        const roadBounds = {
+          minX: Math.min(...roadTriangle.map((point) => point[0])),
+          maxX: Math.max(...roadTriangle.map((point) => point[0])),
+          minZ: Math.min(...roadTriangle.map((point) => point[1])),
+          maxZ: Math.max(...roadTriangle.map((point) => point[1])),
+        };
+        const next = [];
+        for (const fragment of groundFragments) {
+          const fragmentBounds = {
+            minX: Math.min(...fragment.map((point) => point[0])),
+            maxX: Math.max(...fragment.map((point) => point[0])),
+            minZ: Math.min(...fragment.map((point) => point[1])),
+            maxZ: Math.max(...fragment.map((point) => point[1])),
+          };
+          if (!boundsOverlap(fragmentBounds, roadBounds)) {
+            next.push(fragment);
+            continue;
+          }
+          next.push(...partitionPolygonByConvex(fragment, roadTriangle).outside);
+        }
+        groundFragments = next;
       }
     }
-    const base = positions.length / 3 - offset;
-    for (const face of faces) indices.push(base + face[0], base + face[1], base + face[2]);
+    for (const fragment of groundFragments) {
+      appendXZSurface(
+        fragment,
+        positions,
+        indices,
+        (x, z) => heightAtTriangle([x, z], triangle, values),
+      );
+    }
   };
 
   for (let iz = 0; iz < height - 1; iz++) {
@@ -858,13 +1111,11 @@ export class PlateauWorldRenderer {
       .filter((id) => id !== "terrain" || layers.get(id)?.geometry === "connected-grid");
     const documents = Object.fromEntries(await Promise.all(wanted.map(async (id) => [id, await fetchJson(layers.get(id).url)])));
 
-    const routeCuts = routeRoadCutFeatures(this.routePath, this.routeData);
     const structuralZones = structuralRoadZones(this.routePath, this.routeData);
     const transportationFeatures = documents.transportation?.features ?? [];
     const terrain = terrainGridMesh(
       documents.terrain?.grid,
       documents.transportation?.features,
-      routeCuts,
       this.routePath,
       this.routeData?.bridges ?? [],
       this.routeData?.rivers ?? [],
@@ -896,9 +1147,18 @@ export class PlateauWorldRenderer {
           structuralZones,
         ));
       }
+      for (const mesh of plateauRouteMarkingMeshes(this.routePath, this.routeData, this.routeHeightAtS)) {
+        this.add(mesh.name, mesh);
+      }
+      for (const mesh of drivingSurfacePatchMeshes(this.routeData?.drivingNetwork)) this.add(mesh.name, mesh);
+      for (const mesh of compiledRoadDetailMeshes(this.routeData?.drivingNetwork, this.terrainHeightAtWorld)) this.add(mesh.name, mesh);
     }
     if (documents["osm-road-overlays"]) {
-      const overlayFeatures = documents["osm-road-overlays"].features ?? [];
+      // Road markings come from the compiled driving network above. Ignore
+      // legacy OSM line overlays, which otherwise draw a second white/yellow
+      // line on top of the generated marking.
+      const overlayFeatures = (documents["osm-road-overlays"].features ?? [])
+        .filter((feature) => feature.kind === "sidewalk");
       const byKind = overlayFeatures.reduce((acc, feature) => {
         (acc[feature.kind ?? "lane-divider"] ??= []).push(feature);
         return acc;

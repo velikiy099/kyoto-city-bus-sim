@@ -1,5 +1,4 @@
 import { CFG } from "../config.js";
-import { leftWidthAt } from "../route/routeData.js";
 import { schedule, fmtTime, delayInfo } from "./timetable.js";
 import { setPrompt, setDoorStatus, showToast } from "../ui/hud.js";
 
@@ -34,10 +33,14 @@ export function createOps(ctx) {
   route.stops.forEach((_, i) => stopsView.setWaiting(i, pax.board[i]));
 
   /** 前扉の弧長位置(後軸 s + 前扉オフセット) */
-  const doorS = () => state.s + CFG.bus.wheelbase + 1.2;
-  /** 縁石ギャップ [m](車体左側面とその地点の実効縁石の距離。複数車線区間は路肩基準) */
-  const curbGap = () =>
-    state.lateral - CFG.bus.width / 2 + leftWidthAt(state.s);
+  const doorS = () => state.s + CFG.bus.wheelbase + 1.3;
+  // The generated stop pose stores the lateral docking position relative to
+  // the shared through-lane. Use the actual projected bus position so manual
+  // and auto driving receive the same curb-clearance judgement.
+  const curbGap = () => {
+    const stop = route.stops[state.nextStopIndex];
+    return Math.abs((state.lateral ?? 0) - (stop?.dockLateral ?? 0));
+  };
 
   function openDoor() {
     const stop = route.stops[state.nextStopIndex];

@@ -69,6 +69,7 @@
     "osmOverlays": "public/world/generated/osm-road-overlays.json",
     "osmNetwork": "public/world/generated/osm-network.json",
     "routeElevation": "src/world/declarative/generated/route-elevation.json",
+    "drivingNetwork": "src/data/generated/driving-network.json",
     "worldManifest": "public/world/world-manifest.json",
     "report": "data/work/plateau/build-report.json"
   }

@@ -558,19 +558,11 @@ def build_osm_overlays(source: dict, transportation: list[dict]) -> tuple[list[d
         lanes_forward, lanes_backward = visual_lane_counts(tags)
         full_width = visual_road_width(tags, lanes_forward, lanes_backward)
         road_lines.append((line, tags, full_width, max(lanes_forward, lanes_backward)))
-        if lanes_backward > 0:
-            centerline = line.buffer(0.08, cap_style=2, join_style=2).intersection(road_union)
-            overlays.extend(overlay_feature("centerline", centerline, {"wayId": road.get("id")}, tags))
-        half_forward = max(1.0, full_width * lanes_forward / max(1, lanes_forward + lanes_backward))
-        half_backward = max(1.0, full_width - half_forward)
-        for index in range(1, lanes_forward):
-            offset = (half_forward * index / lanes_forward)
-            divider = line.offset_curve(-offset).buffer(0.045, cap_style=2, join_style=2)
-            overlays.extend(overlay_feature("lane-divider", divider.intersection(road_union), {"wayId": road.get("id")}, tags))
-        for index in range(1, lanes_backward):
-            offset = (half_backward * index / lanes_backward)
-            divider = line.offset_curve(offset).buffer(0.045, cap_style=2, join_style=2)
-            overlays.extend(overlay_feature("lane-divider", divider.intersection(road_union), {"wayId": road.get("id")}, tags))
+        # Centre markings are generated from the compiled driving network.
+        # Do not emit an OSM copy here: rendering both produced doubled,
+        # slightly offset centre lines on the PLATEAU surface.
+        # All road markings are generated from the compiled driving network.
+        # OSM lane dividers would duplicate those white lines on the same road.
 
     sidewalk_geometries = []
     for sidewalk in sidewalks:

@@ -3,15 +3,22 @@
  * path は 2m 等間隔リサンプル済みなので、s → index は O(1)。
  */
 export class RoutePath {
-  constructor(points, step = 2) {
+  constructor(points, step = 2, distances = null) {
     this.points = points; // [[x, z], ...]
     this.step = step;
     // 端数対策: 正確な累積長を持つ(最終区間だけ step 未満)
     this.cum = new Float64Array(points.length);
-    for (let i = 1; i < points.length; i++) {
-      const dx = points[i][0] - points[i - 1][0];
-      const dz = points[i][1] - points[i - 1][1];
-      this.cum[i] = this.cum[i - 1] + Math.hypot(dx, dz);
+    const useDistances = Array.isArray(distances)
+      && distances.length === points.length
+      && distances.every((value, index) => Number.isFinite(value) && (index === 0 || value > distances[index - 1]));
+    if (useDistances) {
+      for (let i = 0; i < points.length; i++) this.cum[i] = distances[i];
+    } else {
+      for (let i = 1; i < points.length; i++) {
+        const dx = points[i][0] - points[i - 1][0];
+        const dz = points[i][1] - points[i - 1][1];
+        this.cum[i] = this.cum[i - 1] + Math.hypot(dx, dz);
+      }
     }
     this.length = this.cum[points.length - 1];
   }

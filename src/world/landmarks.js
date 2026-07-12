@@ -2,40 +2,17 @@ import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { route, rightWidthAt, leftWidthAt } from "../route/routeData.js";
 import { lambertize } from "../util/lambertize.js";
+import { snapHierarchyToTerrain } from "./declarative/continuousTerrain.js";
 
 const mat = (color, opts = {}) =>
   new THREE.MeshLambertMaterial({ color, ...opts });
 
-// OSM の surface タグを、ロータリーの路面ポリゴン用の色へ変換する。
-// surface 未設定の service/unclassified は、この地域の実測タグに合わせて
-// asphalt 相当(舗装路)として扱う。
-const OSM_SURFACE_COLORS = {
-  asphalt: 0x55585a,
-  concrete: 0x777a78,
-  paving_stones: 0x8c887e,
-  cobblestone: 0x817d74,
-  sett: 0x817d74,
-  fine_gravel: 0x9a907f,
-  gravel: 0x918875,
-  compacted: 0x8d8578,
-  unpaved: 0x7e776b,
-  ground: 0x7e776b,
-  dirt: 0x7e776b,
-  sand: 0xa99a7c,
-};
-
-function osmSurfaceMaterial(tags, materials) {
-  const surface = String(tags?.surface ?? "").toLowerCase();
-  const color = OSM_SURFACE_COLORS[surface] ?? OSM_SURFACE_COLORS.asphalt;
-  if (!materials.has(color)) materials.set(color, mat(color));
-  return materials.get(color);
-}
+const gltfLoader = new GLTFLoader();
 
 // ===== 駐機バス(bus.glb を共有ロードし、静止状態でクローンして量産) =====
-const busLoader = new GLTFLoader();
 let busLib = null;
 const pendingBus = [];
-busLoader.load("models/bus.glb", (gltf) => {
+gltfLoader.load("models/bus.glb", (gltf) => {
   lambertize(gltf.scene);
   busLib = gltf.scene;
   for (const fill of pendingBus.splice(0)) fill();
@@ -63,11 +40,45 @@ function anchor(path, s, lat) {
   return { x: px + -tz * lat, z: pz + tx * lat, ry: Math.atan2(tx, tz) };
 }
 
+// ===== 東寺の実測アンカー(ゲーム座標) =====
+// OSM(ODbL)実測の門位置と PLATEAU 実測の建物中心を、route18.json と同じ
+// projOrigin [34.9746902, 135.7422893] の equirectangular で投影した値。
+// halfGap は塀に空ける開口の半幅(門の屋根全長の半分+余白)。
+const TOJI_POS = {
+  pagoda: { x: 590.22, z: -578.63 }, // PLATEAU measuredHeight=55.0 の建物中心
+  kondo: { x: 496.62, z: -632.03 }, // PLATEAU 金堂(高さ24.9m)の建物中心
+  nandaimon: { x: 495.37, z: -540.99, halfGap: 13.3 }, // 南大門(屋根全長23.6m)
+  todaimon: { x: 618.51, z: -667.9, halfGap: 9.3 }, // 東大門・不開門(同15.4m)
+  keigamon: { x: 618.51, z: -799.26, halfGap: 9.4 }, // 慶賀門(同15.65m)
+};
+
+// 五重塔・三門の実測GLB(Blender製)。一度だけロードして共有する。
+let tojiModelsPromise = null;
+function loadTojiModels() {
+  tojiModelsPromise ??= Promise.all(
+    ["models/toji-pagoda.glb", "models/toji-gates.glb"].map(
+      (url) =>
+        new Promise((resolve, reject) => {
+          gltfLoader.load(
+            url,
+            (gltf) => {
+              lambertize(gltf.scene);
+              resolve(gltf.scene);
+            },
+            undefined,
+            reject,
+          );
+        }),
+    ),
+  );
+  return tojiModelsPromise;
+}
+
 /**
- * 東寺(境内・五重塔・金堂)。
- * 境内は実際の道路配置に接するよう矩形で囲む: 北端=東寺道交差点、東端=大宮通(七条〜九条間)、
- * 南端=九条通(九条大宮の交差点)、西端=京阪国道口(国道1号)交差点。
- * 五重塔は史実どおり境内南東寄り(九条大宮交差点の北西方向)に配置する。
+ * 東寺(境内・五重塔・金堂・三門)。
+ * 境内は実際の道路配置に接するよう矩形で囲む: 北端=東寺道交差点、西端=京阪国道口(国道1号)。
+ * 東端の塀は東大門・慶賀門、南端の塀は南大門の実測中心線を通し、門の位置に開口を空ける。
+ * 五重塔(GLB)は PLATEAU の該当建物(実測中心)を置き換える形で配置する。
  */
 function buildToji(scene, path) {
   const g = new THREE.Group();
@@ -77,16 +88,16 @@ function buildToji(scene, path) {
   const turn = route.turnIntersections.find((t) => t.crossName === "大宮通");
   if (!tojiDo || !keihan || !turn) {
     scene.add(g);
-    return { x: 0, z: 0, r: 0 };
+    return [];
   }
 
-  const [, northZ] = path.getPoint(tojiDo.s); // 北端: 東寺道交差点の緯度
-  // 東端: 大宮通(九条大宮進入直前)の西側路端(東寺は大宮通の西側にある。センターラインではなく
-  // 実際の舗装外側+歩道分。西側=positive lateral=rightWidthAt が管轄)
-  const eastX = turn.x - rightWidthAt((tojiDo.s + turn.s) / 2) - 2.5;
-  // 南端: 九条通(九条大宮交差点)の進入側路端。turn.z(交差点中心)をそのまま使うと
-  // 九条通の舗装に食い込むため、進入側道路半幅(turn.hwIn)+余白ぶん北へ後退させる。
-  const southZ = turn.z - turn.hwIn - 2.5;
+  // 北端: 東寺道交差点の緯度。ただし慶賀門(実測)は東寺道T字路の正面にあり
+  // 交差点中心よりわずかに北なので、門の開口が塀に収まるところまで北へ広げる。
+  const [, tojiDoZ] = path.getPoint(tojiDo.s);
+  const { nandaimon, todaimon, keigamon } = TOJI_POS;
+  const northZ = Math.min(tojiDoZ, keigamon.z - keigamon.halfGap - 2);
+  const eastX = TOJI_POS.todaimon.x; // 東端: 東大門・慶賀門の中心線
+  const southZ = TOJI_POS.nandaimon.z; // 南端: 南大門の中心線
   const [westX] = path.getPoint(keihan.s); // 西端: 京阪国道口交差点の経度
   const w = eastX - westX;
   const d = southZ - northZ;
@@ -94,17 +105,18 @@ function buildToji(scene, path) {
     cz = (northZ + southZ) / 2;
   g.position.set(cx, 0, cz);
 
-  // 境内(砂利色) と 塀
+  // 境内(砂利色)
   const ground = new THREE.Mesh(new THREE.PlaneGeometry(w, d), mat(0xcabfa5));
   ground.rotation.x = -Math.PI / 2;
   ground.position.y = 0.08;
   g.add(ground);
-  for (const [ww, dd, x, z] of [
-    [w, 2, 0, -d / 2],
-    [w, 2, 0, d / 2],
-    [2, d, -w / 2, 0],
-    [2, d, w / 2, 0],
-  ]) {
+  // 塀(門の開口部を除いて敷設)。horizontal=trueはX方向(南北の塀)。
+  const wallSeg = (horizontal, fixed, from, to) => {
+    const len = to - from;
+    if (len < 1) return;
+    const [ww, dd] = horizontal ? [len, 2] : [2, len];
+    const x = (horizontal ? (from + to) / 2 : fixed) - cx;
+    const z = (horizontal ? fixed : (from + to) / 2) - cz;
     const wall = new THREE.Mesh(
       new THREE.BoxGeometry(ww, 3.2, dd),
       mat(0xe8e0d0),
@@ -117,50 +129,40 @@ function buildToji(scene, path) {
     );
     cap.position.set(x, 3.4, z);
     g.add(cap);
-  }
+  };
+  wallSeg(true, northZ, westX, eastX); // 北塀
+  wallSeg(false, westX, northZ, southZ); // 西塀
+  wallSeg(true, southZ, westX, nandaimon.x - nandaimon.halfGap); // 南塀(南大門の西)
+  wallSeg(true, southZ, nandaimon.x + nandaimon.halfGap, eastX); // 南塀(南大門の東)
+  wallSeg(false, eastX, northZ, keigamon.z - keigamon.halfGap); // 東塀(慶賀門の北)
+  wallSeg(
+    false,
+    eastX,
+    keigamon.z + keigamon.halfGap,
+    todaimon.z - todaimon.halfGap,
+  ); // 東塀(門間)
+  wallSeg(false, eastX, todaimon.z + todaimon.halfGap, southZ); // 東塀(東大門の南)
 
-  // 五重塔(境内の南東寄り = 九条大宮交差点の北西方向。実際の伽藍配置と同じ)
-  // 元々の相対位置(南壁修正前の southZ=turn.z 基準)から、九条大宮交差点(turn)に向けて10m近づける。
-  const pagoda = new THREE.Group();
-  const pagodaVecX = eastX - 65 - turn.x;
-  const pagodaVecZ = -55;
-  const pagodaDist = Math.hypot(pagodaVecX, pagodaVecZ);
-  const pagodaScale = Math.max(0, (pagodaDist - 10) / pagodaDist);
-  const pagodaWorldX = turn.x + pagodaVecX * pagodaScale;
-  const pagodaWorldZ = turn.z + pagodaVecZ * pagodaScale;
-  pagoda.position.set(pagodaWorldX - cx, 0, pagodaWorldZ - cz);
-  let y = 0;
-  for (let i = 0; i < 5; i++) {
-    const bw = 12.5 - i * 1.7;
-    const bh = 7.2 - i * 0.55;
-    const bodyM = new THREE.Mesh(
-      new THREE.BoxGeometry(bw, bh, bw),
-      mat(0x8a4b32),
-    );
-    bodyM.position.y = y + bh / 2;
-    pagoda.add(bodyM);
-    y += bh;
-    const roofW = bw + 5.2;
-    const roof = new THREE.Mesh(
-      new THREE.ConeGeometry(roofW / 1.32, 2.6, 4),
-      mat(0x3d4750),
-    );
-    roof.rotation.y = Math.PI / 4;
-    roof.position.y = y + 1.3;
-    pagoda.add(roof);
-    y += 1.9;
-  }
-  const finial = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.35, 0.5, 9.5, 8),
-    mat(0xb8933e),
-  );
-  finial.position.y = y + 4.7;
-  pagoda.add(finial);
-  g.add(pagoda);
+  // 五重塔(実測GLB・PLATEAU建物中心)と三門(実測GLB・OSM実測位置)
+  // 門の正面(ローカル+Z)は面する通りへ、開いた扉(ローカル-Z)は境内側へ向ける。
+  loadTojiModels().then(([pagodaLib, gatesLib]) => {
+    const place = (lib, name, pos, ry) => {
+      const node = lib.getObjectByName(name).clone(true);
+      node.position.set(pos.x - cx, 0, pos.z - cz);
+      node.rotation.y = ry;
+      g.add(node);
+      node.updateWorldMatrix(true, true);
+      snapHierarchyToTerrain(node);
+    };
+    place(pagodaLib, "TojiPagoda", TOJI_POS.pagoda, 0);
+    place(gatesLib, "NandaiMon", nandaimon, 0); // 正面=九条通(南)
+    place(gatesLib, "TodaiMon", todaimon, Math.PI / 2); // 正面=大宮通(東)
+    place(gatesLib, "KeigaMon", keigamon, Math.PI / 2); // 正面=大宮通(東)
+  });
 
-  // 金堂(大きな寄棟屋根の堂・境内中央よりやや北)
+  // 金堂(大きな寄棟屋根の堂・PLATEAU実測中心 = 南大門の伽藍軸上)
   const hall = new THREE.Group();
-  hall.position.set(0, 0, -d * 0.12);
+  hall.position.set(TOJI_POS.kondo.x - cx, 0, TOJI_POS.kondo.z - cz);
   const hallBody = new THREE.Mesh(
     new THREE.BoxGeometry(38, 10, 26),
     mat(0xa08464),
@@ -178,71 +180,12 @@ function buildToji(scene, path) {
   g.add(hall);
 
   scene.add(g);
-  return { x: cx, z: cz, r: Math.max(w, d) / 2 + 15 };
-}
-
-/** JR二条駅(かまぼこ型の大屋根) */
-function buildNijoStation(scene, path) {
-  const s = stopS("二条駅西口");
-  const a = anchor(path, s + 40, -68); // 発車直後の左(北東)側
-  const g = new THREE.Group();
-  g.position.set(a.x, 0, a.z);
-  g.rotation.y = a.ry + Math.PI / 2; // 駅は南北に長い
-
-  const roof = new THREE.Mesh(
-    new THREE.CylinderGeometry(13, 13, 92, 24, 1, false, 0, Math.PI),
-    mat(0x9fb8c8, { side: THREE.DoubleSide }),
-  );
-  roof.rotation.z = Math.PI / 2;
-  roof.rotation.y = Math.PI / 2;
-  roof.position.y = 9;
-  g.add(roof);
-  const base = new THREE.Mesh(new THREE.BoxGeometry(26, 9, 90), mat(0xd8dcd8));
-  base.position.y = 4.5;
-  g.add(base);
-  const sign = new THREE.Mesh(
-    new THREE.BoxGeometry(22, 2.0, 0.4),
-    mat(0x2b4a66),
-  );
-  sign.position.set(0, 7.5, 45.5);
-  g.add(sign);
-
-  // 駅前ロータリーの細いサービス路はPLATEAUの大きな道路面だけでは
-  // つぶれやすいため、OSMのservice/unclassified wayを駅前範囲だけ重ねる。
-  // 座標はroute18.json生成時にOSMから投影済みで、駅本体と同じ原点・向きへ戻す。
-  const roadMaterials = new Map();
-  const worldToLocal = ([x, z]) => {
-    const dx = x - a.x;
-    const dz = z - a.z;
-    return [
-      Math.cos(g.rotation.y) * dx + Math.sin(g.rotation.y) * dz,
-      -Math.sin(g.rotation.y) * dx + Math.cos(g.rotation.y) * dz,
-    ];
-  };
-  for (const road of route.osmStationRoads ?? []) {
-    const points = road.points ?? [];
-    const tags = road.tags ?? {};
-    const lanes = Number(tags.lanes) || 1;
-    const width = Number.parseFloat(tags.width) || (tags.highway === "service" ? 4.8 : lanes * 3.2 + 1.0);
-    for (let i = 0; i < points.length - 1; i++) {
-      const p0 = worldToLocal(points[i]);
-      const p1 = worldToLocal(points[i + 1]);
-      const dx = p1[0] - p0[0];
-      const dz = p1[1] - p0[1];
-      const length = Math.hypot(dx, dz);
-      if (length < 1) continue;
-      const roadMesh = new THREE.Mesh(
-        new THREE.PlaneGeometry(width, length),
-        osmSurfaceMaterial(tags, roadMaterials),
-      );
-      roadMesh.rotation.x = -Math.PI / 2;
-      roadMesh.rotation.z = -Math.atan2(dx, dz);
-      roadMesh.position.set((p0[0] + p1[0]) / 2, 0.04, (p0[1] + p1[1]) / 2);
-      g.add(roadMesh);
-    }
-  }
-  scene.add(g);
-  return { x: a.x, z: a.z, r: 72 };
+  return [
+    { x: cx, z: cz, r: Math.max(w, d) / 2 + 15 },
+    // 慶賀門は境内北東角にあり上の円から外れるため、PLATEAU側の門建物
+    // (bldg_b170a8f2, 高さ8.3m)を個別に除外して GLB と重ならないようにする。
+    { x: keigamon.x, z: keigamon.z, r: 10 },
+  ];
 }
 
 /** 京都水族館+梅小路公園 */
@@ -536,36 +479,8 @@ function buildTerminus(scene, path) {
   backLine.position.set((bayLeftX + bayRightX) / 2, 0.03, bayBackZ);
   g.add(backLine);
 
-  // バス停(乗降場)。ガソリンスタンド風の大屋根は使わず、簡素なポール・上屋なしの
-  // ベンチ+サインのみにする。敷地西端の北寄りに置き、バスは真北を向く。西側に道路は置かない。
-  const stop = terminusStopAnchor(lot);
-  const shelter = new THREE.Group();
-  shelter.position.set(stop.x - lot.x, 0, stop.z - lot.z);
-  shelter.rotation.y = stop.heading;
-  const postMat = mat(0x9a9d9a);
-  const pole = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.08, 0.08, 2.4, 8),
-    postMat,
-  );
-  pole.position.set(0, 1.2, 0);
-  shelter.add(pole);
-  const bench = new THREE.Mesh(
-    new THREE.BoxGeometry(3.6, 0.5, 1.0),
-    mat(0x8f8577),
-  );
-  // shelter は北向きに回しているため、ベンチは回転後に敷地内(東側)へ来る側へ置く。
-  bench.position.set(-1.8, 0.5, -0.9);
-  shelter.add(bench);
-  const sign = new THREE.Mesh(
-    new THREE.PlaneGeometry(3.2, 0.9),
-    new THREE.MeshBasicMaterial({
-      map: makeLabelTexture("久我石原町"),
-      side: THREE.DoubleSide,
-    }),
-  );
-  sign.position.set(0, 3.0, 0);
-  shelter.add(sign);
-  g.add(shelter);
+  // The terminal pole, shelter and north-facing stopping frame are generated
+  // together with every other stop in game/stops.js.
 
   // 駐機バス(北向き=-Z 向き)。敷地は世界軸に揃っているため、そのまま π で北を向く。
   // 駐車区画は2つ設けるが、実際に配置するバスは1台のみ(南東の角=bay2)。
@@ -675,8 +590,7 @@ function buildMibuDepot(scene, path) {
 /** すべてのランドマークを配置し、建物生成の除外域リストを返す */
 export function buildLandmarks(scene, path) {
   return [
-    buildToji(scene, path),
-    buildNijoStation(scene, path),
+    ...buildToji(scene, path),
     buildAquarium(scene, path),
     buildKyotoTower(scene, path),
     ...buildRiverIndustries(scene, path),

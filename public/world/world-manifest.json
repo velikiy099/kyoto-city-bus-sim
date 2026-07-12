@@ -1,13 +1,13 @@
 {
   "version": 3,
-  "generatedAt": "2026-07-12T06:32:11.812720+00:00",
+  "generatedAt": "2026-07-12T14:20:13.101989+00:00",
   "status": "ready",
   "sources": {
     "osm": {
       "provider": "OpenStreetMap",
       "relationId": 13027168,
       "license": "ODbL",
-      "generatedAt": "2026-07-12T06:23:04.412Z"
+      "generatedAt": "2026-07-12T14:15:07.172Z"
     },
     "plateau": {
       "provider": "Project PLATEAU",
@@ -42,7 +42,7 @@
       "id": "transportation",
       "provider": "plateau",
       "url": "/world/generated/plateau-transportation.json",
-      "featureCount": 4002
+      "featureCount": 3988
     },
     {
       "id": "water",
@@ -66,7 +66,7 @@
       "id": "buildings",
       "provider": "plateau",
       "url": "/world/generated/plateau-buildings.json",
-      "featureCount": 17422
+      "featureCount": 17363
     },
     {
       "id": "furniture",
@@ -79,7 +79,7 @@
       "id": "osm-road-overlays",
       "provider": "osm-derived-clipped-to-plateau",
       "url": "/world/generated/osm-road-overlays.json",
-      "featureCount": 1608
+      "featureCount": 423
     },
     {
       "id": "osm-network",

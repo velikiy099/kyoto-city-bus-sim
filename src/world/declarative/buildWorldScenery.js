@@ -24,13 +24,14 @@ function captureAndSnap(scene, build, heightAtWorld) {
  * and road furniture; no duplicate road plate is added.
  */
 export async function buildWorldScenery(scene, path, route, builders) {
+  const surfacePath = route.surfacePath ?? path;
   // Railway/viaduct builders already distinguish ground height from deck height.
-  builders.buildRailways(scene, path, route.railStructures);
+  builders.buildRailways(scene, surfacePath, route.railStructures, route.osmExpressways ?? []);
 
   const landmarkExclusions = asArray(
-    captureAndSnap(scene, () => builders.buildLandmarks(scene, path), builders.terrainHeightAtWorld),
+    captureAndSnap(scene, () => builders.buildLandmarks(scene, surfacePath), builders.terrainHeightAtWorld),
   );
-  const natureExclusions = asArray(builders.buildNature(scene, path));
+  const natureExclusions = asArray(builders.buildNature(scene, surfacePath));
   const exclusions = [
     ...landmarkExclusions,
     ...natureExclusions,
@@ -41,7 +42,7 @@ export async function buildWorldScenery(scene, path, route, builders) {
   const renderer = new PlateauWorldRenderer(scene, {
     exclusions,
     enabled: WORLD_CONFIG.render,
-    routePath: path,
+    routePath: route.surfacePath ?? path,
     routeData: route,
     terrainHeightAtWorld: builders.terrainHeightAtWorld,
     roadHeightAtWorld: builders.roadHeightAtWorld,

@@ -6,6 +6,23 @@ const smoothstep = (value) => {
 
 export const RIVER_LINE_REACH = 400;
 export const RIVER_TERRAIN_DIP_DEPTH = 3.4;
+const OSM_LINE_WIDTH_FALLBACK = {
+  "桂川": 48,
+  "鴨川": 22,
+  "西高瀬川": 8,
+};
+
+/**
+ * OSM waterway=river is normally a centreline, not a water-surface polygon.
+ * Never use the bridge span as water width: that creates a false rectangular
+ * lake.  Prefer an OSM width tag when the refreshed route data has one, then
+ * use a conservative line-rendering fallback until a riverbank polygon exists.
+ */
+export function riverWidthMeters(bridge, line = null) {
+  const tagged = Number(line?.widthMeters ?? bridge?.riverWidth);
+  if (Number.isFinite(tagged) && tagged > 0) return tagged;
+  return OSM_LINE_WIDTH_FALLBACK[bridge?.river] ?? 12;
+}
 
 /** Point-to-polyline distance in the world x-z plane. */
 export function distToPolyline(px, pz, points) {
@@ -74,7 +91,7 @@ export function clippedRiverPoints(path, bridge, rivers) {
 /** Build the exact river corridors used for both the visible water and terrain cut. */
 export function buildRiverDips(path, bridges = [], rivers = []) {
   return bridges.map((bridge) => {
-    const riverWidth = Math.max(18, bridge.length * 0.85);
+    const riverWidth = riverWidthMeters(bridge, (rivers ?? []).find((river) => river.bridgeName === bridge.name));
     const outer = Math.max(55, Math.min(200, riverWidth / 2 + 35));
     const points = clippedRiverPoints(path, bridge, rivers);
     const xs = points.map((point) => point[0]);

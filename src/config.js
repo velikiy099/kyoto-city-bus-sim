@@ -2,11 +2,11 @@
 export const CFG = {
   // --- 車両(いすゞエルガ級 大型路線車) ---
   bus: {
-    length: 11.5,
-    width: 2.5,
-    height: 3.0,
-    wheelbase: 5.5,
-    rearOverhang: 2.6, // 後軸から車体後端まで
+    length: 10.29,
+    width: 2.49,
+    height: 3.14,
+    wheelbase: 4.8,
+    rearOverhang: 3.15, // 後軸から車体後端まで
     maxAccel: 1.2, // [m/s^2]
     throttleTau: 0.3, // アクセル一次遅れ [s]
     maxBrake: 3.5, // 常用ブレーキ最大 [m/s^2]

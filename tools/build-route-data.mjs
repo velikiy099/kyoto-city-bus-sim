@@ -32,6 +32,9 @@ const OVERPASS_ENDPOINTS = [
   "https://overpass-api.de/api/interpreter",
   "https://overpass.kumi.systems/api/interpreter",
 ];
+const REFRESH_OSM = process.argv.includes("--refresh-osm");
+const REFRESH_RIVER_ONLY = process.argv.includes("--refresh-river");
+const OSM_RIVER_MAP = process.argv.find((arg) => arg.startsWith("--osm-river-map="))?.split("=").slice(1).join("=") ?? null;
 
 // 距離スケール: 実距離に乗算。1.0 で OSM 実距離どおり。
 const SCALE = 1.0;
@@ -191,6 +194,14 @@ const JUJO_WAY_IDS = [
 const JUJO_FROM = [34.9736, 135.7414]; // 差し替え開始: 新千本通・十条通の手前
 const JUJO_TO = [34.9554039, 135.7421815]; // 差し替え終了: 一方通行南端の合流点
 
+// 九条通は東西の分離された一方通行2車線。18号系統の南行きは
+// 九条大宮から羅城門へ西行きの車線(国道1号側)を通る。リレーションの
+// 形状は東行き車線(968070114)を逆向きに含んでいるため、実走車線の
+// way を明示的に差し替える。
+const KUJO_WESTBOUND_WAY_IDS = [968070112, 968070111];
+const KUJO_WESTBOUND_FROM = [34.9793823, 135.7493066]; // 九条大宮交差点・東側
+const KUJO_WESTBOUND_TO = [34.978789, 135.7414259]; // 羅城門交差点・西側
+
 // 南行き専用区間(千本通西側→小枝橋(鴨川)→城南宮道→赤池→上鳥羽塔ノ森): 実 way 形状
 // 小枝橋(man_made=bridge, name=小枝橋)の実位置は lat≈34.9511 で、停留所(lat≈34.9541)
 // から更に南下した地点(千本通西側の way 1061759795 終点)にある。旧データはこれを
@@ -301,7 +312,13 @@ const LANE_PLAN = [
   { to: "四条通", F: 1, B: 1, name: "千本通・後院通(三条〜四条大宮)" },
   { to: "七条通", F: 2, B: 2, name: "大宮通(四条〜七条)" },
   { to: [34.97938, 135.74931], F: 3, B: 3, name: "大宮通(七条〜九条・跨線橋)" },
-  { to: [34.9788, 135.74145], F: 2, B: 2, name: "九条通" },
+  {
+    to: [34.9788, 135.74145],
+    F: 2,
+    B: 0,
+    center: "none",
+    name: "九条通(西行き一方通行2車線)",
+  },
   { to: [34.9734, 135.7414], F: 1, B: 1, name: "新千本通" },
   { to: [34.97335, 135.74254], F: 2, B: 2, name: "十条通" },
   {
@@ -356,12 +373,6 @@ const LANE_W = 3.2; // 1車線幅 [m]
 // 右折車線ゾーン: 範囲内の信号交差点の進入方向に+1車線(千本通北部=計5、府道202=計3 等)
 const APPROACH_ZONES = [
   { from: [35.0117, 135.7425], to: "三条通", len: 65, name: "千本三条以北" },
-  {
-    from: [34.97938, 135.74931],
-    to: [34.9788, 135.74145],
-    len: 65,
-    name: "九条通",
-  },
   {
     from: [34.94645, 135.74301],
     to: [34.9457, 135.7327],
@@ -560,9 +571,74 @@ async function fetchJson(_url, body) {
   throw lastErr;
 }
 
+async function refreshKatsuraRelationCache(path) {
+  const res = await fetch("https://api.openstreetmap.org/api/0.6/relation/9459116/full.json", {
+    headers: {
+      Accept: "application/json",
+      "User-Agent": "cc-sample-game-route-builder/0.1 (OpenStreetMap data refresh)",
+    },
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status} for OpenStreetMap relation 9459116`);
+  const relationData = await res.json();
+  if (OSM_RIVER_MAP && existsSync(OSM_RIVER_MAP)) {
+    const xml = readFileSync(OSM_RIVER_MAP, "utf8");
+    const nodes = new Map();
+    for (const match of xml.matchAll(/<node\s+id="(\d+)"[^>]*\slat="([^"]+)"[^>]*\slon="([^"]+)"[^>]*\s*\/?>(?:<\/node>)?/g)) {
+      nodes.set(match[1], { lat: Number(match[2]), lon: Number(match[3]) });
+    }
+    const mapWays = [];
+    for (const match of xml.matchAll(/<way\s+id="(\d+)"[^>]*>([\s\S]*?)<\/way>/g)) {
+      const body = match[2];
+      const tags = Object.fromEntries(
+        [...body.matchAll(/<tag\s+k="([^"]+)"\s+v="([^"]*)"\s*\/?>(?:<\/tag>)?/g)]
+          .map((tag) => [tag[1], tag[2]]),
+      );
+      const isKatsuraLine = tags.name === "桂川" && tags.waterway === "river";
+      const isWaterSurface = tags.natural === "water"
+        || tags.waterway === "riverbank"
+        || ["river", "canal"].includes(tags.water ?? "");
+      if (!isKatsuraLine && !isWaterSurface) continue;
+      const refs = [...body.matchAll(/<nd\s+ref="(\d+)"\s*\/?>(?:<\/nd>)?/g)].map((nd) => nd[1]);
+      const geometry = refs.map((ref) => nodes.get(ref)).filter(Boolean);
+      if (geometry.length > 1) mapWays.push({ type: "way", id: Number(match[1]), tags, nodes: refs.map(Number), geometry });
+    }
+    relationData.elements.push(...mapWays);
+    console.log(`  parsed ${mapWays.length} 桂川 ways from OSM map bbox`);
+  }
+  const cached = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : { version: 0.6, elements: [] };
+  const memberIds = new Set(
+    relationData.elements
+      .find((element) => element.type === "relation" && element.id === 9459116)
+      ?.members?.filter((member) => member.type === "way")
+      .map((member) => String(member.ref)) ?? [],
+  );
+  const merged = new Map((cached.elements ?? []).map((element) => [`${element.type}/${element.id}`, element]));
+  for (const element of relationData.elements) {
+    if ((element.type === "relation" && element.id === 9459116)
+      || (element.type === "way" && (memberIds.has(String(element.id))
+        || element.tags?.natural === "water"
+        || element.tags?.waterway === "riverbank"
+        || ["river", "canal"].includes(element.tags?.water ?? "")))) {
+      const previous = merged.get(`${element.type}/${element.id}`);
+      merged.set(`${element.type}/${element.id}`, {
+        ...(previous ?? {}),
+        ...element,
+        ...(element.geometry ? {} : previous?.geometry ? { geometry: previous.geometry } : {}),
+      });
+    }
+  }
+  const output = { ...cached, elements: [...merged.values()] };
+  mkdirSync(CACHE, { recursive: true });
+  writeFileSync(path, JSON.stringify(output));
+  console.log(`  merged OSM relation 9459116 into tools/cache/${path.split("/cache/").at(-1)}`);
+  return output;
+}
+
 function loadCachedOrFetch(file, query) {
   const path = join(CACHE, file);
-  if (existsSync(path)) {
+  if (REFRESH_RIVER_ONLY && file === "route18_rivers.json")
+    return refreshKatsuraRelationCache(path);
+  if (existsSync(path) && !REFRESH_OSM) {
     console.log(`  cache hit: tools/cache/${file}`);
     return Promise.resolve(JSON.parse(readFileSync(path, "utf8")));
   }
@@ -775,6 +851,22 @@ const VISUAL_TAG_KEYS = [
   "footway",
   "surface",
   "junction",
+  "bridge",
+  "layer",
+  "access",
+  "vehicle",
+  "motor_vehicle",
+  "maxspeed",
+  "turn:lanes",
+  "surface",
+  "crossing",
+  "crossing:markings",
+  "crossing:signals",
+  "barrier",
+  "height",
+  "natural",
+  "landuse",
+  "leisure",
 ];
 
 function visualTags(tags = {}) {
@@ -785,10 +877,13 @@ function visualTags(tags = {}) {
   );
 }
 
-function buildOsmVisualSource(ways, origin) {
+function buildOsmVisualSource(ways, nodes, origin) {
   const roads = [];
   const sidewalks = [];
   const stationRoads = [];
+  const crossings = [];
+  const pedestrianWays = [];
+  const hedges = [];
   const [stationSouth, stationWest, stationNorth, stationEast] = NIJO_STATION_BBOX;
   for (const way of ways ?? []) {
     const tags = way.tags ?? {};
@@ -802,10 +897,19 @@ function buildOsmVisualSource(ways, origin) {
     const record = {
       id: way.id,
       points,
+      nodeIds: way.nodes ?? [],
       tags: visualTags(tags),
       source: { provider: "OpenStreetMap", wayId: way.id },
     };
     const isSidewalk = tags.footway === "sidewalk" || tags["area:highway"] === "footway";
+    const isCrossing = tags.footway === "crossing"
+      || tags.crossing === "marked"
+      || tags["crossing:markings"] === "yes";
+    const isPedestrianStructure = ["footway", "steps", "pedestrian"].includes(tags.highway)
+      && tags.bridge === "yes";
+    if (isCrossing) crossings.push(record);
+    if (isPedestrianStructure) pedestrianWays.push(record);
+    if (tags.barrier === "hedge") hedges.push(record);
     if (isSidewalk) sidewalks.push(record);
     else if (VISUAL_ROAD_TYPES.includes(tags.highway)) roads.push(record);
     if (
@@ -819,7 +923,44 @@ function buildOsmVisualSource(ways, origin) {
       stationRoads.push(record);
     }
   }
-  return { roads, sidewalks, stationRoads };
+  const trafficSignals = (nodes ?? [])
+    .filter((node) => node.tags?.highway === "traffic_signals")
+    .map((node) => {
+      const [[x, z]] = project([[node.lat, node.lon]], origin);
+      return { id: node.id, point: [+x.toFixed(2), +z.toFixed(2)], tags: visualTags(node.tags ?? {}) };
+    });
+  return { roads, sidewalks, stationRoads, crossings, pedestrianWays, hedges, trafficSignals };
+}
+
+/**
+ * Keep the mapped Meishin mainline as a continuous OSM-derived overlay.
+ * Ramps are intentionally excluded: they are separate motorway_link ways and
+ * must not be mistaken for the mainline carriageway. Each source way remains
+ * a segment so bridge/layer tags are preserved for the runtime renderer.
+ */
+function buildOsmExpressways(ways, origin) {
+  return (ways ?? [])
+    .filter((way) => way.tags?.highway === "motorway" && way.geometry?.length > 1)
+    .map((way) => {
+      const points = rdp(
+        project(way.geometry.map((point) => [point.lat, point.lon]), origin)
+          .map(([x, z]) => [x * SCALE, z * SCALE]),
+        0.35,
+      ).map(([x, z]) => [+x.toFixed(2), +z.toFixed(2)]);
+      const lanes = parsePositive(way.tags?.lanes) ?? 3;
+      const taggedWidth = parsePositive(way.tags?.width);
+      return {
+        id: way.id,
+        points,
+        width: +(taggedWidth ?? (lanes * 3.5 + 4.5)).toFixed(1),
+        lanes,
+        bridge: way.tags?.bridge === "yes",
+        layer: Number(way.tags?.layer ?? 0) || 0,
+        tags: visualTags(way.tags),
+        source: { provider: "OpenStreetMap", wayId: way.id },
+      };
+    })
+    .filter((way) => way.points.length > 1);
 }
 
 const OSM_TREE_AREA_TAGS = new Set(["wood", "forest", "scrub"]);
@@ -869,6 +1010,11 @@ function buildOsmVegetationSource(elements, origin) {
       });
     }
     if (OSM_GREEN_AREA_TAGS.has(landuse) || OSM_GREEN_AREA_TAGS.has(leisure)) {
+      // Closed OSM rings repeat their first point at the end.  Remove only
+      // that duplicate before simplification; otherwise RDP sees a zero-length
+      // baseline and collapses an entire planted island to a point.
+      if (points.length > 2 && dist2(points[0], points.at(-1)) < 0.25)
+        points = points.slice(0, -1);
       greenAreas.push({
         id: element.id,
         kind: landuse || leisure,
@@ -982,6 +1128,13 @@ function extractRiverLine(
     +(z * SCALE).toFixed(2),
   ]);
   const simplified = rdp(projected, 1.5 * SCALE);
+  const taggedWidths = ways
+    .map((way) => parsePositive(way.tags?.width))
+    .filter((width) => width != null)
+    .sort((a, b) => a - b);
+  const widthMeters = taggedWidths.length
+    ? taggedWidths[Math.floor(taggedWidths.length / 2)]
+    : null;
   // 交差点(アンカー)ちょうどの実測の川方位を求める。頂点間隔が疎な区間もあるため、
   // 頂点番号ではなく実距離(±HEADING_WINDOW_M)でアンカー前後をたどって局所方位を取る
   // (川全体のゆるいカーブに引っ張られず、橋の直近の向きを反映させるため)。
@@ -1006,7 +1159,7 @@ function extractRiverLine(
     (Math.atan2(b[0] - a[0], b[1] - a[1]) * 180) /
     Math.PI
   ).toFixed(1);
-  return { points: simplified, headingDeg };
+  return { points: simplified, headingDeg, ...(widthMeters ? { widthMeters } : {}) };
 }
 
 // 鋭い折れを円弧フィレットに置換。TURN_MIN_ANGLE 以上の折れ(右左折交差点)は
@@ -2060,9 +2213,19 @@ ${routeNodesQuery}
   way(around.routeNodes:${OSM_VISUAL_CORRIDOR_METERS})["highway"~"${visualRoadPattern}"];
   way(around.routeNodes:${OSM_VISUAL_CORRIDOR_METERS})["footway"="sidewalk"];
   way(around.routeNodes:${OSM_VISUAL_CORRIDOR_METERS})["highway"]["sidewalk"];
+  way(around.routeNodes:${OSM_VISUAL_CORRIDOR_METERS})["footway"="crossing"];
+  way(around.routeNodes:${OSM_VISUAL_CORRIDOR_METERS})["highway"="crossing"];
+  way(around.routeNodes:${OSM_VISUAL_CORRIDOR_METERS})["highway"~"^(footway|steps|pedestrian)$"]["bridge"="yes"];
+  way(around.routeNodes:${OSM_VISUAL_CORRIDOR_METERS})["barrier"="hedge"];
+  node(around.routeNodes:${OSM_VISUAL_CORRIDOR_METERS})["highway"="traffic_signals"];
   way["highway"~"${visualRoadPattern}"](${visualSouth},${visualWest},${visualNorth},${visualEast});
   way["footway"="sidewalk"](${visualSouth},${visualWest},${visualNorth},${visualEast});
   way["highway"] ["sidewalk"](${visualSouth},${visualWest},${visualNorth},${visualEast});
+  way["footway"="crossing"](${visualSouth},${visualWest},${visualNorth},${visualEast});
+  way["highway"="crossing"](${visualSouth},${visualWest},${visualNorth},${visualEast});
+  way["highway"~"^(footway|steps|pedestrian)$"]["bridge"="yes"](${visualSouth},${visualWest},${visualNorth},${visualEast});
+  way["barrier"="hedge"](${visualSouth},${visualWest},${visualNorth},${visualEast});
+  node["highway"="traffic_signals"](${visualSouth},${visualWest},${visualNorth},${visualEast});
 );
 out body geom;`,
   );
@@ -2131,6 +2294,15 @@ out body geom;`,
     `[out:json][timeout:90];
 (
   way["waterway"~"^(river|stream|canal)$"](${riverSouth},${riverWest},${riverNorth},${riverEast});
+  way["waterway"="riverbank"](${riverSouth},${riverWest},${riverNorth},${riverEast});
+  way["natural"="water"](${riverSouth},${riverWest},${riverNorth},${riverEast});
+  way["water"~"^(river|canal)$"](${riverSouth},${riverWest},${riverNorth},${riverEast});
+  relation["natural"="water"](${riverSouth},${riverWest},${riverNorth},${riverEast});
+  relation["water"~"^(river|canal)$"](${riverSouth},${riverWest},${riverNorth},${riverEast});
+  relation["type"="waterway"]["name"="桂川"](${riverSouth},${riverWest},${riverNorth},${riverEast});
+  relation["type"="waterway"]["name:ja"="桂川"](${riverSouth},${riverWest},${riverNorth},${riverEast});
+  relation(9459116)->.katsuraRelation;
+  way(r.katsuraRelation);
 );
 out body geom;`,
   );
@@ -2164,6 +2336,12 @@ out geom;`,
     .map((m) => m.ref) ?? [];
   const nodeById = new Map(nodeData.elements.map((n) => [n.id, n]));
   const southboundNodeById = new Map(southboundNodeData.elements.map((n) => [n.id, n]));
+  const kujoSourceWays = [...roadData.elements, ...visualData.elements];
+  const kujoWestboundWays = KUJO_WESTBOUND_WAY_IDS.map((id) =>
+    kujoSourceWays.find((e) => e.type === "way" && e.id === id),
+  );
+  if (kujoWestboundWays.some((way) => !way?.geometry?.length))
+    throw new Error(`九条通西行き way が見つからない: ${KUJO_WESTBOUND_WAY_IDS.join(",")}`);
 
   console.log("[2/5] 北行き経路を連結 → 南行きへ反転・一方通行区間を差し替え");
   let line = connectWays(ways); // 北行き: 久我石原町 → 二条駅西口
@@ -2186,6 +2364,18 @@ out geom;`,
     JUJO_FROM,
     JUJO_TO,
     "十条南行き",
+  );
+  // 九条通はリレーションが拾った東行き車線の逆走形状を使わず、
+  // 実際の西行き車線を九条大宮→羅城門の順で通す。
+  line = spliceDetour(
+    line,
+    [
+      KUJO_WESTBOUND_FROM,
+      ...chainOrderedWays(kujoWestboundWays, KUJO_WESTBOUND_FROM),
+    ],
+    KUJO_WESTBOUND_FROM,
+    KUJO_WESTBOUND_TO,
+    "九条西行き",
   );
   // 南行き専用区間2: 小枝橋→城南宮道→赤池→上鳥羽塔ノ森
   line = spliceDetour(
@@ -2260,6 +2450,9 @@ out geom;`,
       (e) => e.type === "way" && e.geometry?.length > 1,
     ),
   );
+  const visualNodes = byId(
+    visualData.elements.filter((e) => e.type === "node"),
+  );
   const signalNodes = byId([
     ...roadData.elements.filter(
       (e) => e.type === "node" && e.tags?.highway === "traffic_signals",
@@ -2275,9 +2468,74 @@ out geom;`,
   const railways = railwayData.elements.filter(
     (e) => e.type === "way" && e.tags?.railway && e.geometry?.length > 1,
   );
-  const riverWays = riverData.elements.filter(
+  const directRiverWays = riverData.elements.filter(
     (e) => e.type === "way" && e.tags?.waterway && e.geometry?.length > 1,
   );
+  // 桂川 relation/9459116 is a waterway relation: its geometry is carried by
+  // member ways rather than by a single top-level named way.  Overpass's
+  // `out body geom` places those geometries under relation.members, so flatten
+  // the members and inherit the relation's river name/tags for line matching.
+  const sourceRiverWaysById = new Map(
+    riverData.elements
+      .filter((element) => element.type === "way" && element.geometry?.length > 1)
+      .map((element) => [String(element.id), element]),
+  );
+  const relationRiverWays = riverData.elements
+    .filter((e) => e.type === "relation" && e.members?.length)
+    .flatMap((relation) => relation.members
+      .filter((member) => member.type === "way"
+        && !["outer", "inner"].includes(member.role ?? "")
+        && (member.geometry?.length > 1 || sourceRiverWaysById.get(String(member.ref))?.geometry?.length > 1))
+      .map((member) => {
+        const sourceWay = sourceRiverWaysById.get(String(member.ref));
+        return {
+          ...(sourceWay ?? {}),
+          ...member,
+          id: member.ref ?? member.id,
+          geometry: member.geometry ?? sourceWay?.geometry,
+        type: "way",
+        tags: {
+          ...(relation.tags ?? {}),
+          ...(sourceWay?.tags ?? {}),
+          ...(member.tags ?? {}),
+          waterway: member.tags?.waterway ?? relation.tags?.waterway ?? "river",
+        },
+        };
+      }));
+  const riverWays = [...new Map(
+    [...directRiverWays, ...relationRiverWays]
+      .filter((way) => way.id != null)
+      .map((way) => [String(way.id), way]),
+  ).values()];
+  const directWaterElements = riverData.elements.filter(
+    (e) => e.type === "way"
+      && e.geometry?.length >= 3
+      && (e.tags?.waterway === "riverbank"
+        || e.tags?.natural === "water"
+        || ["river", "canal"].includes(e.tags?.water)),
+  );
+  const relationWaterElements = riverData.elements
+    .filter((e) => e.type === "relation" && e.members?.length)
+    .flatMap((relation) => relation.members
+      .filter((member) => member.type === "way"
+        && ["outer", "inner"].includes(member.role ?? "")
+        && (member.geometry?.length >= 3 || sourceRiverWaysById.get(String(member.ref))?.geometry?.length >= 3))
+      .map((member) => {
+        const sourceWay = sourceRiverWaysById.get(String(member.ref));
+        return {
+          ...(sourceWay ?? {}),
+          ...member,
+          id: member.ref ?? member.id,
+          geometry: member.geometry ?? sourceWay?.geometry,
+        type: "way",
+          tags: { ...(relation.tags ?? {}), ...(sourceWay?.tags ?? {}), ...(member.tags ?? {}) },
+        };
+      }));
+  const waterElements = [...new Map(
+    [...directWaterElements, ...relationWaterElements]
+      .filter((way) => way.id != null)
+      .map((way) => [String(way.id), way]),
+  ).values()];
   const extraRoadWays = EXTRA_ROAD_WAY_IDS
     .map((id) => detourRoadData.elements.find((e) => e.type === "way" && e.id === id))
     .filter((e) => e?.geometry?.length > 1);
@@ -2287,6 +2545,7 @@ out geom;`,
     stopsLL,
     roads,
     visualWays,
+    visualNodes,
     southboundPlatformRefs,
     southboundNodeById,
     hasSouthboundRelation: Boolean(southboundRel),
@@ -2295,7 +2554,9 @@ out geom;`,
     buildings,
     railways,
     riverWays,
+    waterElements,
     extraRoadWays,
+    expresswayWays: visualWays,
     umekojiTreesData,
     source: `OpenStreetMap relations ${RELATION_ID} (route geometry) and ${SOUTHBOUND_RELATION_ID} (southbound stops) © OpenStreetMap contributors (ODbL)`,
   };
@@ -2343,6 +2604,7 @@ function buildFallback() {
     stopsLL,
     roads: [],
     visualWays: [],
+    visualNodes: [],
     southboundPlatformRefs: [],
     southboundNodeById: new Map(),
     hasSouthboundRelation: false,
@@ -2351,7 +2613,9 @@ function buildFallback() {
     buildings: [],
     railways: [],
     riverWays: [],
+    waterElements: [],
     extraRoadWays: EXTRA_ROADS_FALLBACK,
+    expresswayWays: [],
     umekojiTreesData: null,
     source: "fallback: OSM実測停留所座標の直結近似",
   };
@@ -2364,12 +2628,15 @@ async function main() {
     stopsLL,
     roads,
     visualWays,
+    visualNodes,
     vegetationElements,
     signalNodes,
     buildings: buildingWays,
     railways,
     riverWays,
+    waterElements,
     extraRoadWays,
+    expresswayWays,
     umekojiTreesData,
     source,
   } = fallback ? buildFallback() : await buildFromOSM();
@@ -2381,13 +2648,25 @@ async function main() {
     line.reduce((a, p) => a + p[0], 0) / line.length,
     line.reduce((a, p) => a + p[1], 0) / line.length,
   ];
-  const osmVisual = buildOsmVisualSource(visualWays, origin);
+  const osmExpressways = buildOsmExpressways(expresswayWays, origin);
+  const waterPolygons = waterElements.map((element) => {
+    const polygon = project(
+      element.geometry.map((point) => [point.lat, point.lon]),
+      origin,
+    ).map(([x, z]) => [+(x * SCALE).toFixed(2), +(z * SCALE).toFixed(2)]);
+    return {
+      id: element.id,
+      name: element.tags?.name ?? null,
+      polygon,
+    };
+  }).filter((item) => item.polygon.length >= 3);
+  const osmVisual = buildOsmVisualSource(visualWays, visualNodes, origin);
   const osmVegetation = buildOsmVegetationSource(vegetationElements, origin);
   mkdirSync(dirname(OSM_VISUAL_OUT), { recursive: true });
   writeFileSync(
     OSM_VISUAL_OUT,
     JSON.stringify({
-      version: 1,
+      version: 2,
       generatedAt: new Date().toISOString(),
       source: {
         provider: "OpenStreetMap",
@@ -2398,6 +2677,11 @@ async function main() {
       roads: osmVisual.roads,
       sidewalks: osmVisual.sidewalks,
       stationRoads: osmVisual.stationRoads,
+      crossings: osmVisual.crossings,
+      pedestrianWays: osmVisual.pedestrianWays,
+      hedges: osmVisual.hedges,
+      trafficSignals: osmVisual.trafficSignals,
+      expressways: osmExpressways,
       vegetation: osmVegetation,
     }),
   );
@@ -2809,22 +3093,6 @@ async function main() {
     }
   }
 
-  // 小枝橋東詰から城南宮道バス停までは、現在の迂回経路へ更新した後も
-  // PLATEAU道路面と route-elevation の参照経路がずれないよう、元ポリゴンの
-  // 本線車道部分を elevationAt(s) に合わせて置換する。追加の道路板は生成しない。
-  const roadSurfaceAlignments = [];
-  const koedaEastTurn = turnIntersections.find(
-    (turn) => turn.crossName === "千本通" && turn.s > 8200 && turn.s < 8400,
-  );
-  const jonanguStop = stops.find((stop) => stop.name === "城南宮道");
-  if (koedaEastTurn && jonanguStop) {
-    roadSurfaceAlignments.push({
-      name: "小枝橋東詰〜城南宮道",
-      from: +koedaEastTurn.s.toFixed(1),
-      to: +(jonanguStop.s + 8).toFixed(1),
-    });
-  }
-
   const out = {
     routeName: "18号系統",
     operator: "京都市交通局(横大路営業所)",
@@ -2850,9 +3118,10 @@ async function main() {
     extraRoads,
     bridges,
     rivers,
+    waterPolygons,
+    osmExpressways,
     speedZones,
     roadSections,
-    roadSurfaceAlignments,
     intersections: intersections.map(({ dist, ...ix }) => ix),
     turnIntersections,
     signals: signalsOut,

@@ -1,16 +1,5 @@
 import { route } from "../route/routeData.js";
 
-/** 時刻表(早発チェック対象の主要停留所) */
-const CHECKPOINT_NAMES = new Set([
-  "二条駅西口",
-  "四条大宮",
-  "七条大宮・京都水族館前",
-  "東寺南門前",
-  "千本十条",
-  "城南宮道",
-  "久我",
-]);
-
 /** 固定時刻表(9:56 二条駅西口発 → 10:44 久我石原町着)。上鳥羽村山町は南行き通過のため対象外 */
 const TIMES = {
   二条駅西口: "9:56",
@@ -49,7 +38,7 @@ const parseTime = (t) => {
   return h * 3600 + m * 60;
 };
 
-/** 各停留所の定刻(発車時刻。終点は到着時刻) */
+/** 各停留所の定刻(発車時刻。終点は到着時刻)。全停留所で早発をチェックする */
 export const schedule = route.stops.map((stop) => {
   const t = TIMES[stop.name];
   if (!t) console.warn(`[timetable] 時刻表に停留所がありません: ${stop.name}`);
@@ -57,7 +46,7 @@ export const schedule = route.stops.map((stop) => {
     name: stop.name,
     s: stop.s,
     time: parseTime(t ?? "10:00"),
-    checkpoint: CHECKPOINT_NAMES.has(stop.name),
+    checkpoint: true,
   };
 });
 

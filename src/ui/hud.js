@@ -8,6 +8,7 @@ export function initHud() {
     <div id="next-stop" class="hud-panel">
       <div class="label">つぎは NEXT STOP</div>
       <div class="name">--</div>
+      <div class="schedule">発車予定 --:--:--</div>
       <div class="sub"></div>
     </div>
     <div id="ops" class="hud-panel">
@@ -32,6 +33,7 @@ export function initHud() {
   document.body.appendChild(hud);
   els = {
     nextName: hud.querySelector("#next-stop .name"),
+    nextSchedule: hud.querySelector("#next-stop .schedule"),
     nextSub: hud.querySelector("#next-stop .sub"),
     clock: hud.querySelector("#ops .clock"),
     delay: hud.querySelector("#ops .delay"),
@@ -62,6 +64,9 @@ export function updateHud(st) {
   els.pax.textContent = `乗客 ${st.passengers}人`;
   els.fare.textContent = `運賃箱 ¥${st.fareTotal.toLocaleString()}`;
   els.nextName.textContent = st.nextStopName ?? "--";
+  els.nextSchedule.textContent = st.nextStopSchedule
+    ? `発車予定 ${st.nextStopSchedule}`
+    : "";
   els.nextSub.textContent = st.nextStopSub ?? "";
   if (st.delayText == null) {
     els.delay.textContent = "";

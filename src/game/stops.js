@@ -1,5 +1,6 @@
 import * as THREE from "three";
-import { leftWidthAt, elevationAt } from "../route/routeData.js";
+import { elevationAt } from "../route/routeData.js";
+import { terrainHeightAtWorld } from "../world/declarative/continuousTerrain.js";
 import { loadProps } from "../util/propsLib.js";
 import {
   terminusLotAnchor,
@@ -32,9 +33,9 @@ function makeSignTexture(name) {
 
 const paxColors = [0x546a7b, 0x7b5a4e, 0x4e6a52, 0x6a5a7b, 0x3d5a80, 0x8a6d3b];
 
-function addShelter(group, x, z, tx, tz, nx, nz, baseY) {
+function addShelter(group, x, z, tx, tz, nx, nz, baseY, side = -1) {
   const shelter = new THREE.Group();
-  shelter.position.set(x - nx * 1.4, baseY, z - nz * 1.4);
+  shelter.position.set(x + nx * side * 1.4, baseY, z + nz * side * 1.4);
   shelter.rotation.y = Math.atan2(tx, tz);
   const postMat = new THREE.MeshLambertMaterial({ color: 0x59666a });
   const roofMat = new THREE.MeshLambertMaterial({ color: 0x8b9897 });
@@ -56,6 +57,23 @@ function addShelter(group, x, z, tx, tz, nx, nz, baseY) {
   back.position.set(0, 1.0, -1.25);
   shelter.add(back);
   group.add(shelter);
+}
+
+function addStopFrame(group, x, z, tx, tz, baseY) {
+  const nx = -tz, nz = tx;
+  const halfWidth = 1.3;
+  const halfLength = 6;
+  const corners = [[-halfWidth, -halfLength], [halfWidth, -halfLength], [halfWidth, halfLength], [-halfWidth, halfLength]]
+    .map(([lateral, along]) => new THREE.Vector3(
+      x + nx * lateral + tx * along,
+      baseY + 0.04,
+      z + nz * lateral + tz * along,
+    ));
+  corners.push(corners[0].clone());
+  const geometry = new THREE.BufferGeometry().setFromPoints(corners);
+  const frame = new THREE.Line(geometry, new THREE.LineBasicMaterial({ color: 0xffffff }));
+  frame.name = "bus-stop-frame";
+  group.add(frame);
 }
 
 /**
@@ -88,49 +106,34 @@ export function buildStops(scene, path, stops) {
   }
 
   stops.forEach((stop, i) => {
-    // 久我石原町(終点)は道路上ではなく敷地内(landmarks.js の駐車場)に停車するため、
-    // 道路上のポール・停止線・バスゾーン路面標示は作らない。待機/降車客の基準位置だけ
-    // 敷地のシェルター付近(landmarks.js と共通のアンカー計算)に合わせる。
-    if (stop.name === "久我石原町") {
-      const lot = terminusLotAnchor(path);
-      if (lot) {
-        // 敷地は世界座標軸に揃っている(landmarks.js buildTerminus と同じ規約)。
-        // バス停は敷地西端に置き、北向きのバスの東側(敷地内)で待てるようにする。
-        const terminal = terminusStopAnchor(lot);
-        const atLot = (lat, along = 0) => [
-          terminal.x - lat,
-          terminal.z + along,
-        ];
-        waiting.push({
-          at: atLot,
-          HW: 1.4,
-          baseY: elevationAt(stop.s),
-          meshes: [],
-          face: -Math.PI / 2, // 西(バス側)を向く。乗降後は東側の敷地内へ歩く
-        });
-        return;
-      }
-    }
-
-    const HW = leftWidthAt(stop.s); // 進行方向左側の路肩(縁石)基準で配置
-    const baseY = elevationAt(stop.s);
-    const [px, pz] = path.getPoint(stop.s);
-    const [tx, tz] = path.getTangent(stop.s);
+    const terminal = stop.name === "久我石原町"
+      ? terminusStopAnchor(terminusLotAnchor(path))
+      : null;
+    // The stopping pose is the single source for the stop marker, pole,
+    // shelter and frame. OSM platform coordinates are metadata only.
+    const pose = stop.pose ?? {};
+    const HW = 1.5;
+    const baseY = terminal
+      ? terrainHeightAtWorld(terminal.x, terminal.z)
+      : (pose.y ?? elevationAt(stop.s));
+    const [px, pz] = terminal
+      ? [terminal.x, terminal.z]
+      : (pose.x != null ? [pose.x, pose.z] : path.getPoint(stop.s));
+    const [tx, tz] = terminal
+      ? [Math.sin(terminal.heading), Math.cos(terminal.heading)]
+      : (pose.heading != null
+        ? [Math.sin(pose.heading), Math.cos(pose.heading)]
+        : path.getTangent(stop.s));
     const nx = -tz,
       nz = tx; // lateral 正方向(右)
-    const at = (lat, along = 0) => [
-      px + nx * lat + tx * along,
-      pz + nz * lat + tz * along,
+    const side = terminal ? -1 : (stop.anchor?.side ?? -1);
+    const [poleX, poleZ] = terminal
+      ? [terminal.x, terminal.z]
+      : [stop.anchor?.x ?? px + nx * side * (HW + 0.9), stop.anchor?.z ?? pz + nz * side * (HW + 0.9)];
+    const waitingAt = (_lat, along = 0) => [
+      poleX + nx * side * Math.abs(_lat),
+      poleZ + nz * side * Math.abs(_lat) + tz * along,
     ];
-
-    // OSMのplatformノードは道路中心線から離れた待機位置を示すため、
-    // ポール・待ち客・屋根はその実座標へ置く。停止線とバスゾーンだけは
-    // ゲームの走行経路上に残す。
-    const platformPoint = Array.isArray(stop.platform) ? stop.platform : null;
-    const [poleX, poleZ] = platformPoint ?? at(-(HW + 0.7));
-    const waitingAt = platformPoint
-      ? (_lat, along = 0) => [platformPoint[0] + tx * along, platformPoint[1] + tz * along]
-      : at;
 
     // ポール(道路端・進行方向左。歩道の有無によらず縁石すぐ外に置く)
     const pole = new THREE.Mesh(
@@ -158,55 +161,18 @@ export function buildStops(scene, path, stops) {
       }),
     );
     sign.position.set(poleX, baseY + 1.75, poleZ);
-    sign.rotation.y = Math.atan2(nx, nz); // 道路側を向く
+    sign.rotation.y = Math.atan2(-side * nx, -side * nz); // 車道側を向く
     group.add(sign);
 
-    if (platformPoint) {
-      const platform = new THREE.Mesh(
-        new THREE.PlaneGeometry(2.4, 8.0),
-        new THREE.MeshLambertMaterial({ color: 0xbfc3bd }),
-      );
-      platform.rotation.x = -Math.PI / 2;
-      platform.rotation.z = -Math.atan2(tx, tz);
-      platform.position.set(poleX, baseY + 0.045, poleZ);
-      group.add(platform);
-    }
-    if (stop.shelter) addShelter(group, poleX, poleZ, tx, tz, nx, nz, baseY);
-
-    // 停止線(路面・左端車線のみ)
-    const lineW = Math.min(HW - 0.4, 3.4);
-    const lineGeo = new THREE.PlaneGeometry(lineW, 0.35);
-    const line = new THREE.Mesh(
-      lineGeo,
-      new THREE.MeshBasicMaterial({ color: 0xf2f2f2 }),
-    );
-    const [lx, lz] = at(-(HW - 0.35 - lineW / 2), 1.2);
-    line.rotation.x = -Math.PI / 2;
-    line.rotation.z = -Math.atan2(tx, tz);
-    line.position.set(lx, baseY + 0.03, lz);
-    group.add(line);
-
-    // 「バス」路面標示風の枠
-    const zone = new THREE.Mesh(
-      new THREE.PlaneGeometry(2.6, 12),
-      new THREE.MeshBasicMaterial({
-        color: 0xffffff,
-        transparent: true,
-        opacity: 0.16,
-      }),
-    );
-    const [zx, zz] = at(-HW + 1.5, -3);
-    zone.rotation.x = -Math.PI / 2;
-    zone.rotation.z = -Math.atan2(tx, tz);
-    zone.position.set(zx, baseY + 0.025, zz);
-    group.add(zone);
+    if (stop.shelter) addShelter(group, poleX, poleZ, tx, tz, nx, nz, baseY, side);
+    addStopFrame(group, px, pz, tx, tz, baseY);
 
     waiting.push({
       at: waitingAt,
-      HW: platformPoint ? 0.2 : HW,
+      HW,
       baseY,
       meshes: [],
-      face: Math.atan2(nx, nz),
+      face: Math.atan2(-side * nx, -side * nz),
     }); // face: 車道向き
   });
 

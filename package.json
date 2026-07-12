@@ -20,6 +20,7 @@
     "validate:terrain-fix": "node tools/validate-terrain-fix.mjs",
     "validate:world-alignment": "node tools/validate-world-alignment.mjs",
     "validate:structural-road": "node tools/validate-structural-road-runtime.mjs",
+    "validate:driving-network": "node tools/validate-driving-network.mjs",
     "rebuild:route-elevation": "node tools/rebuild-route-elevation-from-grid.mjs",
     "validate:bridge-water-alignment": "node tools/validate-bridge-water-alignment.mjs"
   },

@@ -6,19 +6,16 @@ import {
   speedLimitKmhAt,
   speedLimitAt,
   elevationAt,
+  surfaceElevationAt,
   terrainElevationAt,
   roadAttachmentHalfWidthAt,
   gradeAt,
-  halfWidthAt,
-  laneCenterAt,
-  curbStopLat,
+  driveBoundsAt,
   turnExclusions,
-  turnAllowanceAt,
 } from "./route/routeData.js";
 import { input } from "./input.js";
 import { BusPhysics } from "./bus/busPhysics.js";
 import { createBusModel } from "./bus/busModel.js";
-import { buildRoad } from "./world/road.js";
 import {
   buildContinuousTerrain,
   configureWorldHeightSamplers,
@@ -35,6 +32,7 @@ import { createScoring } from "./game/scoring.js";
 import { createOps } from "./game/gameState.js";
 import {
   schedule,
+  fmtTime,
   delayInfo,
   scheduledClockAt,
   firstDepartTime,
@@ -43,7 +41,6 @@ import { buildLandmarks } from "./world/landmarks.js";
 import { buildNature } from "./world/nature.js";
 import { buildBuildings } from "./world/buildings.js";
 import { buildRailways } from "./world/railways.js";
-import { buildExtraRoads } from "./world/extraRoads.js";
 import { buildTraffic } from "./world/traffic.js";
 import { buildWorldScenery } from "./world/declarative/buildWorldScenery.js";
 import { WORLD_CONFIG } from "./world/declarative/config.js";
@@ -57,13 +54,15 @@ import {
 } from "./audio/announcements.js";
 
 const STEP = 1 / 60;
-const DOOR_OFFSET = CFG.bus.wheelbase + 1.2; // 後軸→前扉
+const DOOR_OFFSET = CFG.bus.wheelbase + 1.3; // 後軸→前扉
 const path = route.path;
+const kujoOmiyaS = route.stops.find((stop) => stop.name === "九条大宮")?.s ?? Infinity;
 configureWorldHeightSamplers(
   path,
   terrainElevationAt,
   elevationAt,
   roadAttachmentHalfWidthAt,
+  route.surfacePath,
 );
 
 // ---------------------------------------------------------------- renderer / scene
@@ -84,10 +83,6 @@ scene.add(sun);
 
 const baseTerrain = buildContinuousTerrain(path, route.bridges, route.rivers);
 scene.add(baseTerrain);
-if (WORLD_CONFIG.render.osmRouteSurface) scene.add(buildRoad(path, route));
-const extraRoadTraffic = buildExtraRoads(scene, {
-  render: WORLD_CONFIG.render.osmExtraRoadSurfaces,
-}); // OSM feeder geometry remains available to traffic logic
 void buildWorldScenery(scene, path, route, {
   buildRailways,
   buildLandmarks,
@@ -127,9 +122,10 @@ const pax = createPassengers(route.stops.length);
 const stopsView = buildStops(scene, path, route.stops);
 const scoring = createScoring(state);
 const traffic = buildTraffic(scene, path, {
-  feederRoads: extraRoadTraffic.trafficRoads,
+  trafficPaths: route.trafficPaths,
+  trafficGraph: route.trafficGraph,
   onCollision() {
-    scoring.add(CFG.score.collision, "対向車と接触!");
+    scoring.add(CFG.score.collision, "他車と接触!");
     (state.collisionLog ??= []).push(Math.round(state.s)); // 発生位置(デバッグ用)
   },
   onRedLight() {
@@ -176,12 +172,11 @@ const ops = createOps({
   },
 });
 
-function placeBusAtS(s, lat = null) {
-  lat = lat ?? laneCenterAt(s);
+function placeBusAtS(s) {
   const [px, pz] = path.getPoint(s);
   const [tx, tz] = path.getTangent(s);
-  bus.x = px + -tz * lat;
-  bus.z = pz + tx * lat;
+  bus.x = px;
+  bus.z = pz;
   bus.heading = Math.atan2(tx, tz);
   bus.v = 0;
   bus.delta = 0;
@@ -235,7 +230,7 @@ function updateCamera(dt) {
 }
 
 // ---------------------------------------------------------------- autoDrive helpers
-/** 停車義務: 乗降需要あり、または時刻表対象(時間調整)停留所 */
+/** 停車義務: 乗降需要あり、または時刻表対象(全停留所) */
 const mustStopAt = (i) => pax.mustStopAt(i) || !!schedule[i]?.checkpoint;
 
 function autoStopTargetS() {
@@ -255,30 +250,53 @@ function autoStopTargetS() {
   return null;
 }
 
+function autoStopTarget() {
+  if (state.promptText?.startsWith("発車時刻")) return null;
+  const from = state.waitingDepart
+    ? state.nextStopIndex + 1
+    : state.nextStopIndex;
+  for (let i = from; i < route.stops.length; i++) {
+    if (!mustStopAt(i) && i !== route.stops.length - 1) continue;
+    const stop = route.stops[i];
+    const target = stop.s - DOOR_OFFSET;
+    if (target < state.s - 10) continue;
+    return { stop, target };
+  }
+  return null;
+}
+
+function smoothstep01(value) {
+  const t = Math.max(0, Math.min(1, value));
+  return t * t * (3 - 2 * t);
+}
+
+function autoDockLateralAt(s, stop) {
+  if (!stop?.dockLateral || state.waitingDepart) return 0;
+  const target = stop.s - DOOR_OFFSET;
+  const approach = 60;
+  const depart = 30;
+  if (s <= target - approach || s >= target + depart) return 0;
+  if (s <= target)
+    return (
+      stop.dockLateral * smoothstep01((s - (target - approach)) / approach)
+    );
+  return stop.dockLateral * (1 - smoothstep01((s - target) / depart));
+}
+
 // ---------------------------------------------------------------- game tick (fixed step)
 function tick(dt, ePressed) {
   let axes;
   if (input.overrideActive) {
     axes = input.axes();
   } else if (dbg.autoDrive) {
-    const target = autoStopTargetS();
+    const autoStop = autoStopTarget();
+    const target = autoStop?.target ?? autoStopTargetS();
     const near = target != null && target - state.s < 110;
     let effTarget = target;
     let vCap = Infinity;
     if (target != null) {
       const d = target - state.s;
       // 停止目標に近いのに寄せが足りない → 目標を少し先送りし微速で寄せ直す
-      const needLat = curbStopLat(target) + 0.7; // これより中央寄りなら寄せ不足
-      if (
-        d < 30 &&
-        d > -6 &&
-        state.lateral > needLat &&
-        state.doorState === "CLOSED" &&
-        !state.waitingDepart
-      ) {
-        effTarget = state.s + Math.max(d, 4);
-        vCap = 1.6;
-      }
     }
     // 赤信号の停止線が停留所より手前ならそちらを優先
     const redS = traffic.redStopTarget(state.s, bus.v);
@@ -295,7 +313,10 @@ function tick(dt, ePressed) {
       path,
       state.s,
       effTarget,
-      near ? curbStopLat(target ?? state.s) : null,
+      autoDockLateralAt(
+        state.s + Math.max(8, Math.min(30, 6 + bus.v * 1.8)),
+        autoStop?.stop,
+      ),
       vCap,
     );
     // ドア操作の自動化: プロンプトが出たら即 E
@@ -309,12 +330,11 @@ function tick(dt, ePressed) {
   const proj = path.closestS([bus.x, bus.z], state.s, 150);
   state.s = proj.s;
   state.lateral = proj.lateral;
+  const roadBounds = driveBoundsAt(state.s);
+  const busHalfWidth = CFG.bus.width / 2;
   state.offRoute =
-    proj.dist >
-    halfWidthAt(state.s) +
-      turnAllowanceAt(state.s) +
-      CFG.road.offroadMargin +
-      2.5;
+    state.lateral - busHalfWidth < -roadBounds.left - CFG.road.offroadMargin ||
+    state.lateral + busHalfWidth > roadBounds.right + CFG.road.offroadMargin;
 
   if (state.offRoute && bus.v > 15 / 3.6) bus.v = 15 / 3.6;
 
@@ -326,7 +346,11 @@ function tick(dt, ePressed) {
   traffic.update(
     dt,
     state.s,
-    [bus.x + bfx * 3.15, bus.z + bfz * 3.15, elevationAt(state.s) + 1.6],
+    [
+      bus.x + bfx * 3.15,
+      bus.z + bfz * 3.15,
+      surfaceElevationAt(state.s, bus.x + bfx * 3.15, bus.z + bfz * 3.15) + 1.6,
+    ],
     bus.v,
     bus.heading,
     state.lateral,
@@ -362,10 +386,7 @@ function returnToTitle() {
   // 既存のタイトル画面以外のスクリーンを消す(リザルト等)
   document.querySelectorAll(".screen").forEach((el) => el.remove());
   // バスを始発位置に戻す
-  placeBusAtS(
-    Math.max(0.5, route.stops[0].s - DOOR_OFFSET),
-    curbStopLat(route.stops[0].s),
-  );
+  placeBusAtS(Math.max(0.5, route.stops[0].s - DOOR_OFFSET));
   camInit = false;
   // 乗客・スコア・時計をリセット
   pax.reset?.();
@@ -430,7 +451,7 @@ function frame(now) {
       // . キー長押し中、停留所停車中のみ時間4倍速
       const dotHeld = input.held("Period");
       const atStop = state.doorState !== "CLOSED" || state.waitingDepart;
-      const timeMultiplier = (dotHeld && atStop) ? 4 : 1;
+      const timeMultiplier = dotHeld && atStop ? 4 : 1;
 
       let ePressed = input.pressed("KeyE");
       acc += dt * dbg.timeScale * timeMultiplier;
@@ -446,7 +467,14 @@ function frame(now) {
     }
   }
 
-  busModel.update(bus, dt, elevationAt(state.s), gradeAt(state.s));
+  busModel.update(
+    bus,
+    dt,
+    surfaceElevationAt(state.s, bus.x, bus.z),
+    gradeAt(state.s),
+    state.s,
+    kujoOmiyaS,
+  );
   updateCamera(dt);
   sfx.updateEngine(bus.speedKmh, bus.throttleState);
 
@@ -473,6 +501,7 @@ function frame(now) {
       passengers: pax.onboard,
       fareTotal: state.fareTotal,
       nextStopName: state.completed ? "── 終点 ──" : nextStop.name,
+      nextStopSchedule: state.completed ? null : fmtTime(schedule[i].time),
       nextStopSub: sub,
       delayText: d?.text ?? "--",
       delayKind: d?.kind ?? "ontime",
@@ -487,10 +516,7 @@ function frame(now) {
 // ---------------------------------------------------------------- boot
 initHud();
 minimap = createMinimap(path, route.stops);
-placeBusAtS(
-  Math.max(0.5, route.stops[0].s - DOOR_OFFSET),
-  curbStopLat(route.stops[0].s),
-); // 始発: 前扉を二条駅西口の停止線に合わせて待機
+placeBusAtS(Math.max(0.5, route.stops[0].s - DOOR_OFFSET)); // 始発: 前扉を生成済み停止姿勢に合わせて待機
 setupDebug({
   bus,
   path,
@@ -551,7 +577,12 @@ showTitle((demoMode) => {
 // ---------------------------------------------------------------- Shift+R: タイトルへ戻る
 window.game.debug.returnToTitle = returnToTitle;
 window.addEventListener("keydown", (e) => {
-  if (e.code === "KeyR" && e.shiftKey && !e.repeat && state.phase === "RUNNING") {
+  if (
+    e.code === "KeyR" &&
+    e.shiftKey &&
+    !e.repeat &&
+    state.phase === "RUNNING"
+  ) {
     returnToTitle();
   }
 });

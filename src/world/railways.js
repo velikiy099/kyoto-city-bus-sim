@@ -312,14 +312,72 @@ function buildExpresswayViaduct(scene, path, spec) {
   scene.add(g);
 }
 
-export function buildRailways(scene, path, structures = []) {
+/** Render an OSM motorway way as a continuous carriageway strip.
+ * Mainline geometry is kept segment-by-segment so OSM bridge/layer tags remain
+ * authoritative; motorway_link ramps are filtered during route-data build.
+ */
+function buildOsmExpressway(scene, spec) {
+  const points = spec.points ?? [];
+  if (points.length < 2) return;
+  const halfWidth = Math.max(4, Number(spec.width) || 15) / 2;
+  const elevated = spec.bridge === true || Number(spec.layer) > 0;
+  const vertices = [];
+  for (let i = 0; i < points.length; i++) {
+    const prev = points[Math.max(0, i - 1)];
+    const next = points[Math.min(points.length - 1, i + 1)];
+    const dx = next[0] - prev[0];
+    const dz = next[1] - prev[1];
+    const len = Math.hypot(dx, dz) || 1;
+    const nx = -dz / len;
+    const nz = dx / len;
+    const y = terrainHeightAtWorld(points[i][0], points[i][1]) + (elevated ? 7.0 : 0.16);
+    vertices.push(
+      [points[i][0] + nx * halfWidth, y, points[i][1] + nz * halfWidth],
+      [points[i][0] - nx * halfWidth, y, points[i][1] - nz * halfWidth],
+    );
+  }
+  const positions = [];
+  const indices = [];
+  for (const vertex of vertices) positions.push(...vertex);
+  for (let i = 0; i < points.length - 1; i++) {
+    const a = i * 2;
+    const b = a + 1;
+    const c = a + 2;
+    const d = a + 3;
+    indices.push(a, c, b, b, c, d);
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  const mesh = new THREE.Mesh(
+    geometry,
+    mat(elevated ? 0x454a50 : 0x55595c, { side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -1 }),
+  );
+  mesh.name = `osm-meishin:${spec.id}`;
+  scene.add(mesh);
+
+  if (elevated) {
+    const mid = points[Math.floor(points.length / 2)];
+    const support = new THREE.Mesh(
+      new THREE.BoxGeometry(Math.min(2.5, halfWidth), 6.3, 1.2),
+      mat(0x969b9b),
+    );
+    support.position.set(mid[0], terrainHeightAtWorld(mid[0], mid[1]) + 3.2, mid[1]);
+    support.name = `osm-meishin-pier:${spec.id}`;
+    scene.add(support);
+  }
+}
+
+export function buildRailways(scene, path, structures = [], osmExpressways = []) {
   for (const spec of structures) {
     if (spec.kind === "conventional-underpass")
       buildConventionalUnderpass(scene, path, spec);
     else if (spec.kind === "shinkansen-viaduct")
       buildShinkansenViaduct(scene, path, spec);
-    else if (spec.kind === "expressway-viaduct")
+    else if (spec.kind === "expressway-viaduct" && !osmExpressways.length)
       buildExpresswayViaduct(scene, path, spec);
   }
-  return { count: structures.length };
+  for (const spec of osmExpressways) buildOsmExpressway(scene, spec);
+  return { count: structures.length + osmExpressways.length };
 }

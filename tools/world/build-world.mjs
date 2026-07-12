@@ -12,7 +12,7 @@ const refreshOsm = flag("--refresh-osm");
 
 if (refreshOsm) {
   console.log("Refreshing OSM route and traffic source data...");
-  run("npm", ["run", "build-data"]);
+  run("npm", ["run", "build-data", "--", "--refresh-osm"]);
 }
 if (!fs.existsSync(routeFile)) throw new Error(`Route data not found: ${routeFile}`);
 const osmVisualSource = resolveRoot(cfg.output.osmVisualSource);
@@ -48,6 +48,17 @@ run(python, [
   "--route-elevation", resolveRoot(out.routeElevation),
   "--manifest", resolveRoot(out.worldManifest),
   "--report", resolveRoot(out.report),
+]);
+// The driving network and browser runtime must read the exact same terrain
+// grid.  Rebuild the runtime copy before deriving lane/road elevations.
+run(python, [resolveRoot("tools/world/rebuild_generated_terrain.py")]);
+run("node", [
+  resolveRoot("tools/world/build-driving-network.mjs"),
+  "--route", routeFile,
+  "--transportation", resolveRoot(out.plateauTransportation),
+  "--terrain", resolveRoot(out.plateauTerrain),
+  "--osm-source", osmVisualSource,
+  "--output", resolveRoot(out.drivingNetwork),
 ]);
 run("node", [resolveRoot("tools/world/validate-world-data.mjs")]);
 console.log("OSM + PLATEAU declarative world data is ready.");

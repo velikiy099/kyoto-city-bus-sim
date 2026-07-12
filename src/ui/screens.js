@@ -22,7 +22,7 @@ export function showTitle(onStart) {
       </div>
       <div style="font-size:13px;color:#9db4d8;line-height:1.8">
         後乗り・前降り・運賃230円均一。停止線に合わせて左に寄せて停車し、<br>
-        乗降を終えたら定刻(主要停留所)を守って発車しましょう。<br>
+        乗降を終えたら各停留所の定刻を守って発車しましょう。<br>
         始発 ${fmtTime(schedule[0].time)} 発 ── 早発は大幅減点です。
       </div>
       <div style="display:flex;gap:12px;justify-content:center;margin-top:4px">

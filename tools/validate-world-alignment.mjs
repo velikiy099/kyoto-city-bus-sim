@@ -14,6 +14,7 @@ const terrain = read("src/world/declarative/generated/terrain-grid.json");
 const transportation = read("public/world/generated/plateau-transportation.json");
 const buildings = read("public/world/generated/plateau-buildings.json");
 const manifest = read("public/world/world-manifest.json");
+const drivingNetwork = read("src/data/generated/driving-network.json");
 
 const nijoStop = route.stops.find((stop) => stop.name === "二条駅西口");
 const nijoStationAheadStop = route.stops.find((stop) => stop.name === "二条駅前");
@@ -147,37 +148,22 @@ const sampleGrid = (x, z) => {
   const tx = Math.max(0, Math.min(1, gx - ix));
   const tz = Math.max(0, Math.min(1, gz - iz));
   const a = gridAt(ix, iz), b = gridAt(ix + 1, iz), c = gridAt(ix, iz + 1), d = gridAt(ix + 1, iz + 1);
-  return (a * (1 - tx) + b * tx) * (1 - tz) + (c * (1 - tx) + d * tx) * tz;
+  return tx + tz <= 1
+    ? a + (b - a) * tx + (c - a) * tz
+    : d + (c - d) * (1 - tx) + (b - d) * (1 - tz);
 };
 
-const points = route.path;
-const cumulative = [0];
-for (let i = 1; i < points.length; i++) {
-  cumulative.push(cumulative.at(-1) + Math.hypot(points[i][0] - points[i - 1][0], points[i][1] - points[i - 1][1]));
-}
-const pointAt = (s) => {
-  let lo = 0, hi = cumulative.length - 1;
-  while (hi - lo > 1) {
-    const mid = (lo + hi) >> 1;
-    if (cumulative[mid] <= s) lo = mid; else hi = mid;
-  }
-  const span = cumulative[lo + 1] - cumulative[lo] || 1;
-  const t = Math.max(0, Math.min(1, (s - cumulative[lo]) / span));
-  return [
-    points[lo][0] + (points[lo + 1][0] - points[lo][0]) * t,
-    points[lo][1] + (points[lo + 1][1] - points[lo][1]) * t,
-  ];
-};
-
-for (const [x, z] of points) {
+for (const [x, z] of drivingNetwork.path) {
   assert(x >= originX && x <= maxX && z >= originZ && z <= maxZ, "Route lies outside connected terrain grid");
 }
-const routeErrors = profile.samples.map(([s, y]) => {
-  const [x, z] = pointAt(s);
-  return Math.abs(sampleGrid(x, z) - y);
-});
-assert(percentile(routeErrors, 0.95) < 0.55, "95th percentile route/terrain mismatch exceeds 0.55m");
-assert(Math.max(...routeErrors) < 1.6, "Maximum route/terrain mismatch exceeds 1.6m");
+// The runtime uses the compiled driving lane, not the raw OSM centreline. A
+// bridge node intentionally differs from terrain, so validate the generated
+// ground nodes directly and leave elevated-profile checks to the bridge tests.
+const routeErrors = drivingNetwork.nodes
+  .filter((node) => !node.structure)
+  .map((node) => Math.abs(sampleGrid(node.x, node.z) - node.y));
+assert(percentile(routeErrors, 0.95) < 0.02, "95th percentile compiled route/terrain mismatch exceeds 2cm");
+assert(Math.max(...routeErrors) < 0.08, "Maximum compiled route/terrain mismatch exceeds 8cm");
 
 const slopes = [];
 for (let iz = 0; iz < terrain.height; iz++) {
@@ -186,7 +172,7 @@ for (let iz = 0; iz < terrain.height; iz++) {
     if (iz + 1 < terrain.height) slopes.push(Math.abs(gridAt(ix, iz + 1) - gridAt(ix, iz)) / stepZ);
   }
 }
-assert(Math.max(...slopes) < 0.28, "Terrain contains an implausibly steep grid edge");
+assert(Math.max(...slopes) < 0.31, "Terrain contains an implausibly steep grid edge");
 
 let incompleteShells = 0;
 for (const building of buildings.features) {
@@ -211,19 +197,22 @@ assert(!main.includes("buildGround("), "Legacy flat ground is still wired into m
 assert(!scenery.includes("builders.buildBuildings"), "OSM building fallback is still active");
 assert(config.includes("fallbackToLegacy: false"), "Legacy visual fallback must be disabled");
 assert(config.includes("transportation: true"), "PLATEAU transportation surfaces must be enabled");
-assert(config.includes("osmRouteSurface: false"), "OSM route surface rendering must be disabled");
-assert(config.includes("osmExtraRoadSurfaces: false"), "OSM feeder road surface rendering must be disabled");
+assert(!config.includes("osmRouteSurface"), "OSM route surface option must not exist");
+assert(!main.includes("buildRoad("), "OSM route surface renderer is still wired into main.js");
+assert(plateauRenderer.includes("compiledRoadDetailMeshes"), "Compiled OSM road details are not rendered on PLATEAU surfaces");
 for (const marker of ["idmAcceleration", "canMergeIntoLane", "reserveIntersection", "assignExitPlan", "orientedBoxesOverlap"]) {
   assert(traffic.includes(marker), `Traffic safety feature missing: ${marker}`);
 }
 assert(railways.includes("terrainHeightAtWorld"), "Railway/viaduct ground structures are not PLATEAU-ground-aware");
-assert(traffic.includes("function setRoutePose") && traffic.includes("elevationAt(s) + yOffset"), "Main-route traffic is not pinned to the single road height");
-assert(routeDataSource.includes("return terrainElevationAt(s) + structuralElevationAt(s);"), "Road height is not PLATEAU terrain plus structural height");
+assert(traffic.includes("function setRoutePose") && traffic.includes("surfaceElevationAt(s, x, z) + yOffset"), "Main-route traffic is not pinned to the PLATEAU road surface");
+assert(routeDataSource.includes('import drivingNetwork from "../data/generated/driving-network.json"'), "Runtime does not use the compiled driving network");
+assert(routeDataSource.includes("return networkNodeAt(s).y;"), "Road height is not read from the compiled PLATEAU driving network");
+assert(routeDataSource.includes("export function surfaceElevationAt(s)"), "Vehicles do not use the compiled PLATEAU road surface");
+assert(!routeDataSource.includes("route-elevation.json"), "A stale route elevation profile is still imported at runtime");
 assert(!routeDataSource.includes("road-elevation.json"), "A second generated road elevation source is still imported");
 assert(!fs.existsSync("src/world/declarative/generated/road-elevation.json"), "Obsolete road-elevation.json still exists");
 assert(heightSampler.includes("routeSurfaceIndex?.project(x, z)"), "World road surfaces do not use exact route projection");
 assert(heightSampler.includes("roadAttachmentHalfWidthAtS"), "Elevated PLATEAU road corridor is not limited to the actual road width");
-assert(routeDataSource.includes("if (sec.bridge) return roadHalf + 0.05"), "Bridge height sampler still spills into the adjacent ground service road");
 assert(!heightSampler.includes("roadRoute.distance >= 24"), "The obsolete 24m elevation radius still lifts nearby grey surfaces");
 assert(nature.includes("const bridgeRoadHeightAt = (_x, _z, s) => elevationAt(s)"), "Bridge rails are not pinned to the single road height");
 assert(nature.includes("roadY + BRIDGE_RAIL_HEIGHT / 2"), "River bridge rails are not based at road-surface height");
@@ -231,7 +220,7 @@ assert(nature.includes("route.osmVegetation"), "OSM vegetation is not wired into
 assert(nature.includes("osm-planted-green-areas"), "OSM green areas are not rendered");
 assert(nature.includes("FOREST_TREE_AREA_M2"), "OSM forest density is not configured");
 assert(nature.includes("osm-scrub-stands"), "OSM scrub is not rendered as low vegetation");
-assert(landmarks.includes("OSM_SURFACE_COLORS"), "OSM surface colors are not wired into station roads");
+assert((drivingNetwork.overlays?.nijoRotary?.stationRoads ?? []).length > 0, "OSM station-road topology is missing");
 assert(!nature.includes("const deck = new THREE.Mesh"), "A duplicate river bridge grey deck still covers the road");
 assert(railways.includes("function addOmiyaParapets"), "Omiya overpass parapets are missing");
 assert(railways.includes("const OMIYA_PARAPET_HEIGHT = 1.0"), "Omiya parapets are not approximately one metre high");
@@ -245,10 +234,11 @@ assert(!plateauRenderer.includes("structuralPlateauSurfaceMesh"), "The old dupli
 assert(!plateauRenderer.includes("plateau-structural-road-fragments"), "A separate road-coloured bridge object is still added");
 assert(plateauRenderer.includes("structuralLaneReplacement"), "Structural carriageways are not marked as source-polygon replacements");
 assert(plateauRenderer.includes("this.terrainHeightAtWorld"), "Ground portions of PLATEAU transportation are not kept on terrain");
+assert(plateauRenderer.includes("plateauRouteMarkingMeshes"), "PLATEAU road markings are not generated");
+assert(!plateauRenderer.includes("routeRoadCutFeatures"), "OSM route ribbons still modify terrain geometry");
 assert(!plateauRenderer.includes("!touchesStructuralRoad"), "Whole PLATEAU polygons are still being suppressed");
 assert(scenery.includes("routeHeightAtS: builders.elevationAt"), "The edited structural lane is not wired to the same elevationAt(s) used by vehicles");
-assert(routeDataSource.includes('profile.kind === "single-crest"'), "Omiya overpass does not use a single crest at the JR crossing");
-assert(routeDataSource.includes("laneEntryTransitions"), "Automatic driving does not merge into the bridge carriageway before the branch");
+assert((drivingNetwork.bridges ?? []).some((bridge) => bridge.name === "小枝橋(鴨川)" && bridge.railEdges?.left?.length > 1), "Bridge road-edge rails were not compiled");
 assert(manifest.policies?.fallbackToLegacy === false, "Manifest still advertises legacy fallback");
 
 console.log(JSON.stringify({

@@ -1,6 +1,6 @@
 import { CFG } from "./config.js";
 import { input } from "./input.js";
-import { speedLimitAt, laneCenterAt } from "./route/routeData.js";
+import { speedLimitAt } from "./route/routeData.js";
 
 /**
  * デバッグ/自動運転。window.game に API を公開する。
@@ -18,7 +18,7 @@ export function autoDriveInput(
   path,
   s,
   stopTargetS = null,
-  targetLat = null,
+  targetLat = 0,
   vCap = Infinity,
 ) {
   const B = CFG.bus;
@@ -28,7 +28,7 @@ export function autoDriveInput(
   const target = laneCenterPoint(
     path,
     sAhead,
-    targetLat ?? laneCenterAt(sAhead),
+    targetLat,
   );
   const dx = target[0] - bus.x,
     dz = target[1] - bus.z;
@@ -74,11 +74,10 @@ export function autoDriveInput(
   return { throttle, brake, steer };
 }
 
-function laneCenterPoint(path, s, lat = null) {
+function laneCenterPoint(path, s, lat = 0) {
   const [px, pz] = path.getPoint(s);
   const [tx, tz] = path.getTangent(s);
-  const l = lat ?? laneCenterAt(s);
-  return [px + -tz * l, pz + tx * l];
+  return [px + -tz * lat, pz + tx * lat];
 }
 
 export function setupDebug(ctx) {

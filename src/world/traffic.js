@@ -1,9 +1,12 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { CFG } from "../config.js";
 import { lambertize } from "../util/lambertize.js";
+import { createDestinationDisplay } from "../bus/destinationDisplay.js";
 import {
   route,
   elevationAt,
+  surfaceElevationAt,
   gradeAt,
   lanesAt,
   halfWidthAt,
@@ -79,36 +82,34 @@ const makeTruck = (cabColor) => makeVehicle("Truck", "TruckCab", cabColor);
 /** 対向の路線バス(京都市バス18号系統の北行き便の想定、前方=+z) */
 function makeOncomingBus() {
   const holder = new THREE.Group();
+  const destinationDisplay = createDestinationDisplay("oncoming");
   const fill = () => {
     const node = busLib.clone(true);
-    // bus.glb は原点=後軸中心(車体 z -2.6..8.9)なので車体中心を holder 原点へ
-    node.position.set(0, 0, -3.15);
+    // bus.glb は原点=後軸中心なので車体中心を holder 原点へ
+    node.position.set(0, 0, -(CFG.bus.length / 2 - CFG.bus.rearOverhang));
     holder.add(node);
-    // 方向幕: 北行き「二条駅西口 | 18」。系統番号は右端の水色矩形に白字。
-    const cv = document.createElement("canvas");
-    cv.width = 512;
-    cv.height = 128;
-    const c2 = cv.getContext("2d");
-    c2.fillStyle = "#0d1116";
-    c2.fillRect(0, 0, 512, 128);
-    const numBoxX = 392;
-    c2.fillStyle = "#3fa9dc";
-    c2.fillRect(numBoxX, 0, 512 - numBoxX, 128);
-    c2.fillStyle = "#ffffff";
-    c2.textBaseline = "middle";
-    c2.textAlign = "center";
-    c2.font = "bold 78px sans-serif";
-    c2.fillText("18", numBoxX + (512 - numBoxX) / 2, 68);
-    c2.fillStyle = "#ffb43c";
-    c2.font = "bold 52px sans-serif";
-    c2.fillText("二条駅西口", 196, 64);
-    const tex = new THREE.CanvasTexture(cv);
-    tex.colorSpace = THREE.SRGBColorSpace;
+    // 方向幕: 対向車「大宮通 / 四条大宮・二条駅 / Nijo Sta. Via Shijo Omiya」。
+    const tex = destinationDisplay.texture;
     const sign = new THREE.Mesh(
       new THREE.PlaneGeometry(1.7, 0.36),
       new THREE.MeshBasicMaterial({ map: tex }),
     );
-    sign.position.set(0, 2.79, 8.94);
+    const sf = node.getObjectByName("SignFront");
+    if (sf?.geometry) {
+      sf.geometry.computeBoundingBox();
+      const b = sf.geometry.boundingBox;
+      sign.position.set(
+        (b.min.x + b.max.x) / 2,
+        (b.min.y + b.max.y) / 2,
+        b.max.z + 0.003,
+      );
+    } else {
+      sign.position.set(
+        0,
+        2.79,
+        CFG.bus.length - CFG.bus.rearOverhang + 0.028,
+      );
+    }
     node.add(sign);
   };
   if (busLib) fill();
@@ -155,6 +156,16 @@ function sampleTurnArc(arc, u) {
 // ===== 共通走行ダイナミクス =====
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 
+// 信号の基準点は交差点中心。NPCはそこから9m手前を停止線とし、
+// 車体前端が停止線の3.2m手前に来るように停止する。自車のsは後軸中心なので、
+// 同じ前端位置になるよう、バスでは後軸から前端までの長さも差し引く。
+const SIGNAL_STOP_LINE_OFFSET = 9;
+const SIGNAL_STOP_GAP = 3.2;
+const BUS_FRONT_OFFSET = CFG.bus.length - CFG.bus.rearOverhang;
+const signalStopLineS = (signalS, dir = 1) => signalS - SIGNAL_STOP_LINE_OFFSET * dir;
+const busSignalStopTargetS = (signalS, dir = 1) =>
+  signalStopLineS(signalS, dir) - dir * (BUS_FRONT_OFFSET + SIGNAL_STOP_GAP);
+
 /** IDM(知的運転者モデル)に近い追従加速度。前車との速度差を考慮し、
  * 単純な距離比例制御で起きていた急制動・速度振動を抑える。 */
 function idmAcceleration(speed, desiredSpeed, gap = Infinity, leadSpeed = desiredSpeed, options = {}) {
@@ -195,7 +206,7 @@ function setRoadPose(vehicle, x, z, heading, yOffset = 0.04) {
  * latter is ambiguous where roads run close together or cross at different
  * levels, and could place a vehicle on the terrain below an elevated road. */
 function setRoutePose(vehicle, s, x, z, heading, dir = 1, yOffset = 0.04) {
-  vehicle.outer.position.set(x, elevationAt(s) + yOffset, z);
+  vehicle.outer.position.set(x, surfaceElevationAt(s, x, z) + yOffset, z);
   vehicle.outer.rotation.y = heading;
   vehicle.inner.rotation.x = -Math.atan(gradeAt(s) * dir);
 }
@@ -257,6 +268,240 @@ function fallbackSignalPositions(path) {
 }
 
 /**
+ * Map-compiled traffic.  Every non-player vehicle follows one directed OSM
+ * lane edge or a precompiled turn connector; runtime never synthesizes a
+ * cross-street stub or moves a car across a median.
+ */
+function buildGraphTraffic(scene, path, events, signalTools) {
+  const graph = events.trafficGraph;
+  const g = new THREE.Group();
+  scene.add(g);
+  const edgeById = new Map((graph.edges ?? []).map((edge) => [edge.id, edge]));
+  const connectorsByEdge = new Map();
+  for (const connector of graph.connectors ?? []) {
+    if (!connectorsByEdge.has(connector.from)) connectorsByEdge.set(connector.from, []);
+    connectorsByEdge.get(connector.from).push(connector);
+  }
+  const nodeById = new Map((graph.nodes ?? []).map((node) => [node.id, node]));
+  const paths = new Map();
+  const makePath = (id, points, extra = {}) => {
+    if (!points || points.length < 2) return;
+    const cumulative = [0];
+    for (let i = 1; i < points.length; i++) {
+      const a = points[i - 1], b = points[i];
+      cumulative.push(cumulative.at(-1) + Math.hypot(b[0] - a[0], b[2] - a[2]));
+    }
+    paths.set(id, { id, points, cumulative, length: cumulative.at(-1) || 1, ...extra });
+  };
+  for (const edge of graph.edges ?? []) makePath(edge.id, edge.points, { edge });
+  for (const connector of graph.connectors ?? []) makePath(connector.id, connector.points, { connector });
+  const sample = (item, distance) => {
+    const target = clamp(distance, 0, item.length);
+    let i = 0;
+    while (i < item.cumulative.length - 2 && item.cumulative[i + 1] < target) i++;
+    const span = item.cumulative[i + 1] - item.cumulative[i] || 1;
+    const t = (target - item.cumulative[i]) / span;
+    const a = item.points[i], b = item.points[i + 1];
+    return {
+      x: a[0] + (b[0] - a[0]) * t,
+      y: a[1] + (b[1] - a[1]) * t,
+      z: a[2] + (b[2] - a[2]) * t,
+      heading: Math.atan2(b[0] - a[0], b[2] - a[2]),
+      pitch: -Math.atan2(b[1] - a[1], Math.hypot(b[0] - a[0], b[2] - a[2]) || 1),
+    };
+  };
+  const isTurnConnector = (connector) => {
+    if (!connector) return false;
+    if (typeof connector.turn === "boolean") return connector.turn;
+    // Compatibility with graphs generated before the explicit turn flag.
+    const points = connector.points ?? [];
+    if (points.length < 4) return false;
+    const heading = (a, b) => Math.atan2(b[0] - a[0], b[2] - a[2]);
+    let delta = heading(points.at(-2), points.at(-1)) - heading(points[0], points[1]);
+    while (delta > Math.PI) delta -= Math.PI * 2;
+    while (delta < -Math.PI) delta += Math.PI * 2;
+    return Math.abs(delta) > Math.PI / 5 && Math.abs(delta) < Math.PI * 0.8;
+  };
+  const MIN_STRAIGHT_AFTER_TURN = 100;
+  const defs = [
+    { make: () => makeCar(0xd8dde2), length: 4.5, width: 1.82, height: 1.8, vMax: 11 },
+    { make: () => makeCar(0x4e637b), length: 4.5, width: 1.82, height: 1.8, vMax: 10.5 },
+    { make: () => makeTruck(0x7d8288), length: 6.6, width: 2.15, height: 2.8, vMax: 9.5 },
+    { make: () => makeCar(0x704044), length: 4.5, width: 1.82, height: 1.8, vMax: 11.5 },
+    { make: () => makeCar(0x9aa3ab), length: 4.5, width: 1.82, height: 1.8, vMax: 10.5 },
+  ];
+  const agents = [];
+  let serial = 0;
+  let simulationTime = 0;
+  let collisionCooldown = 0;
+  let lastBusS = 0;
+  const junctionBusy = new Map();
+  const eligibleEdges = [...paths.values()].filter((item) => item.edge && item.length > 30);
+  const distanceTo = (item, point) => {
+    let best = Infinity;
+    for (const samplePoint of item.points) best = Math.min(best, Math.hypot(samplePoint[0] - point[0], samplePoint[2] - point[1]));
+    return best;
+  };
+  const makeAgent = (index) => {
+    const def = defs[index % defs.length];
+    const inner = def.make();
+    const outer = new THREE.Group();
+    outer.add(inner);
+    g.add(outer);
+    return {
+      id: `graph-${serial++}`,
+      outer,
+      inner,
+      ...def,
+      path: null,
+      distance: 0,
+      distanceSinceTurn: MIN_STRAIGHT_AFTER_TURN,
+      v: 5 + Math.random() * 2,
+      nextEdge: null,
+    };
+  };
+  const place = (agent) => {
+    const pose = sample(agent.path, agent.distance);
+    agent.outer.position.set(pose.x, pose.y + 0.04, pose.z);
+    agent.outer.rotation.y = pose.heading;
+    agent.inner.rotation.x = pose.pitch;
+  };
+  const respawn = (agent, busPoint) => {
+    const candidates = eligibleEdges
+      .map((item) => ({ item, distance: distanceTo(item, busPoint) }))
+      .filter((item) => item.distance > 75 && item.distance < 1250)
+      .sort((a, b) => a.distance - b.distance);
+    const chosen = (candidates[Math.floor(Math.random() * Math.min(candidates.length, 80))] ?? { item: eligibleEdges[Math.floor(Math.random() * eligibleEdges.length)] }).item;
+    agent.path = chosen;
+    agent.distance = Math.min(Math.max(3, 8 + Math.random() * Math.max(1, chosen.length - 26)), Math.max(3, chosen.length - 8));
+    agent.distanceSinceTurn = MIN_STRAIGHT_AFTER_TURN;
+    agent.nextEdge = null;
+    agent.v = 4 + Math.random() * 3;
+    place(agent);
+  };
+  for (let i = 0; i < Math.min(64, Math.max(18, Math.ceil(eligibleEdges.length / 18))); i++) agents.push(makeAgent(i));
+  const setSignalStates = (dt, busS, busV) => {
+    for (const sig of signalTools.signals) {
+      sig.phase = (sig.phase + dt) % 42;
+      const state = sig.phase < 22 ? "green" : sig.phase < 25 ? "yellow" : "red";
+      if (state !== sig.state) {
+        sig.state = state;
+        for (const head of sig.mainHeads) signalTools.paintHead(head, state);
+      }
+      const crossState = sig.phase >= 26 && sig.phase < 40 ? (sig.phase < 38 ? "green" : "yellow") : "red";
+      if (crossState !== sig.crossState) {
+        sig.crossState = crossState;
+        for (const head of sig.crossHeads) signalTools.paintHead(head, crossState);
+      }
+      const lineS = signalStopLineS(sig.s);
+      if (state === "red" && lastBusS < lineS && busS >= lineS && busV > 1.5) events.onRedLight?.();
+    }
+    lastBusS = busS;
+  };
+  const chooseConnector = (agent) => {
+    const options = connectorsByEdge.get(agent.path.edge?.id) ?? [];
+    if (!options.length) return null;
+    const straight = options.filter((item) => !isTurnConnector(item));
+    const canTurn = (agent.distanceSinceTurn ?? Infinity) >= MIN_STRAIGHT_AFTER_TURN;
+    if (!canTurn && !straight.length) return null;
+    const pool = canTurn
+      ? (straight.length && Math.random() < 0.72 ? straight : options)
+      : straight;
+    return pool[Math.floor(Math.random() * pool.length)];
+  };
+  const busPose = (busS, busPos, busV, busHeading, busLat) => ({
+    x: busPos[0], z: busPos[1], y: busPos[2] ?? elevationAt(busS) + 1.35, heading: busHeading,
+    halfLength: 5.66, halfWidth: 1.19, height: 3, speed: busV, s: busS, lat: busLat,
+  });
+  const agentPose = (agent) => ({
+    x: agent.outer.position.x, z: agent.outer.position.z, y: agent.outer.position.y + agent.height / 2,
+    heading: agent.outer.rotation.y, halfLength: agent.length * 0.41, halfWidth: agent.width * 0.43, height: agent.height,
+  });
+  return {
+    signals: signalTools.signals,
+    update(dt, busS, busPos, busV, busHeading = 0, busLat = laneCenterAt(busS)) {
+      simulationTime += dt;
+      setSignalStates(dt, busS, busV);
+      const bus = busPose(busS, busPos, busV, busHeading, busLat);
+      const busPoint = [bus.x, bus.z];
+      for (const agent of agents) if (!agent.path) respawn(agent, busPoint);
+      for (const agent of agents) {
+        let gap = Infinity;
+        for (const other of agents) {
+          if (other === agent || other.path?.id !== agent.path?.id || other.distance <= agent.distance) continue;
+          gap = Math.min(gap, other.distance - agent.distance - (agent.length + other.length) * 0.5);
+        }
+        const node = agent.path.edge ? nodeById.get(agent.path.edge.to) : null;
+        const remaining = agent.path.length - agent.distance;
+        const phase = node?.signal ? ((simulationTime + Number.parseInt(node.id.split(":")[0], 10)) % 42) : 0;
+        const stopForSignal = node?.signal && phase >= 22 && remaining < 22;
+        const busyUntil = node ? junctionBusy.get(node.id) ?? 0 : 0;
+        const stopForJunction = !node?.signal && busyUntil > simulationTime && remaining < 10;
+        if (stopForSignal) {
+          // remainingは車体基準点から信号ノードまでの距離。NPCの前端を
+          // 停止線(ノードの9m手前)から安全車間だけ手前に置く。
+          gap = Math.min(
+            gap,
+            Math.max(0, remaining - agent.length * 0.5 - SIGNAL_STOP_LINE_OFFSET),
+          );
+        } else if (stopForJunction) {
+          gap = Math.min(gap, Math.max(0, remaining - 3));
+        }
+        const desired = Math.min(agent.vMax, agent.path.edge?.speed ?? 8.5);
+        agent.v = clamp(agent.v + idmAcceleration(agent.v, desired, gap, gap < Infinity ? 0 : desired, { minimumGap: SIGNAL_STOP_GAP }) * dt, 0, desired);
+        const distanceMoved = agent.v * dt;
+        agent.distance += distanceMoved;
+        if (!isTurnConnector(agent.path.connector)) {
+          agent.distanceSinceTurn = Math.min(
+            MIN_STRAIGHT_AFTER_TURN,
+            (agent.distanceSinceTurn ?? MIN_STRAIGHT_AFTER_TURN) + distanceMoved,
+          );
+        }
+        if (agent.distance >= agent.path.length) {
+          if (agent.path.connector) {
+            if (isTurnConnector(agent.path.connector)) agent.distanceSinceTurn = 0;
+            agent.path = paths.get(agent.path.connector.to);
+            agent.distance = 0.2;
+          } else {
+            const connector = chooseConnector(agent);
+            if (connector && paths.has(connector.id)) {
+              junctionBusy.set(connector.node, simulationTime + 2.5);
+              agent.path = paths.get(connector.id);
+              agent.distance = 0.1;
+            } else {
+              respawn(agent, busPoint);
+            }
+          }
+        }
+        place(agent);
+        if (collisionCooldown <= 0 && orientedBoxesOverlap(agentPose(agent), bus)) {
+          collisionCooldown = 4;
+          events.onCollision?.();
+        }
+      }
+      collisionCooldown = Math.max(0, collisionCooldown - dt);
+    },
+    leadGapAhead() { return null; },
+    nextSignal(busS) {
+      let best = null;
+      for (const sig of signalTools.signals) {
+        const d = sig.s - busS;
+        if (d > -5 && (!best || d < best.d)) best = { d, state: sig.state };
+      }
+      return best;
+    },
+    redStopTarget(busS, busV) {
+      for (const sig of signalTools.signals) {
+        const target = busSignalStopTargetS(sig.s);
+        const d = target - busS;
+        if (d >= 0 && d < 90 && sig.state !== "green") return busS + d;
+      }
+      return null;
+    },
+  };
+}
+
+/**
  * 交通(対向車・同方向の同行車)と交差点信号(各方向の灯器+連動)。
  * update(dt, busS, busPos, busV) を毎ステップ呼ぶ。
  * events: { onCollision(), onRedLight() }
@@ -264,7 +509,44 @@ function fallbackSignalPositions(path) {
 export function buildTraffic(scene, path, events = {}) {
   const g = new THREE.Group();
   scene.add(g);
-  const feederRoads = events.feederRoads ?? [];
+  const trafficPaths = events.trafficPaths ?? [];
+  // Cross-street traffic must come from compiled lane paths/connectors. The
+  // old straight-line intersection stubs are available only as an explicit
+  // fallback for legacy maps and are never inferred from an intersection box.
+  const allowSyntheticIntersectionTraffic = events.allowSyntheticIntersectionTraffic === true;
+  const mainTrafficLanes = trafficPaths
+    .filter((item) => item.role === "main" && item.points?.length >= 2)
+    .map((item) => ({
+      ...item,
+      path: new RoutePath(item.points, 2, item.distances),
+    }));
+
+  function mainLane(direction, laneIndex = 0) {
+    const candidates = mainTrafficLanes
+      .filter((item) => item.direction === direction)
+      .sort((a, b) => a.lane - b.lane);
+    if (!candidates.length) return null;
+    return candidates.find((item) => item.lane === laneIndex)
+      ?? candidates.at(-1);
+  }
+
+  function mainLanePose(s, direction, laneIndex = 0) {
+    if (direction < 0 && backLanesAt(s) === 0) return null;
+    const lane = mainLane(direction, laneIndex);
+    if (!lane) return null;
+    const location = lane.path._locate(s);
+    const lateralA = lane.laterals?.[location.i] ?? 0;
+    const lateralB = lane.laterals?.[location.i + 1] ?? lateralA;
+    const [x, z] = lane.path.getPoint(s);
+    const [tx, tz] = lane.path.getTangent(s);
+    return {
+      x,
+      z,
+      tx,
+      tz,
+      lateral: lateralA + (lateralB - lateralA) * location.t,
+    };
+  }
 
   // ================= 信号 =================
   // 位相: 自道 青22→黄3→赤17 / 交差道は自道が赤の間に 全赤1→青14→黄2(交差点内で連動)
@@ -440,7 +722,7 @@ export function buildTraffic(scene, path, events = {}) {
   function redDistAhead(s, dir, v) {
     let best = null;
     for (const sig of signals) {
-      const line = sig.s - 9 * dir;
+      const line = signalStopLineS(sig.s, dir);
       const d = (line - s) * dir;
       if (d < -2 || d > 90) continue;
       const reservedByCross = activeReservation(sig)?.owner?.startsWith("cross-");
@@ -452,6 +734,13 @@ export function buildTraffic(scene, path, events = {}) {
       if (best == null || d < best) best = d;
     }
     return best;
+  }
+
+  // The lane-path traffic below is the runtime source of truth. The unified
+  // graph remains compiled for diagnostics and future cross-road expansion,
+  // but must not bypass the canonical lane paths used by the bus.
+  if (events.useTrafficGraph && events.trafficGraph?.edges?.length) {
+    return buildGraphTraffic(scene, path, events, { signals, paintHead });
   }
 
   /** 交差点(自ルート外)を横切る他車が、交差道路の入り口で停止すべき残距離(なければ null) */
@@ -474,46 +763,7 @@ export function buildTraffic(scene, path, events = {}) {
   // ================= 車両 =================
   /** dir: +1=同方向(道路左側) / -1=対向(右側)。laneIdx: 0=センター寄り, 1=外側 */
   function laneLat(s, dir, laneIdx = 0) {
-    if (dir === 1) {
-      const n = fwdLanesAt(s);
-      const li = Math.min(laneIdx, n - 1);
-      if (backLanesAt(s) === 0) {
-        // 一方通行: 道路全幅を n 車線で使う(1車線なら中央)
-        const wL = leftWidthAt(s),
-          wR = rightWidthAt(s);
-        return -wL + 0.55 + ((wL + wR - 1.1) * (li + 0.5)) / n;
-      }
-      return -(((leftWidthAt(s) - 0.55) * (li + 0.5)) / n);
-    }
-    const nB = backLanesAt(s);
-    if (nB === 0) return null; // 一方通行区間に対向車は入れない
-    const li = Math.min(laneIdx, nB - 1);
-    const mag = ((rightWidthAt(s) - 0.55) * (li + 0.5)) / nB;
-    // 対向車はやや外側に寄せる(狭い2車線での自車とのすれ違い余裕)。急カーブではさらに外へ
-    const curveOut = Math.min(0.9, Math.abs(path.curvatureAt(s)) * 22);
-    return mag + 0.4 + curveOut;
-  }
-
-  // 区間境界(車線数・幅員の変化点)をまたぐ際、laneLat の目標横位置が瞬時に切り替わって
-  // 車が横揺れして見えるのを防ぐため、境界前後 LANE_BLEND [m] で前後区間の値を線形補間する
-  // (千本三条 s≈726.2 の3→1車線への合流など、短距離に複数の境界が連続する箇所で特に有効)。
-  const LANE_BLEND = 20;
-  const SECTION_BOUNDARIES = (route.roadSections ?? [])
-    .map((sec) => sec.to)
-    .filter((b) => b > 0 && b < path.length);
-  function smoothLaneLat(s, dir, laneIdx) {
-    for (const b of SECTION_BOUNDARIES) {
-      if (s <= b - LANE_BLEND || s >= b + LANE_BLEND) continue;
-      const before = laneLat(b - LANE_BLEND - 0.1, dir, laneIdx);
-      const after = laneLat(b + LANE_BLEND + 0.1, dir, laneIdx);
-      if (before == null || after == null) break; // 一方通行境界等は従来ロジックへ委譲
-      const t = Math.min(
-        1,
-        Math.max(0, (s - (b - LANE_BLEND)) / (2 * LANE_BLEND)),
-      );
-      return before + (after - before) * t;
-    }
-    return laneLat(s, dir, laneIdx);
+    return mainLanePose(s, dir, laneIdx)?.lateral ?? null;
   }
 
   // 二条駅前ロータリー(急カーブ・狭隘)には一般車を入れない
@@ -588,7 +838,8 @@ export function buildTraffic(scene, path, events = {}) {
   });
   SAME_DEFS.forEach((def, i) => {
     // 自車(始発)の前方に並べる。走行中はリスポーンで前後に維持される
-    cars.push(spawnCar(def, 1, nearMultiLane(400 + i * 180), i % 2));
+    // lane-0 is the canonical same-direction lane shared with the bus path.
+    cars.push(spawnCar(def, 1, nearMultiLane(400 + i * 180), 0));
   });
 
   function spawnCar(def, dir, s, laneIdx) {
@@ -620,8 +871,8 @@ export function buildTraffic(scene, path, events = {}) {
 
   // 地蔵前南側の北行き一方通行路。南端から北へ進み、地蔵前交差点を抜けて
   // 本線の北行き車線へ合流させる。B=0の南行き本線に対向車を無理に置かない。
-  const feederPaths = feederRoads
-    .filter((road) => road.points?.length >= 2)
+  const feederPaths = trafficPaths
+    .filter((road) => ["merge", "local"].includes(road.role) && road.points?.length >= 2)
     .map((road) => ({ ...road, path: new RoutePath(road.points) }));
   const feederCars = [];
   let feederSerial = 0;
@@ -731,7 +982,7 @@ export function buildTraffic(scene, path, events = {}) {
       inner,
     };
   }
-  for (const sig of signals) {
+  if (allowSyntheticIntersectionTraffic) for (const sig of signals) {
     let nearestIx = null,
       bestD = 28;
     for (const ix of route.intersections ?? []) {
@@ -835,7 +1086,7 @@ export function buildTraffic(scene, path, events = {}) {
         other.s,
         other.v,
         other.length ?? 4.5,
-        other.latCur ?? smoothLaneLat(other.s, dir, laneIndexAt(other)) ?? 0,
+        other.latCur ?? laneLat(other.s, dir, laneIndexAt(other)) ?? 0,
         other,
       );
     }
@@ -891,6 +1142,7 @@ export function buildTraffic(scene, path, events = {}) {
 
   function assignExitPlan(vehicle) {
     vehicle.exitPlan = null;
+    if (!allowSyntheticIntersectionTraffic) return;
     if (Math.random() > 0.32) return;
     const candidates = (route.intersections ?? []).filter((ix) => {
       const ahead = (ix.s - vehicle.s) * vehicle.dir;
@@ -1011,13 +1263,26 @@ export function buildTraffic(scene, path, events = {}) {
         }
       }
       const mergeDir = c.road.mergeDir ?? -1;
+      const joinsMainRoute = c.road.role === "merge";
       const mergeS = clamp(
         (c.road.mergeS ?? path.closestS(c.road.points.at(-1)).s) - 18 * mergeDir,
         20,
         path.length - 20,
       );
       const remaining = c.path.length - 18 - c.s;
-      const mergeSafe = canMergeIntoLane(mergeS, mergeDir, 0, c.v, busPose);
+      const mergeSafe = joinsMainRoute && canMergeIntoLane(mergeS, mergeDir, 0, c.v, busPose);
+      if (!joinsMainRoute) {
+        const desired = Math.min(c.vMax, 8);
+        const accel = idmAcceleration(c.v, desired, leadGap, leadSpeed, { timeHeadway: 1.5 });
+        c.v = clamp(c.v + accel * dt, 0, desired);
+        c.s += c.v * dt;
+        if (c.s >= c.path.length - 4) c.s = Math.min(18, Math.max(4, c.path.length * 0.25));
+        const [x, z] = c.path.getPoint(c.s);
+        const [tx, tz] = c.path.getTangent(c.s);
+        setFeederRoadPose(c, x, z, Math.atan2(tx, tz));
+        checkBusCollision(c, busPose);
+        continue;
+      }
       if (!mergeSafe && remaining < leadGap) {
         leadGap = Math.max(0, remaining);
         leadSpeed = 0;
@@ -1065,7 +1330,7 @@ export function buildTraffic(scene, path, events = {}) {
         sig.crossState = crossState;
         for (const head of sig.crossHeads) paintHead(head, crossState);
       }
-      const lineS = sig.s - 9;
+      const lineS = signalStopLineS(sig.s);
       if (sig.state === "red" && lastBusS < lineS && busS >= lineS && busV > 1.5) {
         events.onRedLight?.();
       }
@@ -1105,13 +1370,11 @@ export function buildTraffic(scene, path, events = {}) {
         continue;
       }
 
-      let targetLat = smoothLaneLat(c.s, c.dir, laneIndexAt(c));
-      const invalidDirection = targetLat == null;
-      if (invalidDirection) targetLat = c.latCur ?? 2.5;
+      let lanePose = mainLanePose(c.s, c.dir, laneIndexAt(c));
+      const invalidDirection = lanePose == null;
 
       chooseLane(c, busPose, dt);
-      const updatedLat = smoothLaneLat(c.s, c.dir, laneIndexAt(c));
-      if (updatedLat != null) targetLat = updatedLat;
+      lanePose = mainLanePose(c.s, c.dir, laneIndexAt(c)) ?? lanePose;
 
       let desiredSpeed = Math.min(c.vMax, speedLimitAt(c.s) * 1.05);
       const curvature = Math.abs(path.curvatureAt(c.s));
@@ -1131,7 +1394,6 @@ export function buildTraffic(scene, path, events = {}) {
         const meetingDistance = c.s - busS;
         if (meetingDistance > -14 && meetingDistance < 45) {
           desiredSpeed = Math.min(desiredSpeed, 5.5);
-          targetLat += 0.45;
         }
         for (const zone of turnZones) {
           if (busS > zone.from - 35 && busS < zone.to + 25 && c.s > zone.to) {
@@ -1162,21 +1424,21 @@ export function buildTraffic(scene, path, events = {}) {
         invalidDirection
       ) {
         respawnMainCar(c, busS);
-        targetLat = laneLat(c.s, c.dir, laneIndexAt(c)) ?? 0;
+        lanePose = mainLanePose(c.s, c.dir, laneIndexAt(c));
       }
 
-      if (c.latCur == null) c.latCur = targetLat;
-      c.latCur += (targetLat - c.latCur) * Math.min(1, dt * 1.35);
-      const [px, pz] = path.getPoint(c.s);
-      const [tx, tz] = path.getTangent(c.s);
-      const x = px - tz * c.latCur;
-      const z = pz + tx * c.latCur;
+      lanePose ??= mainLanePose(c.s, c.dir, 0);
+      if (!lanePose) {
+        respawnMainCar(c, busS);
+        continue;
+      }
+      c.latCur = lanePose.lateral;
       setRoutePose(
         c,
         c.s,
-        x,
-        z,
-        Math.atan2(tx * c.dir, tz * c.dir),
+        lanePose.x,
+        lanePose.z,
+        Math.atan2(lanePose.tx * c.dir, lanePose.tz * c.dir),
         c.dir,
       );
       checkBusCollision(c, busPose);
@@ -1353,7 +1615,7 @@ export function buildTraffic(scene, path, events = {}) {
     /** autoDrive 用: 前方の止まるべき信号の停止線 s(なければ null) */
     redStopTarget(busS, busV) {
       const d = redDistAhead(busS, 1, busV);
-      return d == null ? null : busS + d;
+      return d == null ? null : busSignalStopTargetS(busS + d);
     },
   };
 }

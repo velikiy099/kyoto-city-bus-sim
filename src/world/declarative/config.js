@@ -7,11 +7,9 @@ export const WORLD_CONFIG = Object.freeze({
     // sample it before asynchronous scenery loading. The renderer replaces that
     // provisional mesh with the transportation-cut version once the manifest loads.
     terrain: true,
-    // PLATEAU transportation remains the visible road-surface source. OSM-derived
-    // road markings and sidewalks are loaded as clipped overlays above it.
+    // PLATEAU transportation remains the only visible road-surface source.
+    // OSM contributes lane/sidewalk topology, not a competing road mesh.
     transportation: true,
-    osmRouteSurface: false,
-    osmExtraRoadSurfaces: false,
     buildings: true,
     // The selected Kyoto PLATEAU tiles contain no usable features for these layers.
     // Route structure annotations provide the fallback and are ground-snapped.

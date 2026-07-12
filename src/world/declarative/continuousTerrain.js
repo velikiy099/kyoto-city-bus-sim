@@ -107,9 +107,11 @@ function sampleGrid(x, z) {
   const b = gridAt(ix + 1, iz);
   const c = gridAt(ix, iz + 1);
   const d = gridAt(ix + 1, iz + 1);
-  const top = a + (b - a) * tx;
-  const bottom = c + (d - c) * tx;
-  const y = top + (bottom - top) * tz;
+  // Match the terrain mesh exactly: each cell is split into (a,c,b) and
+  // (b,c,d), rather than sampled as a separate bilinear surface.
+  const y = tx + tz <= 1
+    ? a + (b - a) * tx + (c - a) * tz
+    : d + (c - d) * (1 - tx) + (b - d) * (1 - tz);
   const outsideDistance = inside
     ? 0
     : Math.hypot(
@@ -124,9 +126,10 @@ export function configureWorldHeightSamplers(
   terrainElevationAtS,
   routeSurfaceHeightAtS,
   attachmentHalfWidthAtS = null,
+  surfacePath = path,
 ) {
   terrainRouteIndex = new RouteHeightIndex(path, terrainElevationAtS);
-  routeSurfaceIndex = new RouteHeightIndex(path, routeSurfaceHeightAtS);
+  routeSurfaceIndex = new RouteHeightIndex(surfacePath, routeSurfaceHeightAtS);
   roadAttachmentHalfWidthAtS = attachmentHalfWidthAtS;
   return { terrainHeightAtWorld, roadHeightAtWorld };
 }
@@ -177,7 +180,7 @@ export function buildContinuousTerrain(path, bridges = [], rivers = []) {
     for (let ix = 0; ix < gridWidth; ix++) {
       const x = gridOrigin[0] + ix * gridSpacing[0];
       const dip = riverDipDepthAt(x, z, dips);
-      const y = gridAt(ix, iz) - dip - 0.045;
+      const y = gridAt(ix, iz) - dip;
       positions.push(x, y, z);
       const blend = clamp01(dip / 3.4) * 0.55;
       const color = baseColor.clone().lerp(riverBankColor, blend);

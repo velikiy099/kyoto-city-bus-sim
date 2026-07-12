@@ -3,11 +3,12 @@ import {
   route,
   leftWidthAt,
   rightWidthAt,
+  driveBoundsAt,
   turnExclusions,
   elevationAt,
 } from "../route/routeData.js";
 import { loadProps } from "../util/propsLib.js";
-import { clippedRiverPoints } from "./riverGeometry.js";
+import { clippedRiverPoints, riverWidthMeters } from "./riverGeometry.js";
 import { terrainHeightAtWorld } from "./declarative/continuousTerrain.js";
 
 const mat = (color, opts = {}) =>
@@ -88,8 +89,38 @@ export function buildNature(scene, path) {
     return geo;
   }
 
+  function waterPolygonGeometry(polygon) {
+    const shape = polygon.map(([x, z]) => new THREE.Vector2(x, z));
+    const triangles = THREE.ShapeUtils.triangulateShape(shape, []);
+    const positions = polygon.flatMap(([x, z]) => [x, terrainHeightAtWorld(x, z) - RIVER_DEPTH + 0.05, z]);
+    const indices = triangles.flatMap((triangle) => triangle);
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+    geometry.setIndex(indices);
+    geometry.computeVertexNormals();
+    return geometry;
+  }
+
   /** 道路の曲線に追従する欄干を短い箱の連続として描く */
-  function addBridgeRail(side, fromS, toS) {
+  function addBridgeRail(side, fromS, toS, deckHalfWidth = null, edgePoints = null) {
+    if (edgePoints?.length >= 2) {
+      for (let i = 1; i < edgePoints.length; i++) {
+        const a = edgePoints[i - 1], b = edgePoints[i];
+        const dx = b[0] - a[0], dz = b[2] - a[2];
+        const length = Math.hypot(dx, dz);
+        if (length < 0.05) continue;
+        const rail = new THREE.Mesh(
+          new THREE.BoxGeometry(BRIDGE_RAIL_WIDTH, BRIDGE_RAIL_HEIGHT, length + 0.04),
+          mat(0xdfe3e6),
+        );
+        rail.position.set((a[0] + b[0]) / 2, (a[1] + b[1]) / 2 + BRIDGE_RAIL_HEIGHT / 2, (a[2] + b[2]) / 2);
+        rail.rotation.order = "YXZ";
+        rail.rotation.y = Math.atan2(dx, dz);
+        rail.rotation.x = -Math.atan2(b[1] - a[1], length);
+        g.add(rail);
+      }
+      return;
+    }
     for (let s = fromS; s < toS; s += RAIL_SEGMENT_LENGTH) {
       const nextS = Math.min(toS, s + RAIL_SEGMENT_LENGTH);
       const midS = (s + nextS) / 2;
@@ -97,8 +128,9 @@ export function buildNature(scene, path) {
       const [tx, tz] = path.getTangent(midS);
       const nx = -tz,
         nz = tx;
-      const roadEdge =
-        side < 0 ? leftWidthAt(midS) : rightWidthAt(midS);
+      const roadEdge = deckHalfWidth ?? (
+        side < 0 ? leftWidthAt(midS) : rightWidthAt(midS)
+      );
       const railOffset = roadEdge + BRIDGE_RAIL_CLEARANCE;
       const rail = new THREE.Mesh(
         new THREE.BoxGeometry(
@@ -123,8 +155,20 @@ export function buildNature(scene, path) {
     }
   }
 
+  const waterPolygonsByName = new Set(
+    (route.waterPolygons ?? []).map((polygon) => polygon.name).filter(Boolean),
+  );
+  for (const polygon of route.waterPolygons ?? []) {
+    if (polygon.polygon?.length < 3) continue;
+    g.add(new THREE.Mesh(
+      waterPolygonGeometry(polygon.polygon),
+      mat(0x4fa8d8, { transparent: true, opacity: 0.82, side: THREE.DoubleSide }),
+    ));
+  }
+
   for (const br of route.bridges) {
-    const w = Math.max(18, br.length * 0.85); // 川幅
+    const riverLine = (route.rivers ?? []).find((river) => river.bridgeName === br.name);
+    const w = riverWidthMeters(br, riverLine);
     const halfW = w / 2;
     // 久我橋・天神橋は従来の「川幅+10m」を橋桁にも流用していたため、
     // 端部の欄干が接続道路まで伸びていた。橋桁と欄干は実際の川幅相当の
@@ -141,15 +185,17 @@ export function buildNature(scene, path) {
     // 浮いて見える不整合が出ていた)。
     const points = clippedRiverPoints(path, br, route.rivers);
 
-    // 水面(地表より RIVER_DEPTH 低い)
-    g.add(
+    const hasSourceWaterPolygon = waterPolygonsByName.has(br.river);
+    // A riverbank/natural=water polygon is the authoritative water surface.
+    // The centreline ribbon is only a fallback for OSM waterway=river data.
+    if (!hasSourceWaterPolygon) g.add(
       new THREE.Mesh(
         ribbonGeometry(points, -halfW, halfW, -RIVER_DEPTH + 0.05),
         mat(0x4fa8d8),
       ),
     );
     // 土手(地表→水面の段状斜面)。両岸・両段(BANK_TIERS)で計4本のリボン。
-    for (const bankSide of [-1, 1]) {
+    if (!hasSourceWaterPolygon) for (const bankSide of [-1, 1]) {
       let yTop = 0,
         distFromWater = halfW;
       for (const tier of BANK_TIERS) {
@@ -179,8 +225,17 @@ export function buildNature(scene, path) {
     // 別の灰色デッキを重ねると道路勾配との差で路面を覆うため生成しない。
     const railFrom = Math.max(0, br.s - bridgeSpan / 2);
     const railTo = Math.min(path.length, br.s + bridgeSpan / 2);
+    // Width is compiled from the selected PLATEAU/OSM road surface with the
+    // driving network; bridge names never alter geometry at runtime.
+    const deckHalfWidth = br.railHalfWidth ?? null;
     for (const side of [-1, 1])
-      addBridgeRail(side, railFrom, railTo);
+      addBridgeRail(
+        side,
+        railFrom,
+        railTo,
+        deckHalfWidth,
+        side < 0 ? br.railEdges?.left : br.railEdges?.right,
+      );
 
     // 長い河川橋は、河床から桁下までを結ぶ橋脚を実際の路面標高に合わせて配置する。
     // 地形メッシュ側で河川谷を掘り下げているため、橋脚下端も同じ深さを使う。
@@ -276,8 +331,8 @@ export function buildNature(scene, path) {
     if (turnZones.some((e) => (x - e.x) ** 2 + (z - e.z) ** 2 < e.r * e.r))
       return false;
     const { s: ts, lateral: tlat } = path.closestS([x, z]);
-    const roadHw = tlat < 0 ? leftWidthAt(ts) : rightWidthAt(ts);
-    return Math.abs(tlat) >= roadHw + 1.5;
+    const bounds = driveBoundsAt(ts);
+    return tlat < -bounds.left - 1.5 || tlat > bounds.right + 1.5;
   };
   const cleanPolygon = (polygon) => {
     const points = (polygon ?? []).filter(
@@ -347,10 +402,8 @@ export function buildNature(scene, path) {
   // inside the mapped polygon so they do not become generic roadside scatter.
   if (route.osmVegetation) {
     for (const tree of route.osmVegetation.trees ?? []) {
-      // A mapped tree can intentionally sit on a narrow planted median or
-      // sidewalk island, so do not discard it merely because it is near the
-      // route centerline. The source itself is the authority for these points.
-      if (tree.point?.length >= 2) addTree(tree.point[0], tree.point[1]);
+      if (tree.point?.length >= 2 && isValidTreePos(tree.point[0], tree.point[1]))
+        addTree(tree.point[0], tree.point[1]);
     }
     let areaSeed = 24001;
     for (const areaData of route.osmVegetation.treeAreas ?? []) {
@@ -396,7 +449,7 @@ export function buildNature(scene, path) {
           const t = j / count;
           const x = a[0] + (b[0] - a[0]) * t;
           const z = a[1] + (b[1] - a[1]) * t;
-          addTree(x, z);
+          if (isValidTreePos(x, z)) addTree(x, z);
         }
       }
     }
@@ -414,7 +467,7 @@ export function buildNature(scene, path) {
         z = pz + tx * lat;
       if (turnZones.some((e) => (x - e.x) ** 2 + (z - e.z) ** 2 < e.r * e.r))
         continue;
-      addTree(x, z);
+      if (isValidTreePos(x, z)) addTree(x, z);
     }
   }
   // ---- 鳥羽離宮跡公園(OSM実測: way 341709499「鳥羽離宮跡公園」の敷地形状に合わせて木を配置) ----
@@ -444,9 +497,7 @@ export function buildNature(scene, path) {
         continue;
       // 公園の矩形スキャッター範囲(anchorS±71m基準)が実際の道路帯にかかる区間があり
       // (城南宮道停留所付近)、車道の真上に木が生えて見えていた。経路に近すぎる候補は除外する。
-      const { s: ts, lateral: tlat } = path.closestS([x, z]);
-      const roadHw = tlat < 0 ? leftWidthAt(ts) : rightWidthAt(ts);
-      if (Math.abs(tlat) < roadHw + 1.5) continue;
+      if (!isValidTreePos(x, z)) continue;
       addTree(x, z);
     }
   }

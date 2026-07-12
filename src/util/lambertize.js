@@ -5,7 +5,7 @@ import * as THREE from "three";
  * ガラスはマテリアル名で判別して半透明に差し替え。
  */
 const GLASS = {
-  BusGlass: { color: 0x2c3844, opacity: 0.5 },
+  BusGlass: { color: 0x46545f, opacity: 0.28 },
   CarGlass: { color: 0x232e38, opacity: 0.8 },
 };
 

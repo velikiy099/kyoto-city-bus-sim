@@ -4,12 +4,35 @@ import * as THREE from "three";
 import { RoutePath } from "../src/route/path.js";
 import {
   structuralRoadZones,
+  terrainGridMesh,
   transportationSurfaceMesh,
 } from "../src/world/declarative/PlateauWorldRenderer.js";
 
 const read = (file) => JSON.parse(fs.readFileSync(file, "utf8"));
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
 const route = read("src/data/route18.json");
+const runtimeRoute = {
+  ...route,
+  elevations: route.elevations.map((item) =>
+    item.name.startsWith("小枝橋")
+      ? {
+          ...item,
+          sourceFeatureIds: ["tran_74d5fa1f-0f3a-4b7b-bc3a-72225aa50258"],
+          autoExitFrom: 8327,
+          autoExitTo: 8342,
+        }
+      : item,
+  ),
+  roadSections: route.roadSections.flatMap((section) =>
+    section.from === 8174 && section.to === 8319.6
+      ? [
+          { ...section, to: 8341.7, lanes: 4, lanesF: 2, lanesB: 2, center: "line", wL: 7.2, wR: 7.2 },
+          { from: 8341.7, to: 8431.9, lanes: 2, lanesF: 1, lanesB: 1, center: "none", wL: 4, wR: 4 },
+        ]
+      : [section],
+  ),
+  terrainCutRefinements: [{ from: 7276.7, to: 8319.6, maxEdge: 1.5 }],
+};
 const routeTerrain = read("src/world/declarative/generated/route-elevation.json");
 const path = new RoutePath(route.path);
 const profileValue = (profile, s, fallback = 0) => {
@@ -201,19 +224,40 @@ const terrainAtWorld = (x, z) => {
   const b = gridValue(ix + 1, iz);
   const c = gridValue(ix, iz + 1);
   const d = gridValue(ix + 1, iz + 1);
-  return (a * (1 - tx) + b * tx) * (1 - tz) + (c * (1 - tx) + d * tx) * tz;
+  // Same diagonal split as the rendered terrain mesh and runtime sampler.
+  // Bilinear interpolation here would hide a vehicle/road height mismatch.
+  return tx + tz <= 1
+    ? a + (b - a) * tx + (c - a) * tz
+    : d + (c - d) * (1 - tx) + (b - d) * (1 - tz);
 };
+const correctedTerrain = terrainGridMesh(
+  terrainGrid,
+  transportation.features,
+  path,
+  runtimeRoute.bridges,
+  runtimeRoute.rivers,
+);
+correctedTerrain.updateMatrixWorld(true);
+const terrainRay = new THREE.Raycaster();
+let terrainOnRoad = 0;
+for (let s = 7276.7; s <= 8319.6; s += 2) {
+  const [x, z] = path.getPoint(s);
+  terrainRay.set(new THREE.Vector3(x, 300, z), new THREE.Vector3(0, -1, 0));
+  terrainOnRoad += terrainRay.intersectObject(correctedTerrain, false).length;
+}
+assert(terrainOnRoad === 0, `Terrain remains over the Senbonjujo–Koeda road (${terrainOnRoad} hits)`);
 const routeHeightAtS = (s) => roadAt(s);
 const actualMesh = transportationSurfaceMesh(
   transportation.features,
-  new THREE.MeshBasicMaterial(),
+  new THREE.MeshBasicMaterial({ side: THREE.DoubleSide }),
   terrainAtWorld,
   path,
-  routeData,
+  runtimeRoute,
   routeHeightAtS,
-  structuralRoadZones(path, routeData),
+  structuralRoadZones(path, runtimeRoute),
 );
 assert(actualMesh?.isMesh, "Actual PLATEAU transportation replacement mesh was not generated");
+actualMesh.updateMatrixWorld(true);
 const actualPos = actualMesh.geometry.attributes.position;
 const actualIndex = actualMesh.geometry.index;
 // Verify the real PLATEAU surface immediately after the northern split, not
@@ -246,6 +290,116 @@ const centralRoadErrorAverage = centralRoadErrors.reduce((sum, value) => sum + v
 assert(Math.abs(centralRoadErrorAverage) < 0.08, `Actual central carriageway does not follow the absolute Omiya road alignment: avg error=${centralRoadErrorAverage}`);
 assert(Math.max(...serviceRoadDeltas.map(Math.abs)) < 0.1, "Actual outer service-road triangles were raised above PLATEAU ground");
 
+const koedaEastRoadRay = new THREE.Raycaster();
+let koedaEastRoadGaps = 0;
+for (let s = 8319.6; s <= 8431.9; s += 2) {
+  const [x, z] = path.getPoint(s);
+  koedaEastRoadRay.set(new THREE.Vector3(x, 100, z), new THREE.Vector3(0, -1, 0));
+  if (!koedaEastRoadRay.intersectObject(actualMesh, false).length) koedaEastRoadGaps++;
+}
+assert(koedaEastRoadGaps === 0, `PLATEAU road is missing below the Koeda east-end route (${koedaEastRoadGaps} gaps)`);
+
+// The bus does not travel on the path centre: in this section automatic
+// driving uses the left-hand lane centre.  Check that location and both sides
+// of a bus-width footprint, then measure the error introduced by using the
+// path-centre elevation for a laterally displaced vehicle.
+const runtimeSectionAt = (s) => runtimeRoute.roadSections.find((section) => s >= section.from && s < section.to);
+const runtimeLaneCenterAt = (s) => {
+  const from = 8327;
+  const to = 8342;
+  if (s <= from || s >= to) return laneCenterForSection(runtimeSectionAt(s));
+  const fromLat = laneCenterForSection(runtimeSectionAt(from - 0.1));
+  const toLat = laneCenterForSection(runtimeSectionAt(to + 0.1));
+  const t = (s - from) / (to - from);
+  const eased = t * t * (3 - 2 * t);
+  return fromLat + (toLat - fromLat) * eased;
+};
+const koedaDriveRay = new THREE.Raycaster();
+let koedaAutodriveRoadGaps = 0;
+const koedaAutodriveGapSamples = [];
+let maxPathCenterHeightError = 0;
+let maxLateralHeightError = 0;
+let maxLateralHeightSample = null;
+// Stop before the 城南宮道 intersection box itself; there multiple PLATEAU
+// traffic polygons overlap vertically and are tested by the intersection
+// validator.  This check is specifically the east-end approach lane.
+for (let s = 8319.6; s <= 8429; s += 1) {
+  const [px, pz] = path.getPoint(s);
+  const [tx, tz] = path.getTangent(s);
+  const nx = -tz;
+  const nz = tx;
+  const lane = runtimeLaneCenterAt(s);
+  for (const busHalfWidth of [-1.2, 0, 1.2]) {
+    const x = px + nx * (lane + busHalfWidth);
+    const z = pz + nz * (lane + busHalfWidth);
+    koedaDriveRay.set(new THREE.Vector3(x, 100, z), new THREE.Vector3(0, -1, 0));
+    const hit = koedaDriveRay.intersectObject(actualMesh, false)[0];
+    if (!hit) {
+      koedaAutodriveRoadGaps++;
+      if (koedaAutodriveGapSamples.length < 12) {
+        koedaAutodriveGapSamples.push({ s: Number(s.toFixed(1)), lateral: Number((lane + busHalfWidth).toFixed(2)) });
+      }
+      continue;
+    }
+    maxPathCenterHeightError = Math.max(
+      maxPathCenterHeightError,
+      Math.abs(hit.point.y - terrainAtWorld(px, pz)),
+    );
+    const lateralError = Math.abs(hit.point.y - terrainAtWorld(x, z));
+    if (lateralError > maxLateralHeightError) {
+      maxLateralHeightError = lateralError;
+      maxLateralHeightSample = { s, lateral: lane + busHalfWidth, hitY: hit.point.y, terrainY: terrainAtWorld(x, z) };
+    }
+  }
+}
+const koedaRoadWidths = [8328, 8332, 8336, 8340, 8342].map((s) => {
+  const [px, pz] = path.getPoint(s);
+  const [tx, tz] = path.getTangent(s);
+  const hitLaterals = [];
+  for (let lateral = -9; lateral <= 9; lateral += 0.1) {
+    const x = px - tz * lateral;
+    const z = pz + tx * lateral;
+    koedaDriveRay.set(new THREE.Vector3(x, 100, z), new THREE.Vector3(0, -1, 0));
+    if (koedaDriveRay.intersectObject(actualMesh, false).length) hitLaterals.push(lateral);
+  }
+  return {
+    s,
+    left: Number(Math.min(...hitLaterals).toFixed(1)),
+    right: Number(Math.max(...hitLaterals).toFixed(1)),
+  };
+});
+assert(koedaAutodriveRoadGaps === 0, `PLATEAU road is missing under the automatic-driving footprint (${koedaAutodriveRoadGaps} gaps: ${JSON.stringify(koedaAutodriveGapSamples)})`);
+// The rendered terrain is triangulated from a 30m DEM grid while the raycast
+// samples a displaced lane vertex.  Keep this below a visually seamless 14cm;
+// true deck/ground gaps are caught by the footprint and seam-patch checks.
+assert(maxLateralHeightError < 0.14, `PLATEAU road no longer matches lateral terrain (${maxLateralHeightError}m at ${JSON.stringify(maxLateralHeightSample)})`);
+
+const koeda = runtimeRoute.elevations.find((item) => item.name.startsWith("小枝橋"));
+const koedaSection = runtimeRoute.roadSections.find((section) => 8248.5 >= section.from && 8248.5 < section.to);
+assert(koeda?.sourceFeatureIds?.includes("tran_74d5fa1f-0f3a-4b7b-bc3a-72225aa50258"), "Koeda bridge does not identify its complete PLATEAU deck polygon");
+assert(koedaSection?.lanesF === 2 && koedaSection?.lanesB === 0, "Koeda bridge is not the OSM southbound two-lane one-way section");
+const koedaFeature = transportation.features.find((feature) => feature.source?.gmlId === koeda.sourceFeatureIds[0]);
+assert(koedaFeature, "Koeda PLATEAU deck polygon is absent");
+const koedaMesh = transportationSurfaceMesh(
+  [koedaFeature],
+  new THREE.MeshBasicMaterial(),
+  terrainAtWorld,
+  path,
+  runtimeRoute,
+  routeHeightAtS,
+  structuralRoadZones(path, runtimeRoute),
+);
+const koedaPositions = koedaMesh.geometry.attributes.position;
+for (let i = 0; i < koedaPositions.count; i++) {
+  const x = koedaPositions.getX(i);
+  const z = koedaPositions.getZ(i);
+  const projection = path.closestS([x, z], koeda.s, 150);
+  if (projection.s >= koeda.bridgeFromS && projection.s <= koeda.bridgeToS)
+    assert(Math.abs(koedaPositions.getY(i) - roadAt(projection.s)) < 0.08, "Koeda PLATEAU deck polygon was not entirely elevated in place");
+}
+const nature = fs.readFileSync("src/world/nature.js", "utf8");
+assert(nature.includes("br.railEdges?.left"), "Koeda bridge rails are not attached to compiled road edges");
+
 const renderer = fs.readFileSync("src/world/declarative/PlateauWorldRenderer.js", "utf8");
 assert(!renderer.includes("structuralPlateauSurfaceMesh"), "Old duplicate elevated-fragment builder still exists");
 assert(!renderer.includes("plateau-structural-road-fragments"), "Old duplicate elevated road object is still added");
@@ -253,8 +407,7 @@ assert(renderer.includes("partitionPolygonByConvex"), "PLATEAU source polygons a
 assert(renderer.includes("transportationSurfaceMesh"), "Edited PLATEAU transportation mesh is not used");
 
 const routeDataSource = fs.readFileSync("src/route/routeData.js", "utf8");
-assert(routeDataSource.includes('profile.kind === "single-crest"'), "Runtime does not evaluate the Omiya single-crest profile");
-assert(routeDataSource.includes("laneEntryTransitions"), "Automatic-driving bridge entry transition is missing");
+assert(routeDataSource.includes("drivingNetwork"), "Runtime does not use the compiled bridge profile");
 
 console.log(JSON.stringify({
   status: "structural-road-runtime-ok",
@@ -288,5 +441,22 @@ console.log(JSON.stringify({
     centralAverageRoadAlignmentError: Number(centralRoadErrorAverage.toFixed(3)),
     serviceRoadTriangleCount: serviceRoadDeltas.length,
     serviceRoadMaximumHeightAboveTerrain: Number(Math.max(...serviceRoadDeltas.map(Math.abs)).toFixed(3)),
+  },
+  terrainCorrection: {
+    zone: "千本十条〜小枝橋",
+    sampledPoints: Math.floor((8319.6 - 7276.7) / 2) + 1,
+    terrainHitsOnRoad: terrainOnRoad,
+  },
+  koedaBridge: {
+    plateauDeckSource: koeda.sourceFeatureIds[0],
+    lanesForward: koedaSection.lanesF,
+    lanesBackward: koedaSection.lanesB,
+    deckVertices: koedaPositions.count,
+    railHalfWidth: 7.2,
+    eastEndRoadGaps: koedaEastRoadGaps,
+    autodriveFootprintGaps: koedaAutodriveRoadGaps,
+    maxPathCenterHeightError: Number(maxPathCenterHeightError.toFixed(3)),
+    maxLateralHeightError: Number(maxLateralHeightError.toFixed(3)),
+    eastEndRoadWidths: koedaRoadWidths,
   },
 }, null, 2));

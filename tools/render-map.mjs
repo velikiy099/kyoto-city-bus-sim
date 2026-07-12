@@ -1,541 +1,606 @@
 #!/usr/bin/env node
 /**
- * route18.json から上面図 SVG を生成する検証ツール(ゲームを走らせずに地図を確認する)。
- * 描画は route18.json に埋め込まれた情報のみを使う(道路幅・交差点・信号設置座標・線路)。
+ * Runtime-complete top-view SVG for driving geometry QA.
  *
- * 使い方:
- *   node tools/render-map.mjs                     # 全区間 → tools/map.svg
- *   node tools/render-map.mjs --from 200 --to 600 # s 区間を切り出し(交差点のズーム確認)
- *   node tools/render-map.mjs --check             # 整合性チェック(信号柱が路面上にない等)
- *   node tools/render-map.mjs --out foo.svg
+ * Unlike the legacy renderer, this reads the same compiled driving network and
+ * PLATEAU transportation polygons as the simulator.  It intentionally draws
+ * diagnostic overlays (lane paths, source centre, patches and steep grades)
+ * on top of the final road footprint.
  *
- * 座標系: ワールド x → SVG x, ワールド z → SVG y(北=-z が上)
+ *   npm run map
+ *   node tools/render-map.mjs --from 3400 --to 4250 --out tools/map-omiya.svg
+ *   node tools/render-map.mjs --from 9300 --to 10150 --out tools/map-koga.svg
+ *   npm run map-check
  */
 import { readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-const data = JSON.parse(
-  readFileSync(join(ROOT, "src", "data", "route18.json"), "utf8"),
-);
+const readJson = (relative) => JSON.parse(readFileSync(join(ROOT, relative), "utf8"));
+const raw = readJson("src/data/route18.json");
+const network = readJson("src/data/generated/driving-network.json");
+const transportation = readJson("public/world/generated/plateau-transportation.json");
+const roadOverlays = readJson("public/world/generated/osm-road-overlays.json");
+const osmCorridor = readJson("data/osm/route18-corridor.json");
+const buildings = readJson("public/world/generated/plateau-buildings.json");
+const water = readJson("public/world/generated/plateau-water.json");
+const terrain = readJson("src/world/declarative/generated/terrain-grid.json");
 
-// ---- 引数 ----
 const args = process.argv.slice(2);
-const argVal = (name, def = null) => {
-  const i = args.indexOf(name);
-  return i >= 0 ? args[i + 1] : def;
+const argValue = (name, fallback = null) => {
+  const index = args.indexOf(name);
+  return index >= 0 ? args[index + 1] : fallback;
 };
-const S_FROM = Number(argVal("--from", 0));
-const S_TO = Number(argVal("--to", Infinity));
-const OUT = argVal("--out", join(ROOT, "tools", "map.svg"));
+const nodes = network.nodes ?? [];
+const totalLength = nodes.at(-1)?.s ?? 0;
+const S_FROM = Math.max(0, Number(argValue("--from", 0)) || 0);
+const requestedTo = Number(argValue("--to", totalLength));
+const S_TO = Math.min(totalLength, Number.isFinite(requestedTo) ? requestedTo : totalLength);
+const MARGIN = Math.max(20, Number(argValue("--margin", 90)) || 90);
+const TERRAIN_STEP = Math.max(1, Math.round(Number(argValue("--terrain-step", 2)) || 2));
+const OUT = resolve(ROOT, argValue("--out", "tools/map.svg"));
 const CHECK = args.includes("--check");
+const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+const xml = (value) => String(value)
+  .replaceAll("&", "&amp;")
+  .replaceAll("<", "&lt;")
+  .replaceAll(">", "&gt;")
+  .replaceAll('"', "&quot;");
 
-// ---- 経路ヘルパー(route18.json の path のみから構築) ----
-const path = data.path;
-const cumLen = [0];
-for (let i = 1; i < path.length; i++) {
-  cumLen.push(
-    cumLen[i - 1] +
-      Math.hypot(path[i][0] - path[i - 1][0], path[i][1] - path[i - 1][1]),
-  );
-}
-const totalLength = cumLen.at(-1);
-const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
+if (nodes.length < 2) throw new Error("driving-network nodes are missing; run npm run world:build first");
+if (!transportation.features?.length) throw new Error("PLATEAU transportation is missing; run npm run world:build first");
+if (S_TO <= S_FROM) throw new Error(`invalid range: ${S_FROM}..${S_TO}`);
 
-function pointAt(s) {
-  const ss = clamp(s, 0, totalLength);
-  let lo = 0,
-    hi = cumLen.length - 1;
-  while (lo < hi - 1) {
-    const m = (lo + hi) >> 1;
-    cumLen[m] <= ss ? (lo = m) : (hi = m);
+function locateS(s) {
+  const target = clamp(Number(s) || 0, 0, totalLength);
+  let lo = 0, hi = nodes.length - 1;
+  while (lo + 1 < hi) {
+    const mid = (lo + hi) >> 1;
+    if (nodes[mid].s <= target) lo = mid;
+    else hi = mid;
   }
-  const a = path[lo],
-    b = path[Math.min(path.length - 1, lo + 1)];
-  const len = cumLen[lo + 1] - cumLen[lo] || 1e-9;
-  const t = (ss - cumLen[lo]) / len;
+  const a = nodes[lo], b = nodes[Math.min(nodes.length - 1, lo + 1)];
+  const t = clamp((target - a.s) / Math.max(1e-6, b.s - a.s), 0, 1);
+  return { index: lo, t, a, b };
+}
+
+function pointAt(s, points = network.path) {
+  const { index, t } = locateS(s);
+  const a = points[index], b = points[Math.min(points.length - 1, index + 1)];
   return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
 }
-function headingAt(s) {
-  const a = pointAt(s - 1.5),
-    b = pointAt(s + 1.5);
+
+function headingAt(s, points = network.path) {
+  const a = pointAt(s - 2, points), b = pointAt(s + 2, points);
   return Math.atan2(b[0] - a[0], b[1] - a[1]);
 }
-/** 点→経路の最近傍 {s, dist} */
-function projectPoint(pt) {
-  let bd = Infinity,
-    bs = 0;
-  for (let i = 0; i < path.length - 1; i++) {
-    const a = path[i],
-      b = path[i + 1];
-    const abx = b[0] - a[0],
-      abz = b[1] - a[1];
-    const ab2 = abx * abx + abz * abz || 1e-9;
-    const t = clamp(((pt[0] - a[0]) * abx + (pt[1] - a[1]) * abz) / ab2, 0, 1);
-    const dx = pt[0] - (a[0] + abx * t),
-      dz = pt[1] - (a[1] + abz * t);
-    const d2 = dx * dx + dz * dz;
-    if (d2 < bd) {
-      bd = d2;
-      bs = cumLen[i] + Math.sqrt(ab2) * t;
-    }
-  }
-  return { s: bs, dist: Math.sqrt(bd) };
+
+function sectionAt(s) {
+  return (network.sections ?? []).find((section) => s >= section.from && s < section.to)
+    ?? network.sections?.at(-1)
+    ?? { wL: 4, wR: 4, lanesF: 1, lanesB: 1, center: "line" };
 }
 
-// roadSections から左右幅(routeData.sectionAt と同式。旧形式にもフォールバック)
-const secAt = (s) => {
-  for (const sec of data.roadSections ?? []) {
-    if (s >= sec.from && s < sec.to) {
-      const hw = Math.max(4.0, Math.max(2, sec.lanes || 2) * 1.6 + 0.8);
-      return {
-        wL: sec.wL ?? hw,
-        wR: sec.wR ?? hw,
-        center: sec.center ?? "line",
-        lanesB: sec.lanesB ?? 1,
-      };
-    }
-  }
-  return { wL: 4.0, wR: 4.0, center: "line", lanesB: 1 };
-};
-const hwAt = (s) => Math.max(secAt(s).wL, secAt(s).wR);
-/** 点の経路に対する符号付き横位置(右=正)とその側の路面幅 */
-function sideWidthAt(pt) {
-  const proj = projectPoint(pt);
-  const [qx, qz] = pointAt(proj.s);
-  const h = headingAt(proj.s);
-  const lat = (pt[0] - qx) * -Math.cos(h) + (pt[1] - qz) * Math.sin(h);
-  const sec = secAt(proj.s);
-  return { s: proj.s, dist: proj.dist, need: lat < 0 ? sec.wL : sec.wR };
+function boundsOfXZ(points) {
+  const xs = points.map((point) => point[0]);
+  const zs = points.map((point) => point.at(-1));
+  return { minX: Math.min(...xs), maxX: Math.max(...xs), minZ: Math.min(...zs), maxZ: Math.max(...zs) };
 }
 
-const STUB_LEN = 42; // road.js の addTurnIntersections と同値
+function overlaps(a, b) {
+  return a.minX <= b.maxX && a.maxX >= b.minX && a.minZ <= b.maxZ && a.maxZ >= b.minZ;
+}
 
-/** 右左折交差点の腕(貫通道路の矩形)一覧 [{cx, cz, heading, from, to, hw}] */
-function turnArms(t) {
-  const stubInLen = t.stubInLen ?? STUB_LEN;
-  const inArms = [];
-  if (t.stubInHeadingDeg != null) {
-    inArms.push({
-      heading: t.headingIn,
-      hw: t.hwIn,
-      from: -(t.d + 2),
-      to: t.hwOut,
-    });
-    inArms.push({
-      heading: (t.stubInHeadingDeg * Math.PI) / 180,
-      hw: t.stubInHw ?? t.hwIn,
-      from: 0,
-      to: stubInLen,
-    });
-  } else {
-    inArms.push({
-      heading: t.headingIn,
-      hw: t.hwIn,
-      from: -(t.d + 2),
-      to: stubInLen,
-    });
-  }
+function rowsPolygon(rows) {
   return [
-    ...inArms,
-    {
-      heading: t.headingOut,
-      hw: t.hwOut,
-      from: -(t.stubBackLen ?? STUB_LEN),
-      to: t.d + 2,
-    },
-  ].map((a) => ({ ...a, cx: t.x, cz: t.z }));
-}
-/** 点が腕矩形の内側か(margin>0 で緩め、<0 で厳しめ) */
-function inArm(pt, arm, margin = 0) {
-  const dx = pt[0] - arm.cx,
-    dz = pt[1] - arm.cz;
-  const dir = [Math.sin(arm.heading), Math.cos(arm.heading)];
-  const along = dx * dir[0] + dz * dir[1];
-  const lat = dx * dir[1] - dz * dir[0];
-  return (
-    along > arm.from - margin &&
-    along < arm.to + margin &&
-    Math.abs(lat) < arm.hw + margin
-  );
-}
-
-// ================================================================ チェック
-if (CHECK) {
-  let fail = 0,
-    warn = 0;
-  const report = (level, msg) => {
-    if (level === "FAIL") fail++;
-    else warn++;
-    console.log(`${level}  ${msg}`);
-  };
-
-  // 1) 信号柱が路面(ルート帯・右左折交差点の腕・通常交差点スタブ)の上に立っていないか
-  const arms = (data.turnIntersections ?? []).flatMap(turnArms);
-  for (const sig of data.signals ?? []) {
-    if (!sig.heads?.length) {
-      report("WARN", `信号 s=${sig.s} に heads がない`);
-      continue;
-    }
-    for (const h of sig.heads) {
-      const p = h.pole;
-      const proj = sideWidthAt(p);
-      if (proj.dist < proj.need - 0.3) {
-        report(
-          "FAIL",
-          `信号柱が本線路面上: s=${sig.s} ${h.kind} pole=(${p[0]}, ${p[1]}) 路面中心まで${proj.dist.toFixed(1)}m < 幅${proj.need}`,
-        );
-      }
-      for (const arm of arms) {
-        if (inArm(p, arm, -0.3)) {
-          report(
-            "FAIL",
-            `信号柱が右左折交差点の路面上: s=${sig.s} ${h.kind} pole=(${p[0]}, ${p[1]})`,
-          );
-        }
-      }
-      for (const ix of data.intersections ?? []) {
-        const c = pointAt(ix.s);
-        const dir = [Math.sin(ix.heading), Math.cos(ix.heading)];
-        const dx = p[0] - c[0],
-          dz = p[1] - c[1];
-        const along = dx * dir[0] + dz * dir[1];
-        const lat = dx * dir[1] - dz * dir[0];
-        if (
-          Math.abs(along) < ix.length / 2 - 0.3 &&
-          Math.abs(lat) < ix.width / 2 - 0.3
-        ) {
-          report(
-            "WARN",
-            `信号柱が交差道路スタブ上: s=${sig.s} ${h.kind} pole=(${p[0]}, ${p[1]}) ${ix.name || ""}`,
-          );
-        }
-      }
-    }
-  }
-
-  // 2) 線路がルートとほぼ直交しているか
-  for (const r of data.railStructures ?? []) {
-    const routeH = headingAt(r.s);
-    let a = Math.abs((((r.heading - routeH) % Math.PI) + Math.PI) % Math.PI); // 0..π
-    const deg =
-      ((Math.min(a, Math.PI - a) === a ? a : Math.PI - a) * 180) / Math.PI;
-    const cross = 90 - Math.abs(90 - (a * 180) / Math.PI); // 交差角(0..90)
-    if (cross < 70)
-      report(
-        "FAIL",
-        `線路の交差角が浅い: ${r.name} s=${r.s} 交差角${cross.toFixed(1)}°`,
-      );
-    else
-      console.log(`PASS  線路交差角 ${r.name} s=${r.s}: ${cross.toFixed(1)}°`);
-  }
-
-  // 3) 右左折交差点と停留所の重なり(円弧上に停止線があると正着が難しい)
-  for (const t of data.turnIntersections ?? []) {
-    for (const st of data.stops ?? []) {
-      if (st.s > t.sIn - 5 && st.s < t.sOut + 5) {
-        report(
-          "WARN",
-          `停留所「${st.name}」(s=${st.s}) が右左折交差点の円弧内 [${t.sIn}, ${t.sOut}]`,
-        );
-      }
-    }
-    if (!t.crossName)
-      report(
-        "WARN",
-        `右左折交差点 s=${t.s} (${t.angleDeg}°) に交差道路名がない`,
-      );
-  }
-
-  console.log(`\n=== チェック完了: FAIL ${fail} / WARN ${warn} ===`);
-  process.exit(fail ? 1 : 0);
-}
-
-// ================================================================ SVG 生成
-const inRange = (s) => s >= S_FROM - 60 && s <= S_TO + 60;
-let minX = Infinity,
-  maxX = -Infinity,
-  minZ = Infinity,
-  maxZ = -Infinity;
-for (let i = 0; i < path.length; i++) {
-  if (!inRange(cumLen[i])) continue;
-  minX = Math.min(minX, path[i][0]);
-  maxX = Math.max(maxX, path[i][0]);
-  minZ = Math.min(minZ, path[i][1]);
-  maxZ = Math.max(maxZ, path[i][1]);
-}
-const M = 90; // 余白 [m]
-const vb = [minX - M, minZ - M, maxX - minX + M * 2, maxZ - minZ + M * 2];
-
-const el = [];
-const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;");
-const poly = (pts, fill, opacity = 1) =>
-  el.push(
-    `<polygon points="${pts.map((p) => `${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(" ")}" fill="${fill}" fill-opacity="${opacity}"/>`,
-  );
-const line = (a, b, stroke, w, opts = "") =>
-  el.push(
-    `<line x1="${a[0].toFixed(1)}" y1="${a[1].toFixed(1)}" x2="${b[0].toFixed(1)}" y2="${b[1].toFixed(1)}" stroke="${stroke}" stroke-width="${w}" ${opts}/>`,
-  );
-const circle = (p, r, fill) =>
-  el.push(
-    `<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="${r}" fill="${fill}"/>`,
-  );
-const text = (p, str, size, fill = "#333", anchor = "start") =>
-  el.push(
-    `<text x="${p[0].toFixed(1)}" y="${p[1].toFixed(1)}" font-size="${size}" fill="${fill}" text-anchor="${anchor}" font-family="sans-serif">${esc(str)}</text>`,
-  );
-/** 中心・方位・矩形(along from..to, 幅 2*hw)→ 頂点4つ */
-function rectPts(cx, cz, heading, from, to, hw) {
-  const d = [Math.sin(heading), Math.cos(heading)];
-  const n = [d[1], -d[0]];
-  return [
-    [cx + d[0] * from + n[0] * hw, cz + d[1] * from + n[1] * hw],
-    [cx + d[0] * to + n[0] * hw, cz + d[1] * to + n[1] * hw],
-    [cx + d[0] * to - n[0] * hw, cz + d[1] * to - n[1] * hw],
-    [cx + d[0] * from - n[0] * hw, cz + d[1] * from - n[1] * hw],
+    ...rows.map((row) => [row[0][0], row[0].at(-1)]),
+    ...rows.slice().reverse().map((row) => [row[1][0], row[1].at(-1)]),
   ];
 }
 
-// ---- 川(OSM waterway の実ポリラインをそのまま帯状に描く) ----
-function ribbonPts(points, halfWidth) {
-  const left = [],
-    right = [];
-  for (let i = 0; i < points.length; i++) {
-    const a = points[Math.max(0, i - 1)];
-    const b = points[Math.min(points.length - 1, i + 1)];
-    const dx = b[0] - a[0],
-      dz = b[1] - a[1];
-    const len = Math.hypot(dx, dz) || 1e-9;
-    const nx = -dz / len,
-      nz = dx / len;
-    left.push([points[i][0] + nx * halfWidth, points[i][1] + nz * halfWidth]);
-    right.push([points[i][0] - nx * halfWidth, points[i][1] - nz * halfWidth]);
+function rectPoints(cx, cz, heading, from, to, halfWidth) {
+  const dx = Math.sin(heading), dz = Math.cos(heading), nx = Math.cos(heading), nz = -Math.sin(heading);
+  return [
+    [cx + dx * from + nx * halfWidth, cz + dz * from + nz * halfWidth],
+    [cx + dx * to + nx * halfWidth, cz + dz * to + nz * halfWidth],
+    [cx + dx * to - nx * halfWidth, cz + dz * to - nz * halfWidth],
+    [cx + dx * from - nx * halfWidth, cz + dz * from - nz * halfWidth],
+  ];
+}
+
+function activeSegments(path) {
+  const result = [];
+  let segment = [];
+  for (let index = 0; index < path.points.length; index++) {
+    const s = path.distances?.[index] ?? nodes[index]?.s ?? 0;
+    const active = path.active?.[index] !== false && s >= S_FROM && s <= S_TO;
+    if (active) segment.push(path.points[index]);
+    if ((!active || index === path.points.length - 1) && segment.length) {
+      if (segment.length >= 2) result.push(segment);
+      segment = [];
+    }
+  }
+  return result;
+}
+
+function pointInPolygon(points, x, z) {
+  let inside = false;
+  for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+    const [xi, zi] = points[i], [xj, zj] = points[j];
+    if ((zi > z) !== (zj > z) && x < ((xj - xi) * (z - zi)) / (zj - zi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+function mapChecks() {
+  const failures = [], warnings = [];
+  const fail = (message) => failures.push(message);
+  const warn = (message) => warnings.push(message);
+  if (network.path?.length !== nodes.length) fail("network.path and nodes are not aligned");
+  if (network.surfacePath?.length !== nodes.length) fail("network.surfacePath and nodes are not aligned");
+  if (network.driveBounds?.length !== nodes.length) fail("driveBounds and nodes are not aligned");
+  for (const path of (network.trafficPaths ?? []).filter((item) => item.role === "main")) {
+    if (path.points?.length !== nodes.length || path.active?.length !== nodes.length) fail(`${path.id} is not aligned with nodes`);
+  }
+
+  let maxGrade = { value: 0, s: 0 };
+  let maxTurn = { value: 0, s: 0 };
+  for (let index = 1; index < nodes.length; index++) {
+    const a = nodes[index - 1], b = nodes[index];
+    const ds = Math.max(1e-6, b.s - a.s);
+    const grade = Math.abs((b.y - a.y) / ds);
+    if (grade > maxGrade.value) maxGrade = { value: grade, s: b.s };
+    let turn = Math.abs(b.heading - a.heading);
+    while (turn > Math.PI) turn = Math.abs(turn - Math.PI * 2);
+    const turnDeg = turn * 180 / Math.PI;
+    // The hand-authored station rotary intentionally contains a tight initial
+    // turn.  Past it, a large per-sample heading jump means generated lanes
+    // are visibly zig-zagging and is always a map-build defect.
+    if (b.s > 350 && turnDeg > maxTurn.value) maxTurn = { value: turnDeg, s: b.s };
+  }
+  if (maxGrade.value > 0.12) fail(`road grade jumps to ${(maxGrade.value * 100).toFixed(1)}% at s=${maxGrade.s.toFixed(1)}`);
+  else if (maxGrade.value > 0.08) warn(`road grade reaches ${(maxGrade.value * 100).toFixed(1)}% at s=${maxGrade.s.toFixed(1)}`);
+  if (maxTurn.value > 20) fail(`lane heading jumps ${maxTurn.value.toFixed(1)}° in one sample at s=${maxTurn.s.toFixed(1)}`);
+
+  const driveSurfacePolygons = [
+    ...transportation.features
+      .filter((feature) => feature.kind !== "sidewalk")
+      .map((feature) => feature.polygon?.map(([x, , z]) => [x, z]) ?? [])
+      .filter((polygon) => polygon.length >= 3),
+    ...(network.surfacePatches ?? [])
+      .filter((patch) => (patch.rows?.length ?? 0) >= 2)
+      .map((patch) => rowsPolygon(patch.rows)),
+  ];
+  let missing = 0;
+  for (const node of nodes) {
+    if (node.surfaceId === "osm-nijo-rotary") continue;
+    if (!driveSurfacePolygons.some((polygon) => pointInPolygon(polygon, node.x, node.z))) missing++;
+  }
+  if (missing) fail(`${missing} bus-path samples leave the compiled driving surface`);
+
+  const omiya = (network.structures ?? []).find((item) => item.name === "大宮跨線橋");
+  if (omiya) {
+    const bridgeIntersections = (network.intersections ?? []).filter((item) => item.s >= omiya.from && item.s <= omiya.to);
+    if (bridgeIntersections.length) fail(`大宮跨線橋内に交差点が${bridgeIntersections.length}件残っています`);
+  }
+  return { failures, warnings, maxGrade, maxTurn };
+}
+
+if (CHECK) {
+  const result = mapChecks();
+  for (const message of result.failures) console.error(`FAIL  ${message}`);
+  for (const message of result.warnings) console.warn(`WARN  ${message}`);
+  console.log(`\n=== MAP check: FAIL ${result.failures.length} / WARN ${result.warnings.length} ===`);
+  process.exit(result.failures.length ? 1 : 0);
+}
+
+const rangeNodes = nodes.filter((node) => node.s >= S_FROM && node.s <= S_TO);
+if (!rangeNodes.length) throw new Error("selected range has no driving nodes");
+const routeBounds = boundsOfXZ(rangeNodes.map((node) => [node.x, node.z]));
+const viewBounds = {
+  minX: routeBounds.minX - MARGIN,
+  maxX: routeBounds.maxX + MARGIN,
+  minZ: routeBounds.minZ - MARGIN,
+  maxZ: routeBounds.maxZ + MARGIN,
+};
+const width = viewBounds.maxX - viewBounds.minX;
+const height = viewBounds.maxZ - viewBounds.minZ;
+const selectedIds = new Set(network.selectedSurfaceIds ?? []);
+const layers = {
+  terrain: [], water: [], osmRoads: [], vegetation: [], roads: [], sidewalks: [],
+  footbridges: [], crosswalks: [], osmBuildings: [], buildings: [], custom: [],
+  structures: [], patches: [], graph: [], bounds: [], lanes: [], grades: [], labels: [],
+};
+const number = (value) => Number(value).toFixed(2);
+const polygonSvg = (points, attributes) => `<polygon points="${points.map(([x, z]) => `${number(x)},${number(z)}`).join(" ")}" ${attributes}/>`;
+const polylineSvg = (points, attributes) => `<polyline points="${points.map(([x, z]) => `${number(x)},${number(z)}`).join(" ")}" fill="none" ${attributes}/>`;
+const circleSvg = ([x, z], radius, attributes) => `<circle cx="${number(x)}" cy="${number(z)}" r="${radius}" ${attributes}/>`;
+const textSvg = ([x, z], label, attributes = "") => `<text x="${number(x)}" y="${number(z)}" ${attributes}>${xml(label)}</text>`;
+
+function ribbonPoints(points, halfWidth) {
+  const left = [], right = [];
+  for (let index = 0; index < points.length; index++) {
+    const previous = points[Math.max(0, index - 1)], next = points[Math.min(points.length - 1, index + 1)];
+    const dx = next[0] - previous[0], dz = next[1] - previous[1];
+    const length = Math.hypot(dx, dz) || 1;
+    const nx = -dz / length, nz = dx / length;
+    left.push([points[index][0] + nx * halfWidth, points[index][1] + nz * halfWidth]);
+    right.push([points[index][0] - nx * halfWidth, points[index][1] - nz * halfWidth]);
   }
   return [...left, ...right.reverse()];
 }
-for (const r of data.rivers ?? []) {
-  const br = (data.bridges ?? []).find((b) => b.name === r.bridgeName);
-  if (br && !inRange(br.s)) continue;
-  if (!r.points?.length) continue;
-  const halfWidth = Math.max(6, (br?.length ?? 30) / 2);
-  poly(ribbonPts(r.points, halfWidth), "#4fa8d8", 0.55);
-  el.push(
-    `<polyline points="${r.points.map((p) => `${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(" ")}" fill="none" stroke="#2f6f9e" stroke-width="0.6"/>`,
-  );
-  const mid = r.points[Math.floor(r.points.length / 2)];
-  text([mid[0] + 6, mid[1]], `${r.river}(実測OSM)`, 8, "#2f6f9e");
+const waterLineWidth = (river, bridge) => {
+  const tagged = Number(river?.widthMeters ?? bridge?.riverWidth);
+  if (Number.isFinite(tagged) && tagged > 0) return tagged;
+  return ({ "桂川": 48, "鴨川": 22, "西高瀬川": 8 })[river?.river] ?? 12;
+};
 
-  // 比較用: ゲーム内(nature.js)が仮定している「経路に直交」の川帯を破線で重ねる。
-  // 実測ポリラインとの向きのズレが一目で分かる。
-  if (br) {
-    const c = pointAt(br.s);
-    const roadHeading = headingAt(br.s);
-    const assumedPts = rectPts(
-      c[0],
-      c[1],
-      roadHeading + Math.PI / 2,
-      -110,
-      110,
-      halfWidth,
-    );
-    el.push(
-      `<polygon points="${assumedPts.map((p) => `${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(" ")}" fill="none" stroke="#c0392b" stroke-width="0.7" stroke-dasharray="4,3"/>`,
-    );
-    const skewDeg = (() => {
-      const riverH = r.headingDeg;
-      let diff = Math.abs(((roadHeading * 180) / Math.PI - riverH) % 180);
-      if (diff > 90) diff = 180 - diff;
-      return Math.abs(90 - diff);
-    })();
-    text(
-      [c[0] + 6, c[1] + 12],
-      `想定(直交)とのズレ ${skewDeg.toFixed(0)}°`,
-      7.5,
-      "#c0392b",
-    );
-  }
-}
-
-// ---- 建物 ----
-for (const b of data.buildings ?? []) {
-  if (b.s != null && !inRange(b.s)) continue;
-  if (b.footprint?.length > 2) poly(b.footprint, "#e2ded4");
-}
-
-// ---- 梅小路公園の樹木 ----
-if (data.umekojiTrees) {
-  for (const forest of data.umekojiTrees.forests || []) {
-    if (forest.length > 2) poly(forest, "#4e7a3d", 0.35);
-  }
-  for (const treeRow of data.umekojiTrees.treeRows || []) {
-    if (treeRow.length > 1) {
-      el.push(
-        `<polyline points="${treeRow.map((p) => `${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(" ")}" fill="none" stroke="#4e7a3d" stroke-width="4" opacity="0.35"/>`,
-      );
+// The simulator's connected terrain grid, rendered as a subdued elevation
+// heatmap.  A 2x2 default stride keeps the full-route SVG manageable while
+// preserving slopes and embankments; pass --terrain-step 1 for close QA.
+const [terrainOriginX, terrainOriginZ] = terrain.origin ?? [0, 0];
+const [terrainStepX, terrainStepZ] = Array.isArray(terrain.spacing) ? terrain.spacing : [terrain.spacing, terrain.spacing];
+const terrainWidth = Number(terrain.width) || 0, terrainHeight = Number(terrain.height) || 0;
+const terrainHeights = terrain.heights ?? [];
+const terrainMin = Math.min(...terrainHeights), terrainMax = Math.max(...terrainHeights);
+const terrainColor = (heightValue) => {
+  const t = clamp((heightValue - terrainMin) / Math.max(1e-6, terrainMax - terrainMin), 0, 1);
+  return `hsl(${92 - t * 18} 17% ${74 - t * 30}%)`;
+};
+for (let iz = 0; iz < terrainHeight - 1; iz += TERRAIN_STEP) {
+  const z = terrainOriginZ + iz * terrainStepZ;
+  const cellHeight = terrainStepZ * Math.min(TERRAIN_STEP, terrainHeight - 1 - iz);
+  if (z + cellHeight < viewBounds.minZ || z > viewBounds.maxZ) continue;
+  for (let ix = 0; ix < terrainWidth - 1; ix += TERRAIN_STEP) {
+    const x = terrainOriginX + ix * terrainStepX;
+    const cellWidth = terrainStepX * Math.min(TERRAIN_STEP, terrainWidth - 1 - ix);
+    if (x + cellWidth < viewBounds.minX || x > viewBounds.maxX) continue;
+    const samples = [];
+    for (let dz = 0; dz <= TERRAIN_STEP && iz + dz < terrainHeight; dz += TERRAIN_STEP) {
+      for (let dx = 0; dx <= TERRAIN_STEP && ix + dx < terrainWidth; dx += TERRAIN_STEP) {
+        samples.push(Number(terrainHeights[(iz + dz) * terrainWidth + ix + dx]) || 0);
+      }
     }
-  }
-  for (const tree of data.umekojiTrees.trees || []) {
-    circle(tree, 2, "#4e7a3d");
-  }
-}
-
-// ---- 通常交差点スタブ ----
-for (const ix of data.intersections ?? []) {
-  if (!inRange(ix.s)) continue;
-  const c = pointAt(ix.s);
-  poly(
-    rectPts(
-      c[0],
-      c[1],
-      ix.heading,
-      -ix.length / 2,
-      ix.length / 2,
-      ix.width / 2,
-    ),
-    "#565b61",
-  );
-}
-
-// ---- 右左折交差点の腕 ----
-for (const t of data.turnIntersections ?? []) {
-  if (!inRange(t.s)) continue;
-  for (const arm of turnArms(t))
-    poly(
-      rectPts(arm.cx, arm.cz, arm.heading, arm.from, arm.to, arm.hw),
-      "#4a4f55",
-    );
-}
-
-// ---- 本線路面(区間ごとに左右非対称の帯ポリゴンで描く) ----
-function offsetPt(s, lat) {
-  const [px, pz] = pointAt(s);
-  const h = headingAt(s);
-  return [px + -Math.cos(h) * lat, pz + Math.sin(h) * lat];
-}
-for (const sec of data.roadSections ?? [
-  { from: 0, to: totalLength, lanes: 2 },
-]) {
-  const from = Math.max(sec.from, S_FROM - 60),
-    to = Math.min(sec.to, S_TO === Infinity ? totalLength : S_TO + 60);
-  if (to <= from) continue;
-  const { wL, wR } = secAt((from + to) / 2);
-  const left = [],
-    right = [];
-  // セクション終端まで必ず描く(端数で終端が落ちると境界に切れ目が出る)
-  for (let s = from; ; s += 4) {
-    const ss = Math.min(s, to);
-    left.push(offsetPt(ss, -wL));
-    right.push(offsetPt(ss, wR));
-    if (ss >= to) break;
-  }
-  poly([...left, ...right.reverse()], "#4a4f55");
-}
-// センターライン(センターラインなし・一方通行区間は破線色を変えて示す)
-for (const sec of data.roadSections ?? [
-  { from: 0, to: totalLength, lanes: 2 },
-]) {
-  const from = Math.max(sec.from, S_FROM - 60),
-    to = Math.min(sec.to, S_TO === Infinity ? totalLength : S_TO + 60);
-  if (to <= from) continue;
-  const spec = secAt((from + to) / 2);
-  const pts = [];
-  for (let s = from; s < to; s += 4) pts.push(pointAt(s));
-  pts.push(pointAt(to));
-  const hasCenter = spec.lanesB > 0 && spec.center !== "none";
-  el.push(
-    `<polyline points="${pts.map((p) => `${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(" ")}" fill="none" stroke="${hasCenter ? "#d8a017" : "#8a8f94"}" stroke-width="0.4" ${hasCenter ? "" : 'stroke-dasharray="3,3"'}/>`,
-  );
-}
-
-// ---- 線路 ----
-for (const r of data.railStructures ?? []) {
-  if (!inRange(r.s)) continue;
-  const c = pointAt(r.s);
-  const u = [Math.sin(r.heading), Math.cos(r.heading)]; // 線路軸
-  const v = [Math.cos(r.heading), -Math.sin(r.heading)]; // 軌道並び方向
-  const color = r.kind === "shinkansen-viaduct" ? "#3a6ea5" : "#7a5c3a";
-  const spacing = r.kind === "shinkansen-viaduct" ? 5.4 : 3.2;
-  const n = r.trackCount ?? 2;
-  poly(
-    rectPts(
-      c[0],
-      c[1],
-      r.heading,
-      -r.length / 2,
-      r.length / 2,
-      (r.width ?? 20) / 2,
-    ),
-    color,
-    0.15,
-  );
-  for (let i = 0; i < n; i++) {
-    const off = (i - (n - 1) / 2) * spacing;
-    const a = [
-      c[0] + v[0] * off - (u[0] * r.length) / 2,
-      c[1] + v[1] * off - (u[1] * r.length) / 2,
-    ];
-    const b = [
-      c[0] + v[0] * off + (u[0] * r.length) / 2,
-      c[1] + v[1] * off + (u[1] * r.length) / 2,
-    ];
-    line(a, b, color, 0.8);
-  }
-  text([c[0] + 12, c[1] - r.width / 2 - 4], `${r.name} (${r.kind})`, 8, color);
-}
-
-// ---- 信号(柱=紺点, 灯器=kind色, 向きチック=接近車の方向へ) ----
-for (const sig of data.signals ?? []) {
-  if (!inRange(sig.s)) continue;
-  for (const h of sig.heads ?? []) {
-    const color = h.kind === "cross" ? "#d97706" : "#1a7f37";
-    circle(h.pole, 1.0, "#1e2a5a");
-    line(h.pole, h.head, color, 0.5);
-    circle(h.head, 0.7, color);
-    // face 方向に進む車から見える → 接近車側(face の逆方向)へチック
-    const back = [
-      h.head[0] - Math.sin(h.face) * 4,
-      h.head[1] - Math.cos(h.face) * 4,
-    ];
-    line(h.head, back, color, 0.3, 'stroke-dasharray="1,1"');
+    const y = samples.reduce((sum, value) => sum + value, 0) / Math.max(1, samples.length);
+    layers.terrain.push(`<rect x="${number(x)}" y="${number(z)}" width="${number(cellWidth + 0.08)}" height="${number(cellHeight + 0.08)}" fill="${terrainColor(y)}"/>`);
   }
 }
 
-// ---- 右左折交差点の注記 ----
-for (const t of data.turnIntersections ?? []) {
-  if (!inRange(t.s)) continue;
-  circle([t.x, t.z], 1.6, "#c0392b");
-  text(
-    [t.x + 4, t.z - 4],
-    `${t.crossName || "(無名)"} ${t.angleDeg}° s=${t.s}`,
-    8,
-    "#c0392b",
-  );
+// PLATEAU water bodies when available, plus OSM riverbank polygons when the
+// refreshed route data contains them.  A waterway line is only a centreline;
+// its fallback corridor is deliberately narrow and never based on bridge span.
+for (const feature of water.features ?? []) {
+  const source = feature.polygon ?? feature.footprint ?? [];
+  const points = source.map((point) => [point[0], point.at(-1)]);
+  if (points.length >= 3 && overlaps(boundsOfXZ(points), viewBounds)) layers.water.push(polygonSvg(points, 'fill="#4fa8d8" fill-opacity="0.78" stroke="#286f9b" stroke-width="0.25"'));
+}
+for (const feature of raw.waterPolygons ?? []) {
+  const points = feature.polygon ?? [];
+  if (points.length >= 3 && overlaps(boundsOfXZ(points), viewBounds)) layers.water.push(polygonSvg(points, 'fill="#4fa8d8" fill-opacity="0.8" stroke="#286f9b" stroke-width="0.3"'));
+}
+for (const river of raw.rivers ?? []) {
+  const bridge = (network.bridges ?? []).find((item) => item.name === river.bridgeName);
+  if (!bridge || river.points?.length < 2) continue;
+  const halfWidth = waterLineWidth(river, bridge) / 2;
+  const polygon = ribbonPoints(river.points, halfWidth);
+  if (!overlaps(boundsOfXZ(polygon), viewBounds)) continue;
+  layers.water.push(polygonSvg(polygon, 'fill="#4fa8d8" fill-opacity="0.8" stroke="#286f9b" stroke-width="0.35"'));
+  const nearest = river.points.reduce((best, point) => {
+    const distance = Math.hypot(point[0] - pointAt(bridge.s)[0], point[1] - pointAt(bridge.s)[1]);
+    return distance < best.distance ? { point, distance } : best;
+  }, { point: river.points[0], distance: Infinity }).point;
+  layers.labels.push(textSvg([nearest[0] + 5, nearest[1] - 5], river.river, 'font-size="7" fill="#14577e" stroke="#dff5ff" stroke-width="1.3" paint-order="stroke"'));
 }
 
-// ---- 停留所 ----
-for (const st of data.stops ?? []) {
-  if (!inRange(st.s)) continue;
-  const p = pointAt(st.s);
-  circle(p, 2.2, "#b03030");
-  circle(p, 1.2, "#ffffff");
-  text([p[0] + 5, p[1] + 3], `${st.name} (s=${st.s})`, 9, "#802020");
+// OSM corridor reference layers. These are intentionally kept separate from
+// the PLATEAU road polygons so mismatches remain visible in the QA map.
+for (const road of osmCorridor.roads ?? []) {
+  const points = road.points ?? [];
+  if (points.length < 2 || !overlaps(boundsOfXZ(points), viewBounds)) continue;
+  const highway = road.tags?.highway ?? "";
+  const color = highway === "motorway" ? "#6f5960"
+    : highway === "primary" || highway === "secondary" ? "#756b62"
+      : "#8b918e";
+  const widthValue = highway === "motorway" ? 0.9 : highway === "primary" ? 0.55 : 0.32;
+  layers.osmRoads.push(polylineSvg(points, `stroke="${color}" stroke-width="${widthValue}" stroke-opacity="0.62"`));
+}
+for (const expressway of raw.osmExpressways ?? []) {
+  const points = expressway.points ?? [];
+  if (points.length < 2 || !overlaps(boundsOfXZ(points), viewBounds)) continue;
+  layers.osmRoads.push(polylineSvg(points, `stroke="${expressway.bridge ? "#3f4850" : "#62686b"}" stroke-width="${Math.max(1.2, (expressway.width ?? 15) / 7)}" stroke-opacity="0.9"`));
 }
 
-// ---- s 目盛(200m ごと) ----
-for (let s = 0; s <= totalLength; s += 200) {
-  if (!inRange(s)) continue;
-  const p = pointAt(s);
-  circle(p, 0.8, "#888");
-  if (s % 1000 === 0) text([p[0] - 6, p[1] - 3], `s=${s}`, 7, "#888", "end");
+// All OSM vegetation sources used by the runtime: woodland/forest, scrub,
+// parks/grass, tree rows and individually mapped trees.
+const osmVegetation = raw.osmVegetation ?? {};
+for (const area of [...(osmVegetation.greenAreas ?? []), ...(osmVegetation.treeAreas ?? [])]) {
+  const points = area.polygon ?? [];
+  if (points.length < 3 || !overlaps(boundsOfXZ(points), viewBounds)) continue;
+  const fill = area.kind === "scrub" ? "#9eae66"
+    : ["wood", "forest"].includes(area.kind) ? "#5d8552"
+      : "#8eb477";
+  layers.vegetation.push(polygonSvg(points, `fill="${fill}" fill-opacity="0.52" stroke="#527747" stroke-width="0.2"`));
+}
+for (const row of osmVegetation.treeRows ?? []) {
+  if (row.points?.length >= 2 && overlaps(boundsOfXZ(row.points), viewBounds))
+    layers.vegetation.push(polylineSvg(row.points, 'stroke="#5d7d3b" stroke-width="1.1" stroke-dasharray="1.2 0.8"'));
+}
+for (const tree of osmVegetation.trees ?? []) {
+  if (tree.point && tree.point[0] >= viewBounds.minX && tree.point[0] <= viewBounds.maxX && tree.point[1] >= viewBounds.minZ && tree.point[1] <= viewBounds.maxZ)
+    layers.vegetation.push(circleSvg(tree.point, 1.15, 'fill="#3f713b" fill-opacity="0.78" stroke="#2d552b" stroke-width="0.18"'));
+}
+for (const hedge of osmCorridor.hedges ?? []) {
+  if (hedge.points?.length >= 2 && overlaps(boundsOfXZ(hedge.points), viewBounds))
+    layers.vegetation.push(polylineSvg(hedge.points, 'stroke="#496b37" stroke-width="1.0" stroke-dasharray="1.8 0.8"'));
 }
 
-const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${vb.map((v) => v.toFixed(0)).join(" ")}">
-<rect x="${vb[0]}" y="${vb[1]}" width="${vb[2]}" height="${vb[3]}" fill="#f2f4ee"/>
-${el.join("\n")}
-</svg>`;
-writeFileSync(OUT, svg);
-console.log(
-  `OK → ${OUT}  (viewBox: ${vb.map((v) => v.toFixed(0)).join(" ")}, 要素数 ${el.length})`,
+for (const feature of transportation.features) {
+  if (!feature.polygon?.length) continue;
+  const points = feature.polygon.map(([x, , z]) => [x, z]);
+  if (!overlaps(boundsOfXZ(points), viewBounds)) continue;
+  if (feature.kind === "sidewalk") {
+    layers.sidewalks.push(polygonSvg(points, 'fill="#cfc5b4" stroke="#968c7d" stroke-width="0.14"'));
+    continue;
+  }
+  const selected = selectedIds.has(feature.id);
+  layers.roads.push(polygonSvg(points, selected
+    ? 'fill="#55585a" stroke="#272b2e" stroke-width="0.18"'
+    : 'fill="#aeb4b6" stroke="#7f878a" stroke-width="0.12"'));
+}
+
+for (const feature of roadOverlays.features ?? []) {
+  if (feature.kind !== "sidewalk" || !feature.polygon?.length) continue;
+  const points = feature.polygon.map(([x, , z]) => [x, z]);
+  if (overlaps(boundsOfXZ(points), viewBounds)) layers.sidewalks.push(polygonSvg(points, 'fill="#cfc5b4" stroke="#968c7d" stroke-width="0.14"'));
+}
+
+// Pedestrian decks/stairs are raised structures in the runtime renderer.  In
+// this top view draw the deck as a warm band and its two railings so it cannot
+// be mistaken for an NPC road lane.
+for (const bridge of network.overlays?.roads?.footbridges ?? []) {
+  const xz = (bridge.points ?? []).map(([x, , z]) => [x, z]);
+  if (xz.length < 2 || !overlaps(boundsOfXZ(xz), viewBounds)) continue;
+  const halfWidth = Math.max(0.7, Number(bridge.width) || 2) / 2;
+  const band = ribbonPoints(xz, halfWidth);
+  const fill = bridge.kind === "stairs" ? "#df8b3d" : "#f0a04b";
+  const dash = bridge.kind === "stairs" ? ' stroke-dasharray="1.2 0.8"' : "";
+  layers.footbridges.push(polygonSvg(band, `fill="${fill}" fill-opacity="0.86" stroke="#8c4e1b" stroke-width="0.35"${dash}`));
+  for (const side of [-1, 1]) {
+    const rail = [];
+    for (let index = 0; index < xz.length; index++) {
+      const previous = xz[Math.max(0, index - 1)], next = xz[Math.min(xz.length - 1, index + 1)];
+      const dx = next[0] - previous[0], dz = next[1] - previous[1];
+      const length = Math.hypot(dx, dz) || 1;
+      rail.push([xz[index][0] + (-dz / length) * side * halfWidth, xz[index][1] + (dx / length) * side * halfWidth]);
+    }
+    layers.footbridges.push(polylineSvg(rail, 'stroke="#6e3d18" stroke-width="0.28"'));
+  }
+  const middle = xz[Math.floor(xz.length / 2)];
+  layers.labels.push(textSvg([middle[0] + 2, middle[1] - 2], bridge.kind === "stairs" ? "歩道橋階段" : "歩道橋", 'font-size="5.5" fill="#6e3d18" stroke="#fff5e5" stroke-width="1" paint-order="stroke"'));
+}
+
+for (const crossing of network.overlays?.roads?.crosswalks ?? []) {
+  for (const stripe of crossing.stripes ?? []) {
+    if (stripe.length < 3) continue;
+    const points = stripe.map(([x, , z]) => [x, z]);
+    if (overlaps(boundsOfXZ(points), viewBounds)) layers.crosswalks.push(polygonSvg(points, 'fill="#fffdf1" stroke="#b9b8af" stroke-width="0.08"'));
+  }
+}
+
+for (const building of raw.buildings ?? []) {
+  const points = building.footprint ?? [];
+  if (points.length < 3 || !overlaps(boundsOfXZ(points), viewBounds)) continue;
+  layers.osmBuildings.push(polygonSvg(points, 'fill="#d39b7a" fill-opacity="0.16" stroke="#a9684f" stroke-width="0.28" stroke-dasharray="1.2 0.7"'));
+}
+for (const building of buildings.features ?? []) {
+  const points = building.footprint ?? [];
+  if (points.length < 3 || !overlaps(boundsOfXZ(points), viewBounds)) continue;
+  const heightValue = Math.max(2, Number(building.height) || 6);
+  const darkness = Math.round(clamp(72 - heightValue * 0.9, 35, 68));
+  layers.buildings.push(polygonSvg(points, `fill="hsl(28 18% ${darkness}%)" stroke="#5f554c" stroke-width="0.22"`));
+}
+
+// Hand-authored landmark geometry is not present in either PLATEAU or OSM,
+// but it is part of the playable world and must be visible in the final map.
+const customObject = (id, points, label, fill = "#e7b86b") => {
+  if (!points || points.length < 3 || !overlaps(boundsOfXZ(points), viewBounds)) return;
+  layers.custom.push(polygonSvg(points, `fill="${fill}" fill-opacity="0.34" stroke="#9b6b2f" stroke-width="0.35" stroke-dasharray="1.4 0.8"`));
+  if (label) {
+    const center = points.reduce((sum, point) => [sum[0] + point[0] / points.length, sum[1] + point[1] / points.length], [0, 0]);
+    layers.labels.push(textSvg([center[0] + 2, center[1]], label, 'font-size="5.5" fill="#85571f" stroke="#fff7e4" stroke-width="1.2" paint-order="stroke"'));
+  }
+};
+const routeOffset = (s, lateral) => {
+  const [x, z] = pointAt(s, network.surfacePath);
+  const heading = headingAt(s, network.surfacePath);
+  return [x + Math.cos(heading) * lateral, z - Math.sin(heading) * lateral];
+};
+const routeRect = (s, lateral, widthValue, depth) => {
+  const [x, z] = routeOffset(s, lateral);
+  return rectPoints(x, z, headingAt(s, network.surfacePath), -depth / 2, depth / 2, widthValue / 2);
+};
+const stopSByName = (name) => network.stops?.find((stop) => stop.name === name)?.s;
+const roadHalfWidth = (s, side) => {
+  const section = sectionAt(s);
+  return side < 0 ? section.wL : section.wR;
+};
+
+const tojiEastX = 618.51;
+const tojiSouthZ = -540.99;
+const tojiNorthZ = Math.min(
+  pointAt(network.intersections?.find((item) => item.name === "東寺道")?.s ?? 4141)[1],
+  -811.26,
 );
+const tojiWestX = pointAt(network.intersections?.find((item) => item.name === "京阪国道口(国道1号)")?.s ?? 4705)[0];
+customObject("toji-compound", [[tojiWestX, tojiNorthZ], [tojiEastX, tojiNorthZ], [tojiEastX, tojiSouthZ], [tojiWestX, tojiSouthZ]], "東寺境内", "#c7ae82");
+customObject("toji-pagoda", [[575.22, -593.63], [605.22, -593.63], [605.22, -563.63], [575.22, -563.63]], "東寺五重塔");
+customObject("toji-kondo", [[477.62, -645.03], [515.62, -645.03], [515.62, -619.03], [477.62, -619.03]], "東寺金堂");
+customObject("toji-nandaimon", [[482.07, -546], [508.67, -546], [508.67, -536], [482.07, -536]], "東寺南大門");
+customObject("toji-todaimon", [[610.81, -680], [626.21, -680], [626.21, -655.8], [610.81, -655.8]], "東寺東大門");
+
+const aquariumS = stopSByName("七条大宮・京都水族館前");
+if (aquariumS != null) customObject("kyoto-aquarium", routeRect(aquariumS + 20, roadHalfWidth(aquariumS + 20, 1) + 86.2, 52, 30), "京都水族館", "#77a8c8");
+const towerS = stopSByName("七条大宮・京都水族館前");
+if (towerS != null) {
+  const tower = routeOffset(towerS, -620);
+  if (tower[0] >= viewBounds.minX - 60 && tower[0] <= viewBounds.maxX + 60 && tower[1] >= viewBounds.minZ - 60 && tower[1] <= viewBounds.maxZ + 60) {
+    layers.custom.push(circleSvg(tower, 20, 'fill="#d9dfe4" fill-opacity="0.36" stroke="#6b7780" stroke-width="0.45" stroke-dasharray="1.4 0.8"'));
+    layers.labels.push(textSvg([tower[0] + 5, tower[1]], "京都タワー", 'font-size="5.5" fill="#56636c" stroke="#fff" stroke-width="1.2" paint-order="stroke"'));
+  }
+}
+
+const kugaFrom = stopSByName("菱妻神社前");
+const kugaTo = stopSByName("久我石原町");
+if (kugaFrom != null && kugaTo != null) {
+  const factories = [
+    ["玉村運輸", kugaFrom + 55, 1, 30, 20, 6],
+    ["松下精機", kugaFrom + 130, -1, 26, 22, 6],
+    ["原田工業", kugaFrom + 215, 1, 32, 22, 6],
+    ["山幸製作所", kugaFrom + 290, -1, 24, 20, 6],
+    ["PISORICO久我", kugaTo - 95, 1, 60, 34, 6],
+    ["クレアジオーネ伏見", kugaTo - 45, 1, 26, 20, 6],
+  ];
+  for (const [name, s, side, widthValue, depth, setback] of factories) {
+    customObject(`custom-${name}`, routeRect(s, side * (roadHalfWidth(s, side) + setback + widthValue / 2), widthValue, depth), name);
+  }
+}
+
+const mibuS = stopSByName("みぶ操車場前");
+if (mibuS != null) customObject("mibu-depot", routeRect(mibuS, roadHalfWidth(mibuS, 1) + 33, 50, 56), "壬生操車場", "#9caeb5");
+const terminal = network.stops?.find((stop) => stop.name === "久我石原町")?.pose ?? raw.terminalStop;
+if (terminal?.x != null && terminal?.z != null) customObject("terminal-lot", [[terminal.x - 1.8, terminal.z - 2], [terminal.x + 20.7, terminal.z - 2], [terminal.x + 20.7, terminal.z + 22.7], [terminal.x - 1.8, terminal.z + 22.7]], "久我石原町操車場", "#9caeb5");
+
+const rotaryRows = network.overlays?.nijoRotary?.road?.rows;
+if (rotaryRows?.length >= 2 && S_FROM < 350) layers.patches.push(polygonSvg(rowsPolygon(rotaryRows), 'fill="#55585a" stroke="#272b2e" stroke-width="0.2"'));
+
+for (const structure of network.structures ?? []) {
+  if (structure.to < S_FROM || structure.from > S_TO) continue;
+  const rows = [];
+  for (let s = Math.max(S_FROM, structure.from); s <= Math.min(S_TO, structure.to); s += 4) {
+    const { index } = locateS(s);
+    const [x, z] = pointAt(s, network.surfacePath);
+    const heading = headingAt(s, network.surfacePath);
+    const nx = -Math.cos(heading), nz = Math.sin(heading);
+    const bounds = network.driveBounds[index] ?? { left: 4, right: 4 };
+    rows.push([[x - nx * bounds.left, z - nz * bounds.left], [x + nx * bounds.right, z + nz * bounds.right]]);
+  }
+  if (rows.length >= 2) layers.structures.push(polygonSvg(rowsPolygon(rows), 'fill="#32a6df" fill-opacity="0.25" stroke="#1179ad" stroke-width="0.35"'));
+  const center = pointAt((structure.from + structure.to) / 2, network.surfacePath);
+  layers.labels.push(textSvg([center[0] + 6, center[1] - 7], structure.name, 'font-size="7" fill="#075f8d"'));
+}
+
+for (const rail of network.railStructures ?? []) {
+  if (rail.s < S_FROM - 80 || rail.s > S_TO + 80) continue;
+  const [x, z] = pointAt(rail.s, network.surfacePath);
+  const points = rectPoints(x, z, rail.heading, -rail.length / 2, rail.length / 2, (rail.width ?? 12) / 2);
+  layers.structures.push(polygonSvg(points, 'fill="#6c4d34" fill-opacity="0.28" stroke="#5a3922" stroke-width="0.5"'));
+  layers.labels.push(textSvg([x + 5, z + 5], rail.name, 'font-size="6" fill="#4e2e19"'));
+}
+
+for (const edge of network.trafficGraph?.edges ?? []) {
+  const points = edge.points?.map(([x, , z]) => [x, z]) ?? [];
+  if (points.length < 2 || !overlaps(boundsOfXZ(points), viewBounds)) continue;
+  layers.graph.push(polylineSvg(points, 'stroke="#6a3da3" stroke-width="0.45" stroke-opacity="0.65"'));
+}
+
+const leftBoundary = [], rightBoundary = [];
+for (const node of rangeNodes) {
+  const index = nodes.indexOf(node);
+  const heading = node.heading, nx = -Math.cos(heading), nz = Math.sin(heading);
+  const bounds = network.driveBounds[index] ?? { left: 4, right: 4 };
+  leftBoundary.push([node.x - nx * bounds.left, node.z - nz * bounds.left]);
+  rightBoundary.push([node.x + nx * bounds.right, node.z + nz * bounds.right]);
+}
+layers.bounds.push(polylineSvg(leftBoundary, 'stroke="#6dff7b" stroke-width="0.38" stroke-dasharray="2 1.5"'));
+layers.bounds.push(polylineSvg(rightBoundary, 'stroke="#6dff7b" stroke-width="0.38" stroke-dasharray="2 1.5"'));
+
+const reference = network.routeReferencePath.slice(rangeNodes[0] === nodes[0] ? 0 : locateS(S_FROM).index, locateS(S_TO).index + 2);
+layers.lanes.push(polylineSvg(reference, 'stroke="#2d68d8" stroke-width="0.45" stroke-dasharray="3 2"'));
+const surface = network.surfacePath.slice(locateS(S_FROM).index, locateS(S_TO).index + 2);
+layers.lanes.push(polylineSvg(surface, 'stroke="#ffd34e" stroke-width="0.65"'));
+for (const lanePath of (network.trafficPaths ?? []).filter((item) => item.role === "main")) {
+  const color = lanePath.direction > 0 ? (lanePath.lane === 0 ? "#00f0ff" : "#f7f7f0") : "#ff67ce";
+  const widthValue = lanePath.direction > 0 && lanePath.lane === 0 ? 0.85 : 0.5;
+  for (const segment of activeSegments(lanePath)) layers.lanes.push(polylineSvg(segment, `stroke="${color}" stroke-width="${widthValue}"`));
+}
+
+for (let index = 1; index < nodes.length; index++) {
+  const a = nodes[index - 1], b = nodes[index];
+  if (b.s < S_FROM || a.s > S_TO) continue;
+  const grade = Math.abs((b.y - a.y) / Math.max(1e-6, b.s - a.s));
+  if (grade > 0.08) layers.grades.push(polylineSvg([[a.x, a.z], [b.x, b.z]], `stroke="${grade > 0.12 ? "#ff173d" : "#ff9f1a"}" stroke-width="${grade > 0.12 ? 3 : 2}"`));
+}
+
+for (const intersection of network.intersections ?? []) {
+  if (intersection.s < S_FROM || intersection.s > S_TO) continue;
+  const point = pointAt(intersection.s, network.surfacePath);
+  layers.labels.push(circleSvg(point, 1.25, 'fill="#ffef54" stroke="#4c4300" stroke-width="0.25"'));
+  if (intersection.name) layers.labels.push(textSvg([point[0] + 3, point[1] - 3], intersection.name, 'font-size="5.5" fill="#3c3500"'));
+}
+for (const stop of network.stops ?? []) {
+  if (stop.s < S_FROM || stop.s > S_TO) continue;
+  const point = [stop.pose?.x ?? pointAt(stop.s)[0], stop.pose?.z ?? pointAt(stop.s)[1]];
+  layers.labels.push(circleSvg(point, 1.8, 'fill="#d7263d" stroke="#ffffff" stroke-width="0.45"'));
+  layers.labels.push(textSvg([point[0] + 4, point[1] + 3], `${stop.name} s=${stop.s.toFixed(0)}`, 'font-size="6.5" fill="#7e0f20"'));
+}
+
+for (const section of network.sections ?? []) {
+  if (section.to < S_FROM || section.from > S_TO) continue;
+  const mid = (Math.max(section.from, S_FROM) + Math.min(section.to, S_TO)) / 2;
+  if (section.to - section.from < 35) continue;
+  const point = pointAt(mid, network.surfacePath);
+  layers.labels.push(textSvg([point[0] + 2, point[1] + 2], `F${section.lanesF ?? 1}/B${section.lanesB ?? 0}`, 'font-size="5" fill="#111" stroke="#fff" stroke-width="1.3" paint-order="stroke"'));
+}
+
+const legendX = viewBounds.minX + 8, legendZ = viewBounds.minZ + 12;
+const legend = [
+  ["#00f0ff", "自車・同行車の正本経路"],
+  ["#ff67ce", "対向車経路"],
+  ["#ffd34e", "物理道路中心"],
+  ["#2d68d8", "PLATEAUへスナップした元軸"],
+  ["#cfc5b4", "歩道"],
+  ["#7b6959", "建物（濃色ほど高い）"],
+  ["#8b918e", "OSM道路中心線"],
+  ["#5d8552", "OSM森林・低木林・緑地"],
+  ["#a9684f", "OSM建物フットプリント"],
+  ["#e7b86b", "独自配置物・建物"],
+  [terrainColor((terrainMin + terrainMax) / 2), `地形高度 ${terrainMin.toFixed(0)}〜${terrainMax.toFixed(0)}m`],
+  ["#4fa8d8", "河川・水域"],
+  ["#f0a04b", "歩道橋・階段"],
+  ["#ff173d", "12%超の高度急変"],
+];
+const legendSvg = [`<rect x="${legendX}" y="${legendZ - 8}" width="120" height="${legend.length * 10 + 9}" rx="2" fill="#ffffff" fill-opacity="0.9" stroke="#62686a" stroke-width="0.25"/>`];
+legend.forEach(([color, label], index) => {
+  const z = legendZ + index * 10;
+  legendSvg.push(`<line x1="${legendX + 5}" y1="${z}" x2="${legendX + 20}" y2="${z}" stroke="${color}" stroke-width="1.4"/>`);
+  legendSvg.push(textSvg([legendX + 24, z + 2], label, 'font-size="5.8" fill="#222"'));
+});
+
+const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${number(viewBounds.minX)} ${number(viewBounds.minZ)} ${number(width)} ${number(height)}">
+<title>${xml(raw.routeName)} runtime map ${S_FROM.toFixed(0)}-${S_TO.toFixed(0)}m</title>
+<rect x="${number(viewBounds.minX)}" y="${number(viewBounds.minZ)}" width="${number(width)}" height="${number(height)}" fill="#c9d0c1"/>
+<g id="terrain">${layers.terrain.join("\n")}</g>
+<g id="water">${layers.water.join("\n")}</g>
+<g id="osm-roads">${layers.osmRoads.join("\n")}</g>
+<g id="osm-vegetation">${layers.vegetation.join("\n")}</g>
+<g id="plateau-roads">${layers.roads.join("\n")}</g>
+<g id="plateau-sidewalks">${layers.sidewalks.join("\n")}</g>
+<g id="footbridges">${layers.footbridges.join("\n")}</g>
+<g id="structures">${layers.structures.join("\n")}</g>
+<g id="surface-patches">${layers.patches.join("\n")}</g>
+<g id="crosswalks">${layers.crosswalks.join("\n")}</g>
+<g id="npc-graph">${layers.graph.join("\n")}</g>
+<g id="drive-bounds">${layers.bounds.join("\n")}</g>
+<g id="lane-paths">${layers.lanes.join("\n")}</g>
+<g id="steep-grades">${layers.grades.join("\n")}</g>
+<g id="osm-buildings">${layers.osmBuildings.join("\n")}</g>
+<g id="buildings">${layers.buildings.join("\n")}</g>
+<g id="custom-objects">${layers.custom.join("\n")}</g>
+<g id="labels" font-family="sans-serif">${layers.labels.join("\n")}</g>
+<g id="legend" font-family="sans-serif">${legendSvg.join("\n")}</g>
+</svg>`;
+
+writeFileSync(OUT, svg);
+console.log(`OK → ${OUT}`);
+console.log(`runtime range ${S_FROM.toFixed(1)}..${S_TO.toFixed(1)}m / terrain ${layers.terrain.length} / water ${layers.water.length} / OSM roads ${layers.osmRoads.length} / OSM vegetation ${layers.vegetation.length} / roads ${layers.roads.length} / sidewalks ${layers.sidewalks.length} / footbridge parts ${layers.footbridges.length} / OSM buildings ${layers.osmBuildings.length} / buildings ${layers.buildings.length} / custom objects ${layers.custom.length} / crosswalk stripes ${layers.crosswalks.length} / lane overlays ${layers.lanes.length} / steep segments ${layers.grades.length}`);

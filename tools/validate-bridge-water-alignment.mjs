@@ -184,28 +184,21 @@ function terrainAtWorld(x, z) {
   const iz = Math.min(terrainGrid.height - 2, Math.max(0, Math.floor(gz)));
   const tx = gx - ix;
   const tz = gz - iz;
-  const top = gridValue(ix, iz) + (gridValue(ix + 1, iz) - gridValue(ix, iz)) * tx;
-  const bottom = gridValue(ix, iz + 1)
-    + (gridValue(ix + 1, iz + 1) - gridValue(ix, iz + 1)) * tx;
-  return top + (bottom - top) * tz;
+  const a = gridValue(ix, iz);
+  const b = gridValue(ix + 1, iz);
+  const c = gridValue(ix, iz + 1);
+  const d = gridValue(ix + 1, iz + 1);
+  return tx + tz <= 1
+    ? a + (b - a) * tx + (c - a) * tz
+    : d + (c - d) * (1 - tx) + (b - d) * (1 - tz);
 }
-
-const align = (route.roadSurfaceAlignments ?? []).find((item) => item.name === "小枝橋東詰〜城南宮道");
-assert(align, "Koeda east-end to Jonangu road-surface alignment zone is missing");
-let profileGridMaxError = 0;
-for (let s = align.from; s <= align.to + 1e-6; s += 2) {
-  const [x, z] = path.getPoint(s);
-  profileGridMaxError = Math.max(profileGridMaxError, Math.abs(terrainAtS(s) - terrainAtWorld(x, z)));
-}
-assert(profileGridMaxError <= 0.02, `Route height differs from PLATEAU terrain grid by ${profileGridMaxError.toFixed(4)}m in the Koeda-Jonangu segment`);
 
 const routeData = {
   elevations: route.elevations,
-  roadSurfaceAlignments: route.roadSurfaceAlignments,
   roadSections: route.roadSections,
 };
 const zones = structuralRoadZones(path, routeData);
-assert(zones.some((zone) => zone.reason === "surface-alignment" && zone.from === align.from), "PLATEAU route-surface alignment zone is not active");
+assert(!zones.some((zone) => zone.reason === "surface-alignment"), "Ground-level route surface alignment must not be generated");
 const roadMesh = transportationSurfaceMesh(
   transportation.features,
   new THREE.MeshBasicMaterial({ side: THREE.DoubleSide }),
@@ -216,20 +209,6 @@ const roadMesh = transportationSurfaceMesh(
   zones,
 );
 assert(roadMesh?.isMesh, "PLATEAU transportation mesh was not generated");
-roadMesh.updateMatrixWorld(true);
-const raycaster = new THREE.Raycaster();
-const alignmentSamples = [];
-for (const s of [8325, 8350, 8375, 8400, 8420, 8450, 8470]) {
-  const [x, z] = path.getPoint(s);
-  raycaster.set(new THREE.Vector3(x, 100, z), new THREE.Vector3(0, -1, 0));
-  const hits = raycaster.intersectObject(roadMesh, false);
-  assert(hits.length, `No PLATEAU road surface under the bus path at s=${s}`);
-  const actual = hits[0].point.y;
-  const expected = roadAt(s) + 0.015;
-  const error = Math.abs(actual - expected);
-  assert(error < 0.08, `Road/bus height mismatch at s=${s}: ${error.toFixed(3)}m`);
-  alignmentSamples.push({ s, roadY: +actual.toFixed(3), busBaseY: +roadAt(s).toFixed(3), error: +error.toFixed(3) });
-}
 
 const dips = buildRiverDips(path, route.bridges, route.rivers);
 const riverReports = [];
@@ -261,7 +240,6 @@ assert(kamoGap < 20, `Kamo River ribbons do not overlap (${kamoGap.toFixed(1)}m 
 const carvedTerrain = terrainGridMesh(
   terrainGrid,
   [],
-  [],
   path,
   route.bridges,
   route.rivers,
@@ -283,7 +261,7 @@ for (const bridge of route.bridges) {
 }
 
 const mainSource = fs.readFileSync("src/main.js", "utf8");
-assert(mainSource.includes("busModel.update(bus, dt, elevationAt(state.s), gradeAt(state.s))"), "Own bus is not based on the single elevationAt(s) road height");
+assert(mainSource.includes("busModel.update(") && mainSource.includes("surfaceElevationAt(state.s, bus.x, bus.z)"), "Own bus is not based on the PLATEAU road surface");
 const rendererSource = fs.readFileSync("src/world/declarative/PlateauWorldRenderer.js", "utf8");
 assert(rendererSource.includes("riverDipDepthAt(x, z, riverDips)"), "PLATEAU terrain renderer does not apply the river cut");
 
@@ -294,9 +272,7 @@ console.log(JSON.stringify({
   kamoRibbonOverlapGapMeters: +kamoGap.toFixed(2),
   plateauTerrainCuts: terrainCarveSamples,
   koedaToJonangu: {
-    from: align.from,
-    to: align.to,
-    profileGridMaxErrorMeters: +profileGridMaxError.toFixed(4),
-    samples: alignmentSamples,
+    heightSource: "PLATEAU terrain grid",
+    groundLevelAlignmentZones: 0,
   },
 }, null, 2));

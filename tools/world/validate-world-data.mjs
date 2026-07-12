@@ -15,6 +15,8 @@ const files = {
   osmOverlays: cfg.output.osmOverlays,
   osmNetwork: cfg.output.osmNetwork,
   routeElevation: cfg.output.routeElevation,
+  drivingNetwork: cfg.output.drivingNetwork,
+  runtimeTerrain: "src/world/declarative/generated/terrain-grid.json",
 };
 for (const [name, relative] of Object.entries(files)) {
   const file = resolveRoot(relative);
@@ -32,13 +34,19 @@ if (data.terrain.grid) {
   }
 }
 if (!Array.isArray(data.routeElevation.samples)) throw new Error("Invalid route elevation profile");
+if (JSON.stringify(data.terrain.grid) !== JSON.stringify(data.runtimeTerrain)) {
+  throw new Error("Runtime terrain grid is not synchronized with generated PLATEAU terrain");
+}
+if (!Array.isArray(data.drivingNetwork.nodes) || data.drivingNetwork.nodes.length < 2) throw new Error("Invalid compiled driving network");
+if (!Array.isArray(data.drivingNetwork.stops) || !Array.isArray(data.drivingNetwork.surfacePatches) || !Array.isArray(data.drivingNetwork.trafficPaths)) throw new Error("Compiled driving network is incomplete");
+if (!Array.isArray(data.drivingNetwork.trafficGraph?.edges) || !Array.isArray(data.drivingNetwork.trafficGraph?.connectors)) throw new Error("Unified traffic graph is missing");
 if (!Array.isArray(data.osmNetwork.signals) || !Array.isArray(data.osmNetwork.intersections)) throw new Error("Invalid OSM network layer");
 if (!Array.isArray(data.osmOverlays.features)) throw new Error("Invalid OSM road overlay layer");
 if (Number(data.osmOverlays.stats?.overlayOutsideRoadArea ?? 0) > 0.01) {
   throw new Error(`OSM road overlays extend outside PLATEAU roads: ${data.osmOverlays.stats.overlayOutsideRoadArea}m²`);
 }
 for (const overlay of data.osmOverlays.features) {
-  if (!overlay.id || !["centerline", "lane-divider", "sidewalk"].includes(overlay.kind)) throw new Error(`Invalid OSM overlay: ${overlay.id}`);
+  if (!overlay.id || overlay.kind !== "sidewalk") throw new Error(`Invalid OSM overlay: ${overlay.id}`);
   if (!Array.isArray(overlay.polygon) || overlay.polygon.length < 3) throw new Error(`Invalid OSM overlay polygon: ${overlay.id}`);
 }
 
@@ -73,5 +81,6 @@ console.log(JSON.stringify({
     vegetation: data.vegetation.features.length,
     osmOverlays: data.osmOverlays.features.length,
     routeElevationSamples: data.routeElevation.samples.length,
+    drivingNetworkNodes: data.drivingNetwork.nodes.length,
   },
 }, null, 2));
