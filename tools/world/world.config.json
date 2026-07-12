@@ -7,7 +7,15 @@
     "format": "CityGML",
     "downloadUrl": "https://assets.cms.plateau.reearth.io/assets/c8/4c6540-2bcf-4773-b21d-74ad2d9f1ba1/26100_kyoto-shi_city_2025_citygml_1_op.zip",
     "archiveName": "26100_kyoto-shi_city_2025_citygml_1_op.zip",
-    "featureTypes": ["bldg", "tran", "dem", "brid", "frn", "wtr", "veg"],
+    "featureTypes": [
+      "bldg",
+      "tran",
+      "dem",
+      "brid",
+      "frn",
+      "wtr",
+      "veg"
+    ],
     "corridorMeters": 240,
     "terrainCorridorMeters": 420,
     "minimumHeightMeters": 2.8,
@@ -16,7 +24,6 @@
     "sourceCrsFallback": "EPSG:6697",
     "routeElevationSampleMeters": 10,
     "routeElevationSmoothingWindow": 7,
-    "roadElevationSearchMeters": 20,
     "maximumTerrainTriangleEdgeMeters": 220,
     "maximumTerrainTriangles": 70000,
     "terrainGridSpacingMeters": 30,
@@ -36,11 +43,13 @@
       "laneAndTrafficRules": true,
       "signalsAndStops": true,
       "roadAndIntersectionNames": true,
-      "visualRoadSurface": false
+      "visualRoadSurface": false,
+      "visualRoadMarkings": true,
+      "visualSidewalkGeometry": true
     }
   },
   "integration": {
-    "roadVisualPolicy": "plateau-transportation-only",
+    "roadVisualPolicy": "plateau-transportation-plus-osm-markings-sidewalks",
     "terrainPolicy": "plateau-dem-with-route-profile",
     "buildingPolicy": "plateau-only",
     "bridgePolicy": "plateau-visual-plus-existing-structural-profile",
@@ -56,9 +65,10 @@
     "plateauFurniture": "public/world/generated/plateau-furniture.json",
     "plateauWater": "public/world/generated/plateau-water.json",
     "plateauVegetation": "public/world/generated/plateau-vegetation.json",
+    "osmVisualSource": "data/osm/route18-corridor.json",
+    "osmOverlays": "public/world/generated/osm-road-overlays.json",
     "osmNetwork": "public/world/generated/osm-network.json",
     "routeElevation": "src/world/declarative/generated/route-elevation.json",
-    "roadElevation": "src/world/declarative/generated/road-elevation.json",
     "worldManifest": "public/world/world-manifest.json",
     "report": "data/work/plateau/build-report.json"
   }

@@ -1,13 +1,13 @@
 {
   "version": 3,
-  "generatedAt": "2026-07-11T21:14:51.423952+00:00",
+  "generatedAt": "2026-07-12T06:32:11.812720+00:00",
   "status": "ready",
   "sources": {
     "osm": {
       "provider": "OpenStreetMap",
       "relationId": 13027168,
       "license": "ODbL",
-      "generatedAt": "2026-07-11T06:48:06.365Z"
+      "generatedAt": "2026-07-12T06:23:04.412Z"
     },
     "plateau": {
       "provider": "Project PLATEAU",
@@ -23,7 +23,7 @@
     }
   },
   "policies": {
-    "roadVisualPolicy": "plateau-transportation-only",
+    "roadVisualPolicy": "plateau-transportation-plus-osm-markings-sidewalks",
     "terrainPolicy": "plateau-dem-with-route-profile",
     "buildingPolicy": "plateau-only",
     "bridgePolicy": "plateau-visual-plus-existing-structural-profile",
@@ -66,7 +66,7 @@
       "id": "buildings",
       "provider": "plateau",
       "url": "/world/generated/plateau-buildings.json",
-      "featureCount": 17421
+      "featureCount": 17422
     },
     {
       "id": "furniture",
@@ -74,6 +74,12 @@
       "url": "/world/generated/plateau-furniture.json",
       "featureCount": 0,
       "semanticFallback": "OSM route/network signals"
+    },
+    {
+      "id": "osm-road-overlays",
+      "provider": "osm-derived-clipped-to-plateau",
+      "url": "/world/generated/osm-road-overlays.json",
+      "featureCount": 1608
     },
     {
       "id": "osm-network",

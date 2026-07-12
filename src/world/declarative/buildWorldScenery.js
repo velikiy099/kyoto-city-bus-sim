@@ -16,11 +16,12 @@ function captureAndSnap(scene, build, heightAtWorld) {
 /**
  * Build the PLATEAU-authoritative scenery.
  *
- * OSM-derived data is consumed only as route/network metadata by the existing road,
- * stop, signal and traffic systems. Generic OSM building/ground rendering is never
- * added here. Kyoto's selected PLATEAU package has no usable water/vegetation/bridge
- * features along the route, so the hand-authored route annotations remain as visual
- * fallbacks, but every one of them is placed on the shared PLATEAU terrain sampler.
+ * OSM-derived data is consumed as route/network metadata, structural-height
+ * metadata, and clipped road-marking/sidewalk overlays. Generic OSM building/ground
+ * rendering is never added here. PLATEAU remains the terrain and road-surface source.
+ * Where a route is structurally elevated, the matching carriageway portion of the
+ * original PLATEAU transportation mesh is moved to the same height used by vehicles
+ * and road furniture; no duplicate road plate is added.
  */
 export async function buildWorldScenery(scene, path, route, builders) {
   // Railway/viaduct builders already distinguish ground height from deck height.
@@ -44,6 +45,7 @@ export async function buildWorldScenery(scene, path, route, builders) {
     routeData: route,
     terrainHeightAtWorld: builders.terrainHeightAtWorld,
     roadHeightAtWorld: builders.roadHeightAtWorld,
+    routeHeightAtS: builders.elevationAt,
   });
   const plateau = await renderer.load(manifest);
   if (plateau.hasConnectedTerrain && builders.baseTerrain) builders.baseTerrain.visible = false;

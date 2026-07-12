@@ -7,11 +7,8 @@ import {
   elevationAt,
 } from "../route/routeData.js";
 import { loadProps } from "../util/propsLib.js";
-import { clippedRiverPoints } from "./road.js";
-import {
-  terrainHeightAtWorld,
-  roadHeightAtWorld,
-} from "./declarative/continuousTerrain.js";
+import { clippedRiverPoints } from "./riverGeometry.js";
+import { terrainHeightAtWorld } from "./declarative/continuousTerrain.js";
 
 const mat = (color, opts = {}) =>
   new THREE.MeshLambertMaterial({ color, ...opts });
@@ -24,7 +21,13 @@ const BANK_TIERS = [
   { h: RIVER_DEPTH - 1.2, w: 4.5, color: 0x9c9178 }, // 下段: 護岸(土)
 ];
 const BRIDGE_RAIL_CLEARANCE = 1.1; // 車道端から欄干中心まで [m]
-const RAIL_SEGMENT_LENGTH = 8; // 曲線区間でも道路から外れないよう分割描画 [m]
+const BRIDGE_RAIL_HEIGHT = 1.0;
+const BRIDGE_RAIL_WIDTH = 0.32;
+const RAIL_SEGMENT_LENGTH = 6; // 曲線・勾配へ追従するため短く分割 [m]
+// 梅小路公園・鳥羽離宮跡で使ってきた樹林配置(area/60)を基準に、
+// OSMの森林は約4倍、低木林は森林の半分の密度にする。
+const FOREST_TREE_AREA_M2 = 15;
+const SCRUB_AREA_M2 = 30;
 
 /**
  * 川(鴨川・桂川・西高瀬川)・橋・遠景の山・街路樹
@@ -36,11 +39,10 @@ export function buildNature(scene, path) {
   scene.add(g);
   const exclusions = [];
 
-  // 河川橋の横端は本線中心から少し離れるため、点によっては通常の
-  // roadHeightAtWorld() が地表へフォールバックする。橋の中心線標高も
-  // 下限として使い、欄干・桁・橋脚上端を同じ橋梁レベルへ揃える。
-  const bridgeRoadHeightAt = (x, z, s) =>
-    Math.max(roadHeightAtWorld(x, z), elevationAt(s));
+  // 河川橋の欄干・桁・橋脚上端は、道路本体と同じ経路標高を直接使う。
+  // 横端のワールド座標から道路を再検索すると、橋の下の地表や近接道路を
+  // 拾う場合があるため、橋上構造物では roadHeightAtWorld() に依存しない。
+  const bridgeRoadHeightAt = (_x, _z, s) => elevationAt(s);
 
   // ---- 川と橋 ----
   // 実測ポリライン(route.rivers。tools/build-route-data.mjs が OSM waterway から切り出し
@@ -100,19 +102,20 @@ export function buildNature(scene, path) {
       const railOffset = roadEdge + BRIDGE_RAIL_CLEARANCE;
       const rail = new THREE.Mesh(
         new THREE.BoxGeometry(
-          0.35,
-          1.15,
-          Math.max(0.5, nextS - s + 0.2),
+          BRIDGE_RAIL_WIDTH,
+          BRIDGE_RAIL_HEIGHT,
+          Math.max(0.5, nextS - s + 0.15),
         ),
         mat(0xdfe3e6),
       );
+      const roadY = bridgeRoadHeightAt(
+        rx + nx * side * railOffset,
+        rz + nz * side * railOffset,
+        midS,
+      );
       rail.position.set(
         rx + nx * side * railOffset,
-        bridgeRoadHeightAt(
-          rx + nx * side * railOffset,
-          rz + nz * side * railOffset,
-          midS,
-        ) + 0.85,
+        roadY + BRIDGE_RAIL_HEIGHT / 2,
         rz + nz * side * railOffset,
       );
       rail.rotation.y = Math.atan2(tx, tz);
@@ -121,12 +124,8 @@ export function buildNature(scene, path) {
   }
 
   for (const br of route.bridges) {
-    const [px, pz] = path.getPoint(br.s);
-    const [tx, tz] = path.getTangent(br.s);
-    const roadHeading = Math.atan2(tx, tz); // 経路方位(橋桁・欄干は道路に沿わせる)
     const w = Math.max(18, br.length * 0.85); // 川幅
     const halfW = w / 2;
-    const deckElev = bridgeRoadHeightAt(px, pz, br.s); // 跨線橋等と重なる場合は路面高さに追従
     // 久我橋・天神橋は従来の「川幅+10m」を橋桁にも流用していたため、
     // 端部の欄干が接続道路まで伸びていた。橋桁と欄干は実際の川幅相当の
     // スパンに揃え、その他の橋の見た目は従来値を維持する。
@@ -176,23 +175,8 @@ export function buildNature(scene, path) {
     for (const [rx, rz] of points)
       exclusions.push({ x: rx, z: rz, r: halfW + 24 });
 
-    // 小枝橋の路面は road.js の高架区間が正しい幅・標高で描いているため、
-    // ここで別のBoxGeometryを重ねない。重複した橋桁が視点によって板状に見える原因になる。
-    // その他の河川橋だけ薄い下部桁を残す。
-    if (br.name !== "小枝橋(鴨川)") {
-      const leftEdge = leftWidthAt(br.s) + BRIDGE_RAIL_CLEARANCE;
-      const rightEdge = rightWidthAt(br.s) + BRIDGE_RAIL_CLEARANCE;
-      const deck = new THREE.Mesh(
-        new THREE.BoxGeometry(leftEdge + rightEdge, 0.8, bridgeSpan),
-        mat(0x8f9499),
-      );
-      const deckCenterLat = (rightEdge - leftEdge) / 2;
-      deck.position.set(px, deckElev - 0.48, pz);
-      deck.position.x += -tz * deckCenterLat;
-      deck.position.z += tx * deckCenterLat;
-      deck.rotation.y = roadHeading;
-      g.add(deck);
-    }
+    // 可視路面は elevationAt(s) を使う道路レイヤーだけが描く。
+    // 別の灰色デッキを重ねると道路勾配との差で路面を覆うため生成しない。
     const railFrom = Math.max(0, br.s - bridgeSpan / 2);
     const railTo = Math.min(path.length, br.s + bridgeSpan / 2);
     for (const side of [-1, 1])
@@ -271,6 +255,153 @@ export function buildNature(scene, path) {
     .filter((sec) => sec.sidewalk === "none")
     .map((sec) => ({ from: sec.from, to: sec.to }));
   const items = [];
+  const scrubItems = [];
+  const treeKeys = new Set();
+  const scrubKeys = new Set();
+  const addTree = (x, z) => {
+    const key = `${x.toFixed(2)}:${z.toFixed(2)}`;
+    if (treeKeys.has(key)) return false;
+    treeKeys.add(key);
+    items.push([x, z]);
+    return true;
+  };
+  const addScrub = (x, z) => {
+    const key = `${x.toFixed(2)}:${z.toFixed(2)}`;
+    if (treeKeys.has(key) || scrubKeys.has(key)) return false;
+    scrubKeys.add(key);
+    scrubItems.push([x, z]);
+    return true;
+  };
+  const isValidTreePos = (x, z) => {
+    if (turnZones.some((e) => (x - e.x) ** 2 + (z - e.z) ** 2 < e.r * e.r))
+      return false;
+    const { s: ts, lateral: tlat } = path.closestS([x, z]);
+    const roadHw = tlat < 0 ? leftWidthAt(ts) : rightWidthAt(ts);
+    return Math.abs(tlat) >= roadHw + 1.5;
+  };
+  const cleanPolygon = (polygon) => {
+    const points = (polygon ?? []).filter(
+      (point) => Array.isArray(point) && point.length >= 2,
+    ).map(([x, z]) => [Number(x), Number(z)]);
+    if (points.length > 1) {
+      const first = points[0];
+      const last = points.at(-1);
+      if (Math.hypot(first[0] - last[0], first[1] - last[1]) < 0.2)
+        points.pop();
+    }
+    return points.length >= 3 ? points : null;
+  };
+  const polygonArea = (pts) => {
+    let area = 0;
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[i];
+      const b = pts[(i + 1) % pts.length];
+      area += a[0] * b[1] - b[0] * a[1];
+    }
+    return Math.abs(area / 2);
+  };
+  const pointInPolygon = (x, z, pts) => {
+    let inside = false;
+    for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+      const [xi, zi] = pts[i];
+      const [xj, zj] = pts[j];
+      const intersects = zi > z !== zj > z && x < ((xj - xi) * (z - zi)) / (zj - zi || 1e-9) + xi;
+      if (intersects) inside = !inside;
+    }
+    return inside;
+  };
+
+  // OSM green areas remain visible even when the selected PLATEAU vegetation
+  // layer is empty. In particular, these polygons form the islands and
+  // planted edges of the Nijo Station rotary.
+  const greenPositions = [];
+  const greenIndices = [];
+  for (const area of route.osmVegetation?.greenAreas ?? []) {
+    const polygon = cleanPolygon(area.polygon);
+    if (!polygon) continue;
+    const faces = THREE.ShapeUtils.triangulateShape(
+      polygon.map(([x, z]) => new THREE.Vector2(x, z)),
+      [],
+    );
+    const base = greenPositions.length / 3;
+    for (const [x, z] of polygon)
+      greenPositions.push(x, terrainHeightAtWorld(x, z) + 0.08, z);
+    for (const face of faces)
+      greenIndices.push(base + face[0], base + face[1], base + face[2]);
+  }
+  if (greenIndices.length) {
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.Float32BufferAttribute(greenPositions, 3));
+    geometry.setIndex(greenIndices);
+    geometry.computeVertexNormals();
+    const green = new THREE.Mesh(
+      geometry,
+      mat(0x739660, { side: THREE.DoubleSide }),
+    );
+    green.name = "osm-planted-green-areas";
+    g.add(green);
+  }
+
+  // Exact OSM tree nodes, tree rows, woodland polygons, and scrub polygons.
+  // Point trees are placed at their mapped coordinates; areas are sampled only
+  // inside the mapped polygon so they do not become generic roadside scatter.
+  if (route.osmVegetation) {
+    for (const tree of route.osmVegetation.trees ?? []) {
+      // A mapped tree can intentionally sit on a narrow planted median or
+      // sidewalk island, so do not discard it merely because it is near the
+      // route centerline. The source itself is the authority for these points.
+      if (tree.point?.length >= 2) addTree(tree.point[0], tree.point[1]);
+    }
+    let areaSeed = 24001;
+    for (const areaData of route.osmVegetation.treeAreas ?? []) {
+      const polygon = cleanPolygon(areaData.polygon);
+      if (!polygon) continue;
+      const bounds = polygon.reduce(
+        (acc, [x, z]) => ({
+          minX: Math.min(acc.minX, x),
+          maxX: Math.max(acc.maxX, x),
+          minZ: Math.min(acc.minZ, z),
+          maxZ: Math.max(acc.maxZ, z),
+        }),
+        { minX: Infinity, maxX: -Infinity, minZ: Infinity, maxZ: -Infinity },
+      );
+      const isScrub = areaData.kind === "scrub";
+      const count = Math.min(
+        4000,
+        Math.floor(polygonArea(polygon) / (isScrub ? SCRUB_AREA_M2 : FOREST_TREE_AREA_M2)),
+      );
+      if (count < 1) continue;
+      let seed = areaSeed++;
+      const random = () => {
+        seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+        return seed / 0x7fffffff;
+      };
+      let placed = 0;
+      for (let attempt = 0; attempt < count * 12 && placed < count; attempt++) {
+        const x = bounds.minX + random() * (bounds.maxX - bounds.minX);
+        const z = bounds.minZ + random() * (bounds.maxZ - bounds.minZ);
+        if (pointInPolygon(x, z, polygon) && isValidTreePos(x, z)) {
+          if ((isScrub ? addScrub : addTree)(x, z)) placed++;
+        }
+      }
+    }
+    for (const row of route.osmVegetation.treeRows ?? []) {
+      const points = row.points ?? row;
+      for (let i = 0; i < points.length - 1; i++) {
+        const a = points[i];
+        const b = points[i + 1];
+        const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+        const count = Math.max(1, Math.floor(len / 7));
+        for (let j = 0; j <= count; j++) {
+          const t = j / count;
+          const x = a[0] + (b[0] - a[0]) * t;
+          const z = a[1] + (b[1] - a[1]) * t;
+          addTree(x, z);
+        }
+      }
+    }
+  }
+
   for (let s = 40; s < path.length * 0.62; s += 42) {
     if (railZones.some((z) => s > z.from && s < z.to)) continue;
     if (noSidewalkZones.some((z) => s > z.from && s < z.to)) continue;
@@ -283,7 +414,7 @@ export function buildNature(scene, path) {
         z = pz + tx * lat;
       if (turnZones.some((e) => (x - e.x) ** 2 + (z - e.z) ** 2 < e.r * e.r))
         continue;
-      items.push([x, z]);
+      addTree(x, z);
     }
   }
   // ---- 鳥羽離宮跡公園(OSM実測: way 341709499「鳥羽離宮跡公園」の敷地形状に合わせて木を配置) ----
@@ -316,51 +447,18 @@ export function buildNature(scene, path) {
       const { s: ts, lateral: tlat } = path.closestS([x, z]);
       const roadHw = tlat < 0 ? leftWidthAt(ts) : rightWidthAt(ts);
       if (Math.abs(tlat) < roadHw + 1.5) continue;
-      items.push([x, z]);
+      addTree(x, z);
     }
   }
 
   // ---- 梅小路公園 (OSM実測) ----
-  if (route.umekojiTrees) {
-    // 道路・交差点・建物との衝突判定用ヘルパー
-    const isValidTreePos = (x, z) => {
-      if (turnZones.some((e) => (x - e.x) ** 2 + (z - e.z) ** 2 < e.r * e.r))
-        return false;
-      const { s: ts, lateral: tlat } = path.closestS([x, z]);
-      const roadHw = tlat < 0 ? leftWidthAt(ts) : rightWidthAt(ts);
-      if (Math.abs(tlat) < roadHw + 1.5) return false;
-      return true;
-    };
-
+  if (!route.osmVegetation && route.umekojiTrees) {
     // 単木(trees)
     for (const [x, z] of route.umekojiTrees.trees || []) {
-      if (isValidTreePos(x, z)) items.push([x, z]);
+      if (isValidTreePos(x, z)) addTree(x, z);
     }
 
     // 樹林(forests)
-    const polygonArea = (pts) => {
-      let a = 0;
-      for (let i = 0; i < pts.length; i++) {
-        const p = pts[i];
-        const q = pts[(i + 1) % pts.length];
-        a += p[0] * q[1] - q[0] * p[1];
-      }
-      return Math.abs(a / 2);
-    };
-    const pointInPolygon = (x, z, pts) => {
-      let inside = false;
-      for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
-        const xi = pts[i][0],
-          zi = pts[i][1];
-        const xj = pts[j][0],
-          zj = pts[j][1];
-        const intersect =
-          zi > z !== zj > z && x < ((xj - xi) * (z - zi)) / (zj - zi) + xi;
-        if (intersect) inside = !inside;
-      }
-      return inside;
-    };
-
     let forestSeed = 10001;
     for (const forest of route.umekojiTrees.forests || []) {
       if (forest.length < 3) continue;
@@ -390,7 +488,7 @@ export function buildNature(scene, path) {
         const tx = minX + rndSeeded() * (maxX - minX);
         const tz = minZ + rndSeeded() * (maxZ - minZ);
         if (pointInPolygon(tx, tz, forest) && isValidTreePos(tx, tz)) {
-          items.push([tx, tz]);
+          addTree(tx, tz);
           placed++;
         }
       }
@@ -411,10 +509,10 @@ export function buildNature(scene, path) {
         for (let j = 0; j < count; j++) {
           const tx = a[0] + stepX * j;
           const tz = a[1] + stepZ * j;
-          if (isValidTreePos(tx, tz)) items.push([tx, tz]);
+          if (isValidTreePos(tx, tz)) addTree(tx, tz);
         }
         if (i === row.length - 2) {
-          if (isValidTreePos(b[0], b[1])) items.push([b[0], b[1]]);
+          if (isValidTreePos(b[0], b[1])) addTree(b[0], b[1]);
         }
       }
     }
@@ -448,6 +546,34 @@ export function buildNature(scene, path) {
         g.add(inst);
       });
     });
+
+    // OSM natural=scrub は樹木ではなく、地表近くの低木群として描く。
+    // 既存のTreeA/TreeBを縮小して代用せず、低く横に広がる簡易メッシュを
+    // InstancedMeshでまとめて生成する。
+    if (scrubItems.length) {
+      const shrubGeometry = new THREE.IcosahedronGeometry(1, 1);
+      const shrubMaterial = mat(0x58743b);
+      const shrubs = new THREE.InstancedMesh(
+        shrubGeometry,
+        shrubMaterial,
+        scrubItems.length,
+      );
+      scrubItems.forEach(([x, z], i) => {
+        dummy.position.set(x, terrainHeightAtWorld(x, z) + 0.8, z);
+        dummy.rotation.set(
+          (rnd(x, z, 3) - 0.5) * 0.12,
+          rnd(x, z, 4) * Math.PI * 2,
+          (rnd(x, z, 5) - 0.5) * 0.12,
+        );
+        const size = 1.4 + rnd(x, z, 6) * 1.0;
+        dummy.scale.set(size, 0.8 + rnd(x, z, 7) * 0.45, size);
+        dummy.updateMatrix();
+        shrubs.setMatrixAt(i, dummy.matrix);
+      });
+      shrubs.instanceMatrix.needsUpdate = true;
+      shrubs.name = "osm-scrub-stands";
+      g.add(shrubs);
+    }
   });
 
   return exclusions;

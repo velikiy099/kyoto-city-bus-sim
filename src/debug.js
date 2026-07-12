@@ -117,6 +117,18 @@ export function setupDebug(ctx) {
         ctx.onTeleport?.(s, stopIndex);
         return `teleported to ${stop.name} ${offset}m`;
       },
+      teleportS(targetS) {
+        const s = Math.max(0, Math.min(path.length - 0.1, Number(targetS) || 0));
+        const p = laneCenterPoint(path, s);
+        const [tx, tz] = path.getTangent(s);
+        bus.x = p[0];
+        bus.z = p[1];
+        bus.heading = Math.atan2(tx, tz);
+        bus.v = 0;
+        bus.delta = 0;
+        ctx.onTeleport?.(s, null);
+        return `teleported to s=${s.toFixed(1)}`;
+      },
       fps() {
         const a = dbg.fpsSamples;
         return a.length

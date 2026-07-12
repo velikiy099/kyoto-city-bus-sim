@@ -7,7 +7,7 @@ import {
   speedLimitAt,
   elevationAt,
   terrainElevationAt,
-  roadElevationAt,
+  roadAttachmentHalfWidthAt,
   gradeAt,
   halfWidthAt,
   laneCenterAt,
@@ -59,7 +59,12 @@ import {
 const STEP = 1 / 60;
 const DOOR_OFFSET = CFG.bus.wheelbase + 1.2; // 後軸→前扉
 const path = route.path;
-configureWorldHeightSamplers(path, terrainElevationAt, roadElevationAt);
+configureWorldHeightSamplers(
+  path,
+  terrainElevationAt,
+  elevationAt,
+  roadAttachmentHalfWidthAt,
+);
 
 // ---------------------------------------------------------------- renderer / scene
 const app = document.getElementById("app");

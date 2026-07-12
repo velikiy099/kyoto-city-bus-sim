@@ -7,8 +7,8 @@ export const WORLD_CONFIG = Object.freeze({
     // sample it before asynchronous scenery loading. The renderer replaces that
     // provisional mesh with the transportation-cut version once the manifest loads.
     terrain: true,
-    // Visible road/sidewalk surfaces come exclusively from PLATEAU transportation.
-    // OSM remains route/network metadata for physics, stops, signals and traffic.
+    // PLATEAU transportation remains the visible road-surface source. OSM-derived
+    // road markings and sidewalks are loaded as clipped overlays above it.
     transportation: true,
     osmRouteSurface: false,
     osmExtraRoadSurfaces: false,

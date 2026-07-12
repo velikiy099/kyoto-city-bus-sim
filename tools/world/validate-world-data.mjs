@@ -12,9 +12,9 @@ const files = {
   furniture: cfg.output.plateauFurniture,
   water: cfg.output.plateauWater,
   vegetation: cfg.output.plateauVegetation,
+  osmOverlays: cfg.output.osmOverlays,
   osmNetwork: cfg.output.osmNetwork,
   routeElevation: cfg.output.routeElevation,
-  roadElevation: cfg.output.roadElevation,
 };
 for (const [name, relative] of Object.entries(files)) {
   const file = resolveRoot(relative);
@@ -32,8 +32,15 @@ if (data.terrain.grid) {
   }
 }
 if (!Array.isArray(data.routeElevation.samples)) throw new Error("Invalid route elevation profile");
-if (!Array.isArray(data.roadElevation.samples)) throw new Error("Invalid road elevation profile");
 if (!Array.isArray(data.osmNetwork.signals) || !Array.isArray(data.osmNetwork.intersections)) throw new Error("Invalid OSM network layer");
+if (!Array.isArray(data.osmOverlays.features)) throw new Error("Invalid OSM road overlay layer");
+if (Number(data.osmOverlays.stats?.overlayOutsideRoadArea ?? 0) > 0.01) {
+  throw new Error(`OSM road overlays extend outside PLATEAU roads: ${data.osmOverlays.stats.overlayOutsideRoadArea}m²`);
+}
+for (const overlay of data.osmOverlays.features) {
+  if (!overlay.id || !["centerline", "lane-divider", "sidewalk"].includes(overlay.kind)) throw new Error(`Invalid OSM overlay: ${overlay.id}`);
+  if (!Array.isArray(overlay.polygon) || overlay.polygon.length < 3) throw new Error(`Invalid OSM overlay polygon: ${overlay.id}`);
+}
 
 const ids = new Set();
 for (const building of data.buildings.features) {
@@ -64,10 +71,7 @@ console.log(JSON.stringify({
     furniture: data.furniture.features.length,
     water: data.water.features.length,
     vegetation: data.vegetation.features.length,
+    osmOverlays: data.osmOverlays.features.length,
     routeElevationSamples: data.routeElevation.samples.length,
-    roadElevationSamples: data.roadElevation.samples.length,
-    roadSurfaceProfileSamples: data.roadElevation.surfaceSampleCount ?? 0,
-    roadStructuralSurfaceProfileSamples: data.roadElevation.structuralSurfaceSampleCount ?? 0,
-    roadElevatedSurfaceProfileSamples: data.roadElevation.elevatedSurfaceSampleCount ?? 0,
   },
 }, null, 2));

@@ -15,6 +15,10 @@ if (refreshOsm) {
   run("npm", ["run", "build-data"]);
 }
 if (!fs.existsSync(routeFile)) throw new Error(`Route data not found: ${routeFile}`);
+const osmVisualSource = resolveRoot(cfg.output.osmVisualSource);
+if (!fs.existsSync(osmVisualSource)) {
+  throw new Error(`OSM visual source not found: ${osmVisualSource}\nRun npm run build-data to refresh OSM display data.`);
+}
 run("node", [resolveRoot("tools/world/setup-python.mjs")]);
 if (!skipExtract) {
   if (!fs.existsSync(archive)) throw new Error(`CityGML archive not found: ${archive}\nRun npm run world:download first.`);
@@ -39,8 +43,9 @@ run(python, [
   "--water", resolveRoot(out.plateauWater),
   "--vegetation", resolveRoot(out.plateauVegetation),
   "--osm-network", resolveRoot(out.osmNetwork),
+  "--osm-visual-source", osmVisualSource,
+  "--osm-overlays", resolveRoot(out.osmOverlays),
   "--route-elevation", resolveRoot(out.routeElevation),
-  "--road-elevation", resolveRoot(out.roadElevation),
   "--manifest", resolveRoot(out.worldManifest),
   "--report", resolveRoot(out.report),
 ]);

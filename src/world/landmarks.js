@@ -6,6 +6,31 @@ import { lambertize } from "../util/lambertize.js";
 const mat = (color, opts = {}) =>
   new THREE.MeshLambertMaterial({ color, ...opts });
 
+// OSM の surface タグを、ロータリーの路面ポリゴン用の色へ変換する。
+// surface 未設定の service/unclassified は、この地域の実測タグに合わせて
+// asphalt 相当(舗装路)として扱う。
+const OSM_SURFACE_COLORS = {
+  asphalt: 0x55585a,
+  concrete: 0x777a78,
+  paving_stones: 0x8c887e,
+  cobblestone: 0x817d74,
+  sett: 0x817d74,
+  fine_gravel: 0x9a907f,
+  gravel: 0x918875,
+  compacted: 0x8d8578,
+  unpaved: 0x7e776b,
+  ground: 0x7e776b,
+  dirt: 0x7e776b,
+  sand: 0xa99a7c,
+};
+
+function osmSurfaceMaterial(tags, materials) {
+  const surface = String(tags?.surface ?? "").toLowerCase();
+  const color = OSM_SURFACE_COLORS[surface] ?? OSM_SURFACE_COLORS.asphalt;
+  if (!materials.has(color)) materials.set(color, mat(color));
+  return materials.get(color);
+}
+
 // ===== 駐機バス(bus.glb を共有ロードし、静止状態でクローンして量産) =====
 const busLoader = new GLTFLoader();
 let busLib = null;
@@ -181,6 +206,41 @@ function buildNijoStation(scene, path) {
   );
   sign.position.set(0, 7.5, 45.5);
   g.add(sign);
+
+  // 駅前ロータリーの細いサービス路はPLATEAUの大きな道路面だけでは
+  // つぶれやすいため、OSMのservice/unclassified wayを駅前範囲だけ重ねる。
+  // 座標はroute18.json生成時にOSMから投影済みで、駅本体と同じ原点・向きへ戻す。
+  const roadMaterials = new Map();
+  const worldToLocal = ([x, z]) => {
+    const dx = x - a.x;
+    const dz = z - a.z;
+    return [
+      Math.cos(g.rotation.y) * dx + Math.sin(g.rotation.y) * dz,
+      -Math.sin(g.rotation.y) * dx + Math.cos(g.rotation.y) * dz,
+    ];
+  };
+  for (const road of route.osmStationRoads ?? []) {
+    const points = road.points ?? [];
+    const tags = road.tags ?? {};
+    const lanes = Number(tags.lanes) || 1;
+    const width = Number.parseFloat(tags.width) || (tags.highway === "service" ? 4.8 : lanes * 3.2 + 1.0);
+    for (let i = 0; i < points.length - 1; i++) {
+      const p0 = worldToLocal(points[i]);
+      const p1 = worldToLocal(points[i + 1]);
+      const dx = p1[0] - p0[0];
+      const dz = p1[1] - p0[1];
+      const length = Math.hypot(dx, dz);
+      if (length < 1) continue;
+      const roadMesh = new THREE.Mesh(
+        new THREE.PlaneGeometry(width, length),
+        osmSurfaceMaterial(tags, roadMaterials),
+      );
+      roadMesh.rotation.x = -Math.PI / 2;
+      roadMesh.rotation.z = -Math.atan2(dx, dz);
+      roadMesh.position.set((p0[0] + p1[0]) / 2, 0.04, (p0[1] + p1[1]) / 2);
+      g.add(roadMesh);
+    }
+  }
   scene.add(g);
   return { x: a.x, z: a.z, r: 72 };
 }

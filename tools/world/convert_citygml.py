@@ -26,6 +26,8 @@ from typing import Iterator, Sequence
 from terrain_grid import build_connected_terrain_grid
 
 from pyproj import CRS, Transformer
+from shapely.geometry import GeometryCollection, LineString, MultiPolygon, Polygon
+from shapely.ops import unary_union
 from tqdm import tqdm
 
 GML_ID = "{http://www.opengis.net/gml}id"
@@ -272,98 +274,6 @@ class PointElevationIndex:
         return best_y
 
 
-def point_in_polygon(point: Sequence[float], polygon: Sequence[Sequence[float]]) -> bool:
-    inside = False
-    for index, current in enumerate(polygon):
-        previous = polygon[index - 1]
-        if (current[1] > point[1]) != (previous[1] > point[1]):
-            x_at_y = (previous[0] - current[0]) * (point[1] - current[1]) / (previous[1] - current[1] or 1e-9) + current[0]
-            if point[0] < x_at_y:
-                inside = not inside
-    return inside
-
-
-def point_segment_distance(point: Sequence[float], a: Sequence[float], b: Sequence[float]) -> float:
-    dx = b[0] - a[0]
-    dz = b[1] - a[1]
-    denominator = dx * dx + dz * dz or 1e-9
-    t = max(0.0, min(1.0, ((point[0] - a[0]) * dx + (point[1] - a[1]) * dz) / denominator))
-    return math.hypot(point[0] - (a[0] + dx * t), point[1] - (a[1] + dz * t))
-
-
-class RoadSurfaceIndex:
-    """Spatial index for PLATEAU transportation surfaces in route coordinates."""
-
-    def __init__(self, features: Sequence[dict], cell_size: float = 80.0):
-        self.cell_size = cell_size
-        self.records = []
-        self.grid: dict[tuple[int, int], list[int]] = defaultdict(list)
-        for feature in features:
-            polygon3d = feature.get("polygon") or []
-            polygon = [[point[0], point[2]] for point in polygon3d if len(point) >= 3]
-            if len(polygon) < 3:
-                continue
-            record = len(self.records)
-            self.records.append({
-                "polygon": polygon,
-                "minX": min(point[0] for point in polygon),
-                "maxX": max(point[0] for point in polygon),
-                "minZ": min(point[1] for point in polygon),
-                "maxZ": max(point[1] for point in polygon),
-                "elevation": statistics.median(point[1] for point in polygon3d),
-                # Road LOD0/1 polygons in this Kyoto dataset carry z=0 even
-                # when the CityGML semantic attribute says that the section is
-                # a viaduct/bridge. Keep the structural classification so the
-                # profile generator does not mistake that placeholder z for
-                # the physical road elevation.
-                "sectionType": str((feature.get("attributes") or {}).get("sectionType", "")),
-            })
-            item = self.records[-1]
-            for gx in range(math.floor(item["minX"] / cell_size) - 1, math.floor(item["maxX"] / cell_size) + 2):
-                for gz in range(math.floor(item["minZ"] / cell_size) - 1, math.floor(item["maxZ"] / cell_size) + 2):
-                    self.grid[(gx, gz)].append(record)
-
-    def nearest(self, x: float, z: float, max_distance: float = 20.0) -> dict | None:
-        point = [x, z]
-        gx, gz = math.floor(x / self.cell_size), math.floor(z / self.cell_size)
-        candidate_ids: set[int] = set()
-        radius = max(1, math.ceil(max_distance / self.cell_size) + 1)
-        for ix in range(gx - radius, gx + radius + 1):
-            for iz in range(gz - radius, gz + radius + 1):
-                candidate_ids.update(self.grid.get((ix, iz), ()))
-        hits = []
-        section_priority = {"2": 4, "3": 3, "5": 2, "6": 1, "1": 0, "4": 0}
-        for record_id in candidate_ids:
-            record = self.records[record_id]
-            if x < record["minX"] - max_distance or x > record["maxX"] + max_distance or z < record["minZ"] - max_distance or z > record["maxZ"] + max_distance:
-                continue
-            if point_in_polygon(point, record["polygon"]):
-                distance = 0.0
-            else:
-                distance = min(
-                    point_segment_distance(point, record["polygon"][index], record["polygon"][index - 1])
-                    for index in range(len(record["polygon"]))
-                )
-            if distance <= max_distance:
-                hits.append((distance, record["elevation"], record["sectionType"]))
-        if not hits:
-            return None
-        nearest_distance = min(item[0] for item in hits)
-        nearby = [item for item in hits if item[0] <= nearest_distance + 3.0]
-        # At intersections several semantic surfaces can overlap. Prefer a
-        # structural section when it is equally close; otherwise keep the
-        # closest surface as the route's road classification.
-        selected = min(
-            nearby,
-            key=lambda item: (item[0], -section_priority.get(item[2], 0)),
-        )
-        return {
-            "distance": selected[0],
-            "elevation": selected[1],
-            "sectionType": selected[2],
-        }
-
-
 class OsmBuildingIndex:
     def __init__(self, buildings: Sequence[dict], cell_size: float = 50.0):
         self.cell_size = cell_size
@@ -537,6 +447,187 @@ def polygon_kind(attrs: dict) -> str:
     return "road"
 
 
+def parse_positive_number(value) -> float | None:
+    if value is None:
+        return None
+    match = re.search(r"\d+(?:\.\d+)?", str(value))
+    number = float(match.group(0)) if match else None
+    return number if number is not None and number > 0 else None
+
+
+def visual_lane_counts(tags: dict) -> tuple[int, int]:
+    forward = parse_positive_number(tags.get("lanes:forward"))
+    backward = parse_positive_number(tags.get("lanes:backward"))
+    total = parse_positive_number(tags.get("lanes"))
+    if tags.get("oneway") in {"yes", "1", "true", "-1"}:
+        return (max(1, int(forward or total or 1)), 0)
+    if forward or backward:
+        forward_count = int(forward or 0)
+        backward_count = int(backward or 0)
+        if total:
+            # OSM often records only one directional lane count and leaves the
+            # opposite direction implicit in `lanes`.  Treat that as a
+            # two-way road so its centerline is still generated.
+            remaining = max(0, int(total) - forward_count - backward_count)
+            if forward_count and not backward_count:
+                backward_count = remaining or 1
+            elif backward_count and not forward_count:
+                forward_count = remaining or 1
+        else:
+            if forward_count and not backward_count:
+                backward_count = 1
+            elif backward_count and not forward_count:
+                forward_count = 1
+        return (max(1, forward_count), max(1, backward_count))
+    total = int(total or 2)
+    return (max(1, math.ceil(total / 2)), max(1, total // 2))
+
+
+def visual_road_width(tags: dict, lanes_forward: int, lanes_backward: int) -> float:
+    tagged = parse_positive_number(tags.get("width"))
+    if tagged:
+        return tagged
+    return max(3.2, (lanes_forward + lanes_backward) * 3.2 + 1.6)
+
+
+def sidewalk_width(tags: dict, nearest_road_width: float | None, nearest_lane_count: int | None) -> float:
+    tagged = parse_positive_number(tags.get("width"))
+    if tagged:
+        return tagged
+    if nearest_lane_count is not None and nearest_lane_count >= 2:
+        return 3.0
+    if nearest_road_width is not None:
+        return 2.0 if nearest_road_width <= 8.0 else 3.0
+    return 2.0
+
+
+def geometry_polygons(geometry):
+    if geometry.is_empty:
+        return []
+    if isinstance(geometry, Polygon):
+        return [geometry]
+    if isinstance(geometry, MultiPolygon):
+        return list(geometry.geoms)
+    if isinstance(geometry, GeometryCollection):
+        polygons = []
+        for child in geometry.geoms:
+            polygons.extend(geometry_polygons(child))
+        return polygons
+    return []
+
+
+def overlay_feature(kind: str, geometry, source: dict, tags: dict | None = None):
+    features = []
+    for index, polygon in enumerate(geometry_polygons(geometry), start=1):
+        if polygon.area < 0.005:
+            continue
+        ring = [[round(x, 5), 0.0, round(z, 5)] for x, z in list(polygon.exterior.coords)[:-1]]
+        if len(ring) < 3:
+            continue
+        features.append({
+            "id": f"osm-{kind}-{source.get('wayId', 'generated')}-{index}",
+            "kind": kind,
+            "polygon": ring,
+            "attributes": tags or {},
+            "source": {"provider": "OpenStreetMap", **source},
+        })
+    return features
+
+
+def build_osm_overlays(source: dict, transportation: list[dict]) -> tuple[list[dict], dict]:
+    road_polygons = []
+    for feature in transportation:
+        points = [(point[0], point[2]) for point in feature.get("polygon", [])]
+        if len(points) < 3:
+            continue
+        polygon = Polygon(points)
+        if not polygon.is_valid:
+            polygon = polygon.buffer(0)
+        if not polygon.is_empty:
+            road_polygons.append(polygon)
+    road_union = unary_union(road_polygons) if road_polygons else GeometryCollection()
+    roads = source.get("roads", [])
+    sidewalks = source.get("sidewalks", [])
+    road_lines = []
+    overlays = []
+    for road in roads:
+        line = LineString([(point[0], point[1]) for point in road.get("points", [])])
+        if line.is_empty or line.length < 1:
+            continue
+        tags = road.get("tags") or {}
+        lanes_forward, lanes_backward = visual_lane_counts(tags)
+        full_width = visual_road_width(tags, lanes_forward, lanes_backward)
+        road_lines.append((line, tags, full_width, max(lanes_forward, lanes_backward)))
+        if lanes_backward > 0:
+            centerline = line.buffer(0.08, cap_style=2, join_style=2).intersection(road_union)
+            overlays.extend(overlay_feature("centerline", centerline, {"wayId": road.get("id")}, tags))
+        half_forward = max(1.0, full_width * lanes_forward / max(1, lanes_forward + lanes_backward))
+        half_backward = max(1.0, full_width - half_forward)
+        for index in range(1, lanes_forward):
+            offset = (half_forward * index / lanes_forward)
+            divider = line.offset_curve(-offset).buffer(0.045, cap_style=2, join_style=2)
+            overlays.extend(overlay_feature("lane-divider", divider.intersection(road_union), {"wayId": road.get("id")}, tags))
+        for index in range(1, lanes_backward):
+            offset = (half_backward * index / lanes_backward)
+            divider = line.offset_curve(offset).buffer(0.045, cap_style=2, join_style=2)
+            overlays.extend(overlay_feature("lane-divider", divider.intersection(road_union), {"wayId": road.get("id")}, tags))
+
+    sidewalk_geometries = []
+    for sidewalk in sidewalks:
+        line = LineString([(point[0], point[1]) for point in sidewalk.get("points", [])])
+        if line.is_empty or line.length < 1:
+            continue
+        nearest = min(
+            ((line.distance(road_line), width, lane_count) for road_line, _, width, lane_count in road_lines),
+            default=(float("inf"), None, None),
+            key=lambda item: item[0],
+        )
+        width = sidewalk_width(sidewalk.get("tags") or {}, nearest[1], nearest[2]) if nearest[0] <= 15 else 2.0
+        sidewalk_geometries.append(line.buffer(width / 2, cap_style=2, join_style=2))
+
+    for line, tags, full_width, lane_count in road_lines:
+        values = []
+        base = tags.get("sidewalk")
+        if base in {"both", "left", "right"}:
+            values.extend([base] if base == "both" else [base])
+        if tags.get("sidewalk:left") not in {None, "no", "none", "separate"}:
+            values.append("left")
+        if tags.get("sidewalk:right") not in {None, "no", "none", "separate"}:
+            values.append("right")
+        if tags.get("sidewalk:both") not in {None, "no", "none", "separate"}:
+            values.extend(["left", "right"])
+        if base == "both":
+            values.extend(["left", "right"])
+        for side in set(values):
+            width = sidewalk_width(tags, full_width, lane_count)
+            offset = full_width / 2 + width / 2
+            # x/east-z/south coordinates reverse the usual planar left sign.
+            side_offset = -offset if side == "left" else offset
+            sidewalk_geometries.append(line.offset_curve(side_offset).buffer(width / 2, cap_style=2, join_style=2))
+
+    if sidewalk_geometries:
+        # Emit each buffered sidewalk separately.  Unioning all ways first can
+        # create a polygon with roadway-shaped holes; overlay_feature stores
+        # only exterior rings, so those holes would be filled back in and a
+        # sidewalk could visually cover the entire carriageway (notably around
+        # Mibu garage).  Clipping each source geometry to PLATEAU roads keeps
+        # the OSM sidewalk footprint while preserving gaps and holes.
+        for index, sidewalk_geometry in enumerate(sidewalk_geometries, start=1):
+            clipped_sidewalk = sidewalk_geometry.intersection(road_union)
+            overlays.extend(overlay_feature("sidewalk", clipped_sidewalk, {"wayId": f"sidewalk-{index}"}))
+    overlay_union = unary_union([
+        Polygon([(point[0], point[2]) for point in feature["polygon"]])
+        for feature in overlays
+        if len(feature.get("polygon", [])) >= 3
+    ]) if overlays else GeometryCollection()
+    return overlays, {
+        "roadSourceWays": len(roads),
+        "sidewalkSourceWays": len(sidewalks),
+        "overlayFeatures": len(overlays),
+        "overlayOutsideRoadArea": round(overlay_union.difference(road_union).area, 6),
+    }
+
+
 def sample_route_profile(route: dict, terrain_index: PointElevationIndex | None, datum: float, step: float, window: int):
     if terrain_index is None:
         return {"version": 1, "sampleStepMeters": step, "samples": []}
@@ -564,101 +655,6 @@ def sample_route_profile(route: dict, terrain_index: PointElevationIndex | None,
             smoothed.append([sample[0], round(sum(values) / len(values), 3)])
         samples = smoothed
     return {"version": 1, "sampleStepMeters": step, "verticalDatum": round(datum, 3), "samples": samples}
-
-
-def route_point_at(route_index: RouteIndex, s: float) -> list[float]:
-    for ax, az, bx, bz, start_s, length in route_index.segments:
-        if s <= start_s + length or length == 0:
-            t = 0.0 if length == 0 else max(0.0, min(1.0, (s - start_s) / length))
-            return [ax + (bx - ax) * t, az + (bz - az) * t]
-    return list(route_index.points[-1])
-
-
-def smooth_profile(samples: list[list[float]], window: int) -> list[list[float]]:
-    if window <= 1 or not samples:
-        return samples
-    half = window // 2
-    smoothed = []
-    for index, sample in enumerate(samples):
-        values = [samples[j][1] for j in range(max(0, index - half), min(len(samples), index + half + 1))]
-        smoothed.append([sample[0], round(sum(values) / len(values), 3)])
-    return smoothed
-
-
-def structural_height_at(route: dict, s: float) -> float:
-    """Fallback road profile for structures not represented by PLATEAU tran surfaces."""
-    for item in route.get("elevations") or []:
-        start = float(item.get("from", 0.0))
-        end = float(item.get("to", 0.0))
-        approach_in = float(item.get("approachIn", 50.0))
-        approach_out = float(item.get("approachOut", 50.0))
-        height = float(item.get("height", 0.0))
-        if s <= start - approach_in or s >= end + approach_out:
-            continue
-        if s < start:
-            t = (s - (start - approach_in)) / max(1e-9, approach_in)
-            return height * (t * t * (3.0 - 2.0 * t))
-        if s <= end:
-            return height
-        t = ((end + approach_out) - s) / max(1e-9, approach_out)
-        return height * (t * t * (3.0 - 2.0 * t))
-    return 0.0
-
-
-def sample_road_profile(
-    route: dict,
-    terrain_index: PointElevationIndex | None,
-    road_index: RoadSurfaceIndex | None,
-    datum: float,
-    step: float,
-    window: int,
-    search_distance: float,
-):
-    route_index = RouteIndex(route["path"])
-    samples = []
-    surface_samples = 0
-    structural_surface_samples = 0
-    elevated_surface_samples = 0
-    s = 0.0
-    while s <= route_index.length + 0.001:
-        point = route_point_at(route_index, s)
-        terrain = terrain_index.nearest(point[0], point[1]) if terrain_index else 0.0
-        terrain = terrain if terrain is not None else 0.0
-        structural = structural_height_at(route, s)
-        surface = road_index.nearest(point[0], point[1], search_distance) if road_index else None
-        if surface is not None:
-            surface_samples += 1
-            section_type = surface.get("sectionType")
-            if section_type in {"2", "3", "5", "6"}:
-                elevated_surface_samples += 1
-                # PLATEAU's road geometry in this dataset is a 2D LOD0/1
-                # footprint (z=0), while sectionType carries the fact that
-                # it is a viaduct, bridge, underpass, or tunnel. Use the
-                # route's structure height for those classified sections;
-                # using the raw polygon z would put Omiya overpass below the
-                # DEM and make the southern river bridges sink as well.
-                elevation = terrain + structural
-                if structural > 0.0:
-                    structural_surface_samples += 1
-            else:
-                # Normal road and intersection surfaces also use a 2D
-                # footprint. Their height is the PLATEAU DEM at the route.
-                elevation = terrain
-        else:
-            elevation = terrain + structural
-        samples.append([round(s, 2), round(elevation - datum, 3)])
-        s += step
-    if samples and samples[-1][0] < route_index.length:
-        samples.append([round(route_index.length, 2), samples[-1][1]])
-    return {
-        "version": 1,
-        "sampleStepMeters": step,
-        "verticalDatum": round(datum, 3),
-        "samples": smooth_profile(samples, window),
-        "surfaceSampleCount": surface_samples,
-        "structuralSurfaceSampleCount": structural_surface_samples,
-        "elevatedSurfaceSampleCount": elevated_surface_samples,
-    }
 
 
 _DEM_WORKER: dict = {}
@@ -946,6 +942,8 @@ def convert(args) -> dict:
         return surfaces
 
     transportation = convert_surface_layer("tran", {"Road"}, True)
+    osm_visual_source = read_json(args.osm_visual_source)
+    osm_overlays, osm_overlay_stats = build_osm_overlays(osm_visual_source, transportation)
     bridges = convert_surface_layer("brid", {"Bridge", "BridgePart"})
     water = convert_surface_layer("wtr", {"WaterBody"})
     vegetation = convert_surface_layer("veg", {"PlantCover", "SolitaryVegetationObject"})
@@ -998,21 +996,6 @@ def convert(args) -> dict:
         int(cfg["plateau"].get("routeElevationSmoothingWindow", 7)),
     )
     route_profile.update({"generatedAt": generated_at, "source": "PLATEAU dem", "verticalDatumSourceMeters": round(datum, 3)})
-    road_surface_index = RoadSurfaceIndex(transportation)
-    road_profile = sample_road_profile(
-        route,
-        terrain_index,
-        road_surface_index,
-        0.0,
-        float(cfg["plateau"].get("routeElevationSampleMeters", 10)),
-        int(cfg["plateau"].get("routeElevationSmoothingWindow", 7)),
-        float(cfg["plateau"].get("roadElevationSearchMeters", 20)),
-    )
-    road_profile.update({
-        "generatedAt": generated_at,
-        "source": "PLATEAU transportation road surfaces with structural-profile fallback",
-        "verticalDatumSourceMeters": round(datum, 3),
-    })
     osm_network = {
         "version": 2, "generatedAt": generated_at,
         "source": {"provider": "OpenStreetMap", "relationId": cfg["osm"]["relationId"], "license": cfg["osm"]["license"], "generatedAt": route.get("generatedAt")},
@@ -1021,6 +1004,16 @@ def convert(args) -> dict:
         "stops": route.get("stops", []), "intersections": route.get("intersections", []),
         "turnIntersections": route.get("turnIntersections", []), "signals": route.get("signals", []),
         "extraRoads": route.get("extraRoads", []), "speedZones": route.get("speedZones", []),
+        "osmStationRoads": route.get("osmStationRoads", []),
+        "osmVegetation": route.get("osmVegetation", {}),
+    }
+    osm_overlay_document = {
+        "version": 1,
+        "generatedAt": generated_at,
+        "source": osm_visual_source.get("source", {"provider": "OpenStreetMap", "license": "ODbL"}),
+        "clip": {"provider": "Project PLATEAU", "layer": "tran:Road"},
+        "features": osm_overlays,
+        "stats": osm_overlay_stats,
     }
 
     output_paths = {
@@ -1031,8 +1024,8 @@ def convert(args) -> dict:
     for key, output in outputs.items():
         write_json(output_paths[key], output)
     write_json(args.route_elevation, route_profile)
-    write_json(args.road_elevation, road_profile)
     write_json(args.osm_network, osm_network)
+    write_json(args.osm_overlays, osm_overlay_document)
 
     counts = {key: len(value.get("features", value.get("triangles", []))) for key, value in outputs.items()}
     if terrain_grid:
@@ -1049,6 +1042,7 @@ def convert(args) -> dict:
             {"id": "bridges", "provider": "plateau", "url": "/world/generated/plateau-bridges.json", "featureCount": counts["bridges"]},
             {"id": "buildings", "provider": "plateau", "url": "/world/generated/plateau-buildings.json", "featureCount": counts["buildings"]},
             {"id": "furniture", "provider": "plateau", "url": "/world/generated/plateau-furniture.json", "featureCount": counts["furniture"], "semanticFallback": "OSM route/network signals"},
+            {"id": "osm-road-overlays", "provider": "osm-derived-clipped-to-plateau", "url": "/world/generated/osm-road-overlays.json", "featureCount": osm_overlay_stats["overlayFeatures"]},
             {"id": "osm-network", "provider": "osm", "url": "/world/generated/osm-network.json"},
         ],
     }
@@ -1057,10 +1051,7 @@ def convert(args) -> dict:
         "generatedAt": generated_at, "sourceCrs": sorted(crs_values), "verticalDatumSourceMeters": round(datum, 3),
         "inputFiles": {kind: len(files) for kind, files in files_by_type.items()}, "counts": counts,
         "routeElevationSamples": len(route_profile["samples"]),
-        "roadElevationSamples": len(road_profile["samples"]),
-        "roadSurfaceProfileSamples": road_profile["surfaceSampleCount"],
-        "roadStructuralSurfaceProfileSamples": road_profile["structuralSurfaceSampleCount"],
-        "roadElevatedSurfaceProfileSamples": road_profile["elevatedSurfaceSampleCount"],
+        "osmOverlays": osm_overlay_stats,
         "transportationSectionTypeCounts": dict(sorted(
             (section_type, sum(1 for feature in transportation if str((feature.get("attributes") or {}).get("sectionType", "")) == section_type))
             for section_type in {str((feature.get("attributes") or {}).get("sectionType", "")) for feature in transportation}
@@ -1084,8 +1075,9 @@ def main() -> int:
     parser.add_argument("--water", type=Path, required=True)
     parser.add_argument("--vegetation", type=Path, required=True)
     parser.add_argument("--osm-network", type=Path, required=True)
+    parser.add_argument("--osm-visual-source", type=Path, required=True)
+    parser.add_argument("--osm-overlays", type=Path, required=True)
     parser.add_argument("--route-elevation", type=Path, required=True)
-    parser.add_argument("--road-elevation", type=Path, required=True)
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)
     args = parser.parse_args()

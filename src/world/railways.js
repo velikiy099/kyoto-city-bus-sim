@@ -1,5 +1,4 @@
 import * as THREE from "three";
-import { makeRibbon } from "./road.js";
 import {
   route,
   elevationAt,
@@ -44,6 +43,44 @@ function addDeckRails(group, width, y, length) {
   }
 }
 
+const OMIYA_PARAPET_HEIGHT = 1.0;
+const OMIYA_PARAPET_WIDTH = 0.3;
+const OMIYA_PARAPET_SEGMENT = 4;
+
+/** 大宮跨線橋の橋面端に、画像相当の約1m高コンクリート欄干だけを置く。 */
+function addOmiyaParapets(scene, path, fromS, toS, deckHalf) {
+  const material = mat(0xbfc4c7);
+  for (const side of [-1, 1]) {
+    for (let s = fromS; s < toS; s += OMIYA_PARAPET_SEGMENT) {
+      const nextS = Math.min(toS, s + OMIYA_PARAPET_SEGMENT);
+      const midS = (s + nextS) / 2;
+      const [x, z] = path.getPoint(midS);
+      const [tx, tz] = path.getTangent(midS);
+      const nx = -tz;
+      const nz = tx;
+      const offset = side * (deckHalf + OMIYA_PARAPET_WIDTH / 2);
+      const parapet = new THREE.Mesh(
+        new THREE.BoxGeometry(
+          OMIYA_PARAPET_WIDTH,
+          OMIYA_PARAPET_HEIGHT,
+          Math.max(0.5, nextS - s + 0.08),
+        ),
+        material,
+      );
+      parapet.position.set(
+        x + nx * offset,
+        elevationAt(midS) + OMIYA_PARAPET_HEIGHT / 2,
+        z + nz * offset,
+      );
+      parapet.rotation.order = "YXZ";
+      parapet.rotation.y = Math.atan2(tx, tz);
+      parapet.rotation.x = -Math.atan(gradeAt(midS));
+      parapet.name = "omiya-overpass-parapet";
+      scene.add(parapet);
+    }
+  }
+}
+
 function buildConventionalUnderpass(scene, path, spec) {
   const p = at(path, spec.s);
   const g = new THREE.Group();
@@ -77,7 +114,6 @@ function buildConventionalUnderpass(scene, path, spec) {
 
   scene.add(g);
 
-  const deckMat = mat(0x5f646a);
   const railFrom = spec.fromS ?? spec.s - 30;
   const railTo = spec.toS ?? spec.s + 30;
   // 高架桁の範囲(bridgeFromS/bridgeToS があれば八条通の先まで延伸)
@@ -86,135 +122,13 @@ function buildConventionalUnderpass(scene, path, spec) {
   const aIn = spec.approachIn ?? 52;
   const aOut = spec.approachOut ?? 52;
   const deckHalf = spec.deckHalf ?? 7.2; // 車道の外縁(橋上に歩道は無い実際の大宮跨線橋に合わせる)
-  // デッキ・欄干(makeRibbon が標高追従するので路面と一緒に持ち上がる)。
-  // 欄干は車線と車線の間の仕切り程度の幅(0.2m)に抑える。
-  scene.add(
-    new THREE.Mesh(
-      makeRibbon(path, -deckHalf, deckHalf, 0.22, sFrom, sTo, 2),
-      deckMat,
-    ),
-  );
-  scene.add(
-    new THREE.Mesh(
-      makeRibbon(
-        path,
-        -(deckHalf + 0.1),
-        -(deckHalf - 0.1),
-        0.6,
-        sFrom - aIn,
-        sTo + aOut,
-        2,
-      ),
-      mat(0xc8ced2),
-    ),
-  );
-  scene.add(
-    new THREE.Mesh(
-      makeRibbon(
-        path,
-        deckHalf - 0.1,
-        deckHalf + 0.1,
-        0.6,
-        sFrom - aIn,
-        sTo + aOut,
-        2,
-      ),
-      mat(0xc8ced2),
-    ),
-  );
+  // 大宮跨線橋では路面を覆う灰色デッキ・桁・擁壁を重ねない。
+  // 橋上には、唯一の路面高さ elevationAt(s) を基準にした約1m高の欄干だけを生成する。
+  addOmiyaParapets(scene, path, sFrom - aIn, sTo + aOut, deckHalf);
 
-  // 道路が持ち上がる場合(跨線橋): 桁とアプローチ擁壁で下部を埋める
-  if ((spec.roadLayer ?? 0) > 0) {
-    const concrete = mat(0x9aa0a4);
-    const alongPitchBox = (sMid, boxLen, height, width = 17.4) => {
-      const [px, pz] = path.getPoint(sMid);
-      const [tx, tz] = path.getTangent(sMid);
-      const grp = new THREE.Group();
-      grp.position.set(px, 0, pz);
-      grp.rotation.y = Math.atan2(tx, tz);
-      const box = new THREE.Mesh(
-        new THREE.BoxGeometry(width, height, boxLen),
-        concrete,
-      );
-      box.rotation.x = -Math.atan(gradeAt(sMid));
-      box.position.y = elevationAt(sMid) - height / 2 + 0.1;
-      grp.add(box);
-      scene.add(grp);
-    };
-    // 桁(デッキ直下)
-    alongPitchBox((sFrom + sTo) / 2, sTo - sFrom + 2, 1.1);
-    // アプローチ擁壁(smoothstep 勾配に沿うよう約45mごとに分割)
-    for (const [rampFrom, rampLen] of [
-      [sFrom - aIn, aIn],
-      [sTo, aOut],
-    ]) {
-      const n = Math.max(1, Math.ceil(rampLen / 45));
-      for (let k = 0; k < n; k++) {
-        const seg = rampLen / n;
-        alongPitchBox(rampFrom + seg * (k + 0.5), seg + 1, 0.9);
-      }
-    }
-    // 橋脚(掘割の線路と高架下の交差道路は避ける: 桁端と線路脇)
-    for (const sPier of [sFrom + 2, railTo + 6, sTo - 2]) {
-      const [px, pz] = path.getPoint(sPier);
-      const [tx, tz] = path.getTangent(sPier);
-      const groundY = terrainHeightAtWorld(px, pz);
-      const topY = elevationAt(sPier) - 0.8;
-      const pierHeight = Math.max(0.8, topY - groundY);
-      const pier = new THREE.Mesh(
-        new THREE.BoxGeometry(15, pierHeight, 1.4),
-        concrete,
-      );
-      pier.position.set(px, groundY + pierHeight / 2, pz);
-      pier.rotation.y = Math.atan2(tx, tz);
-      scene.add(pier);
-    }
-
-    // 側道(両脇の1車線は地上レベル)— 線路の掘割で分断される
-    if (spec.bridgeFromS != null) {
-      const laneW = 3.2;
-      const inner = deckHalf + 0.6; // 高架縁のすぐ外
-      const roadMat = mat(0x565a60);
-      const curbMat = mat(0xb9bdb9);
-      const lineMat = mat(0xe8e8e8);
-      for (const [a, b] of [
-        [sFrom - aIn, railFrom - 5],
-        [railTo + 5, sTo + aOut + 30],
-      ]) {
-        if (b - a < 12) continue;
-        for (const side of [-1, 1]) {
-          const lat = (v) => side * v;
-          const span = (u, v, y, mtl, step = 3) =>
-            scene.add(
-              new THREE.Mesh(
-                makeRibbon(
-                  path,
-                  Math.min(lat(u), lat(v)),
-                  Math.max(lat(u), lat(v)),
-                  y,
-                  a,
-                  b,
-                  step,
-                  false,
-                ),
-                mtl,
-              ),
-            );
-          span(inner, inner + laneW, 0.012, roadMat);
-          span(inner + 0.15, inner + 0.3, 0.026, lineMat); // 内側路側線
-          span(inner + laneW - 0.3, inner + laneW - 0.15, 0.026, lineMat);
-          span(inner + laneW, inner + laneW + 0.5, 0.13, curbMat);
-        }
-      }
-      // 高架下の舗装(八条通が下をくぐる区間)
-      scene.add(
-        new THREE.Mesh(
-          makeRibbon(path, -inner, inner, 0.008, railTo + 5, sTo + 8, 3, false),
-          mat(0x51565c),
-        ),
-      );
-    }
-  }
+  // 大宮跨線橋に関する手製の道路板・側道板・高架下舗装は生成しない。
+  // 可視路面はPLATEAU transportationの橋上車線部分を直接持ち上げる。
+  // ここでは地上の鉄道設備と橋面端の欄干だけを担当する。
 }
 
 function buildShinkansenViaduct(scene, path, spec) {

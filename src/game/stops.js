@@ -32,6 +32,32 @@ function makeSignTexture(name) {
 
 const paxColors = [0x546a7b, 0x7b5a4e, 0x4e6a52, 0x6a5a7b, 0x3d5a80, 0x8a6d3b];
 
+function addShelter(group, x, z, tx, tz, nx, nz, baseY) {
+  const shelter = new THREE.Group();
+  shelter.position.set(x - nx * 1.4, baseY, z - nz * 1.4);
+  shelter.rotation.y = Math.atan2(tx, tz);
+  const postMat = new THREE.MeshLambertMaterial({ color: 0x59666a });
+  const roofMat = new THREE.MeshLambertMaterial({ color: 0x8b9897 });
+  const post = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.055, 2.25, 8), postMat);
+  for (const px of [-0.72, 0.72]) {
+    for (const pz of [-1.25, 1.25]) {
+      const p = post.clone();
+      p.position.set(px, 1.12, pz);
+      shelter.add(p);
+    }
+  }
+  const roof = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.12, 3.2), roofMat);
+  roof.position.y = 2.28;
+  shelter.add(roof);
+  const back = new THREE.Mesh(
+    new THREE.BoxGeometry(1.75, 1.8, 0.06),
+    new THREE.MeshLambertMaterial({ color: 0xb8c2c1, transparent: true, opacity: 0.58 }),
+  );
+  back.position.set(0, 1.0, -1.25);
+  shelter.add(back);
+  group.add(shelter);
+}
+
 /**
  * 停留所(ポール・停止線・待ち客)を生成
  * 返り値: { setWaiting(i, n), boardOne(i), stopLatOffset }
@@ -97,9 +123,16 @@ export function buildStops(scene, path, stops) {
       pz + nz * lat + tz * along,
     ];
 
+    // OSMのplatformノードは道路中心線から離れた待機位置を示すため、
+    // ポール・待ち客・屋根はその実座標へ置く。停止線とバスゾーンだけは
+    // ゲームの走行経路上に残す。
+    const platformPoint = Array.isArray(stop.platform) ? stop.platform : null;
+    const [poleX, poleZ] = platformPoint ?? at(-(HW + 0.7));
+    const waitingAt = platformPoint
+      ? (_lat, along = 0) => [platformPoint[0] + tx * along, platformPoint[1] + tz * along]
+      : at;
+
     // ポール(道路端・進行方向左。歩道の有無によらず縁石すぐ外に置く)
-    const poleLat = -(HW + 0.7);
-    const [poleX, poleZ] = at(poleLat);
     const pole = new THREE.Mesh(
       new THREE.CylinderGeometry(0.05, 0.05, 2.4, 8),
       new THREE.MeshLambertMaterial({ color: 0x9a9d9a }),
@@ -127,6 +160,18 @@ export function buildStops(scene, path, stops) {
     sign.position.set(poleX, baseY + 1.75, poleZ);
     sign.rotation.y = Math.atan2(nx, nz); // 道路側を向く
     group.add(sign);
+
+    if (platformPoint) {
+      const platform = new THREE.Mesh(
+        new THREE.PlaneGeometry(2.4, 8.0),
+        new THREE.MeshLambertMaterial({ color: 0xbfc3bd }),
+      );
+      platform.rotation.x = -Math.PI / 2;
+      platform.rotation.z = -Math.atan2(tx, tz);
+      platform.position.set(poleX, baseY + 0.045, poleZ);
+      group.add(platform);
+    }
+    if (stop.shelter) addShelter(group, poleX, poleZ, tx, tz, nx, nz, baseY);
 
     // 停止線(路面・左端車線のみ)
     const lineW = Math.min(HW - 0.4, 3.4);
@@ -156,7 +201,13 @@ export function buildStops(scene, path, stops) {
     zone.position.set(zx, baseY + 0.025, zz);
     group.add(zone);
 
-    waiting.push({ at, HW, baseY, meshes: [], face: Math.atan2(nx, nz) }); // face: 車道向き
+    waiting.push({
+      at: waitingAt,
+      HW: platformPoint ? 0.2 : HW,
+      baseY,
+      meshes: [],
+      face: Math.atan2(nx, nz),
+    }); // face: 車道向き
   });
 
   // ---- 降車客(ドア付近に現れ、バス停から歩いて離れていく) ----

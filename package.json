@@ -18,7 +18,10 @@
     "world:all": "npm run world:download && npm run world:build",
     "validate:plateau-integration": "node tools/validate-plateau-integration.mjs",
     "validate:terrain-fix": "node tools/validate-terrain-fix.mjs",
-    "validate:world-alignment": "node tools/validate-world-alignment.mjs"
+    "validate:world-alignment": "node tools/validate-world-alignment.mjs",
+    "validate:structural-road": "node tools/validate-structural-road-runtime.mjs",
+    "rebuild:route-elevation": "node tools/rebuild-route-elevation-from-grid.mjs",
+    "validate:bridge-water-alignment": "node tools/validate-bridge-water-alignment.mjs"
   },
   "dependencies": {
     "three": "^0.170.0"

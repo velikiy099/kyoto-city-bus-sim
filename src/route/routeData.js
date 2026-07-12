@@ -1,6 +1,5 @@
 import raw from "../data/route18.json";
 import terrainProfile from "../world/declarative/generated/route-elevation.json";
-import roadProfile from "../world/declarative/generated/road-elevation.json";
 import { RoutePath } from "./path.js";
 
 /** 路線データ一式(経路・停留所・橋・速度ゾーン) */
@@ -20,12 +19,16 @@ export const route = {
   extraRoads: raw.extraRoads ?? [], // [{id, points:[[x,z],...], width, mergeS, direction}]
   speedZones: raw.speedZones, // [{from, to, limit(km/h)}]
   roadSections: raw.roadSections ?? [], // [{from, to, lanes}]
+  roadSurfaceAlignments: raw.roadSurfaceAlignments ?? [], // PLATEAU道路面をelevationAt(s)へ合わせる区間
   intersections: raw.intersections ?? [], // [{s, heading, width, lanes}]
   // 右左折交差点 [{s, sIn, sOut, x, z, headingIn, headingOut, angleDeg, crossName, crossWidth, crossLanes}]
   turnIntersections: raw.turnIntersections ?? [],
   signals: raw.signals ?? [], // [{s, name}]
   buildings: raw.buildings ?? [], // [{footprint:[[x,z]], height, color}]
+  osmVegetation: raw.osmVegetation ?? null, // OSM tree nodes, rows, woodland and green areas
+  osmStationRoads: raw.osmStationRoads ?? [], // OSM service/unclassified roads around Nijo Station
   railStructures: raw.railStructures ?? [], // [{kind, s, heading, layer}]
+  elevations: raw.elevations ?? [], // [{name, profile?, from, peak?, to, height, ...}]
   umekojiTrees: raw.umekojiTrees, // 梅小路公園の樹木データ
 };
 
@@ -93,11 +96,34 @@ export function halfWidthAt(s) {
   return Math.max(sec.wL, sec.wR);
 }
 
-/** s 位置の標準走行位置(左端車線の中心)の横偏差(左=負)。一方通行は道路中央 */
-export function laneCenterAt(s) {
-  const sec = sectionAt(s);
+function sectionLaneCenter(sec) {
   if (!sec.lanesB) return 0;
   return -(((sec.wL - 0.55) * (sec.lanesF - 0.5)) / sec.lanesF);
+}
+
+const laneEntryTransitions = (raw.elevations ?? [])
+  .filter((item) => item.laneOverride && Number.isFinite(Number(item.autoEntryFrom)))
+  .map((item) => ({
+    from: Number(item.autoEntryFrom),
+    to: Number(item.from),
+  }));
+
+/**
+ * s 位置の標準走行位置の横偏差(左=負)。
+ *
+ * 大宮跨線橋では外側の地上側道へ入らないよう、大宮木津屋橋交差点から
+ * 中央側の橋上車線へ滑らかに移り、30m南の橋開始点で合流を完了する。
+ */
+export function laneCenterAt(s) {
+  for (const transition of laneEntryTransitions) {
+    if (s < transition.from || s >= transition.to || transition.to <= transition.from) continue;
+    const fromLat = sectionLaneCenter(sectionAt(transition.from - 0.1));
+    const toLat = sectionLaneCenter(sectionAt(transition.to + 0.1));
+    const t = (s - transition.from) / (transition.to - transition.from);
+    const eased = t * t * (3 - 2 * t);
+    return fromLat + (toLat - fromLat) * eased;
+  }
+  return sectionLaneCenter(sectionAt(s));
 }
 
 /** 停留所への寄せ目標(縁石ギャップ約0.45m) */
@@ -145,14 +171,11 @@ export function turnExclusions() {
   return out;
 }
 
-// ---- 跨線橋の標高プロファイル ----
-// raw.elevations([{from, to, height, approachIn, approachOut}])で道路を持ち上げる。
-// デッキ区間は一定高、前後アプローチを smoothstep で擦り付ける。
+// ---- 橋・跨線橋の構造物高さプロファイル ----
+// 通常の橋は一定高デッキ+前後アプローチ、大宮跨線橋はJR在来線との
+// 交点を唯一の最高点とする single-crest プロファイルを使用する。
 // 旧形式フォールバック: roadLayer>0 の在来線アンダーパス区間。
 const APPROACH_LEN = 50;
-// PLATEAU地形との丸め誤差や重なりで路面が部分的に侵食して見えるのを防ぐ
-// ため、道路・車両・交通AIが共有する路面基準を数cmだけ上げる。
-const ROAD_SURFACE_LIFT = 0.05;
 const elevSrc = raw.elevations?.length
   ? raw.elevations
   : (raw.railStructures ?? [])
@@ -160,22 +183,127 @@ const elevSrc = raw.elevations?.length
         (r) => r.kind === "conventional-underpass" && (r.roadLayer ?? 0) > 0,
       )
       .map((r) => ({ from: r.fromS, to: r.toS, height: 4.0 }));
-const elevRamps = elevSrc.map((r) => ({
-  a0: r.from - (r.approachIn ?? APPROACH_LEN),
-  a1: r.from,
-  b0: r.to,
-  b1: r.to + (r.approachOut ?? APPROACH_LEN),
-  h: r.height ?? 4.0,
-}));
+const elevationProfiles = elevSrc.map((r) => {
+  if (r.profile === "flat-deck") {
+    const start = Number(r.from);
+    const end = Number(r.to);
+    const approachIn = Number(r.approachIn ?? APPROACH_LEN);
+    const approachOut = Number(r.approachOut ?? APPROACH_LEN);
+    const a0 = start - approachIn;
+    const b1 = end + approachOut;
+    const h = Number(r.height ?? 1.8);
+    let terrainMax = -Infinity;
+    for (let sampleS = start; sampleS <= end + 1e-6; sampleS += 2) {
+      terrainMax = Math.max(terrainMax, terrainElevationAt(sampleS));
+    }
+    terrainMax = Math.max(
+      terrainMax,
+      terrainElevationAt(start),
+      terrainElevationAt(end),
+    );
+    return {
+      kind: "flat-deck",
+      a0,
+      a1: start,
+      b0: end,
+      b1,
+      deckY: terrainMax + h,
+      startY: terrainElevationAt(a0),
+      endY: terrainElevationAt(b1),
+    };
+  }
+  if (r.profile === "single-crest" || Number.isFinite(Number(r.peak))) {
+    const start = Number(r.from);
+    const peak = Number(r.peak);
+    const end = Number(r.to);
+    const h = Number(r.height ?? 4.0);
+    return {
+      kind: "single-crest",
+      start,
+      peak,
+      end,
+      h,
+      riseStartGrade: Number(r.riseStartGrade ?? 0),
+      // The road alignment is an absolute vertical curve anchored to PLATEAU
+      // ground at both ends. Merely adding a symmetric offset to the raw
+      // terrain made a second terrain rise south of the railway become the
+      // apparent highest point. A delayed power descent keeps the carriageway
+      // above that terrain while retaining the JR crossing as the sole crest.
+      fallPower: Number(r.fallPower ?? 2.4),
+      startY: terrainElevationAt(start),
+      peakY: terrainElevationAt(peak) + h,
+      endY: terrainElevationAt(end),
+    };
+  }
+  return {
+    kind: "deck",
+    a0: r.from - (r.approachIn ?? APPROACH_LEN),
+    a1: r.from,
+    b0: r.to,
+    b1: r.to + (r.approachOut ?? APPROACH_LEN),
+    h: r.height ?? 4.0,
+  };
+});
 const smoothstep = (t) => t * t * (3 - 2 * t);
 
-/** s 位置の路面標高 [m](跨線橋以外は 0) */
-function structuralElevationAt(s) {
-  for (const r of elevRamps) {
-    if (s <= r.a0 || s >= r.b1) continue;
-    if (s < r.a1) return r.h * smoothstep((s - r.a0) / (r.a1 - r.a0));
-    if (s <= r.b0) return r.h;
-    return r.h * smoothstep((r.b1 - s) / (r.b1 - r.b0));
+/**
+ * s 位置の構造物による持ち上げ量 [m]。
+ *
+ * OSM/経路データは橋・高架の判定と構造物高さにだけ使う。
+ * 地表標高は混ぜず、常に terrainElevationAt() の PLATEAU 地表を基準にする。
+ */
+function singleCrestRoadElevation(profile, s) {
+  if (s <= profile.start) return profile.startY;
+  if (s >= profile.end) return profile.endY;
+  if (s <= profile.peak) {
+    const span = Math.max(1e-6, profile.peak - profile.start);
+    const t = (s - profile.start) / span;
+    // Cubic Hermite vertical curve. The explicit north-end grade lets the
+    // carriageway leave PLATEAU ground immediately at the real service-road
+    // split while reaching zero grade at the JR crest. A zero value retains
+    // the former smoothstep behaviour for any future generic profiles.
+    const h00 = 2 * t * t * t - 3 * t * t + 1;
+    const h10 = t * t * t - 2 * t * t + t;
+    const h01 = -2 * t * t * t + 3 * t * t;
+    return h00 * profile.startY
+      + h10 * span * profile.riseStartGrade
+      + h01 * profile.peakY;
+  }
+  const span = Math.max(1e-6, profile.end - profile.peak);
+  const t = (s - profile.peak) / span;
+  return profile.peakY +
+    (profile.endY - profile.peakY) * Math.pow(t, profile.fallPower);
+}
+
+export function structuralElevationAt(s) {
+  for (const profile of elevationProfiles) {
+    if (profile.kind === "flat-deck") {
+      if (s <= profile.a0 || s >= profile.b1) continue;
+      let roadY;
+      if (s < profile.a1) {
+        const t = smoothstep((s - profile.a0) / Math.max(1e-6, profile.a1 - profile.a0));
+        roadY = profile.startY + (profile.deckY - profile.startY) * t;
+      } else if (s <= profile.b0) {
+        roadY = profile.deckY;
+      } else {
+        const t = smoothstep((s - profile.b0) / Math.max(1e-6, profile.b1 - profile.b0));
+        roadY = profile.deckY + (profile.endY - profile.deckY) * t;
+      }
+      return Math.max(0, roadY - terrainElevationAt(s));
+    }
+    if (profile.kind === "single-crest") {
+      if (s < profile.start || s > profile.end) continue;
+      const roadY = singleCrestRoadElevation(profile, s);
+      // PLATEAU is the only ground source. The structure amount is derived
+      // from the absolute road alignment, never from an OSM elevation value.
+      return Math.max(0, roadY - terrainElevationAt(s));
+    }
+    if (s <= profile.a0 || s >= profile.b1) continue;
+    if (s < profile.a1) {
+      return profile.h * smoothstep((s - profile.a0) / (profile.a1 - profile.a0));
+    }
+    if (s <= profile.b0) return profile.h;
+    return profile.h * smoothstep((profile.b1 - s) / (profile.b1 - profile.b0));
   }
   return 0;
 }
@@ -202,20 +330,27 @@ export function terrainElevationAt(s) {
   return profileValue(terrainProfile, s, 0);
 }
 
-/** PLATEAU地形の高低差に、既存の橋・跨線橋プロファイルを加える。 */
+/**
+ * 本線道路の唯一の高さ。
+ *
+ *   路面高さ = PLATEAU 地表標高 + 構造物高さ
+ *
+ * 道路、バス、一般車両、欄干、停留所、信号など、本線道路に付随する
+ * すべての要素はこの値を基準にする。PLATEAU transportation や OSM の
+ * 個別標高値を第二の路面高さとして採用しない。
+ */
 export function elevationAt(s) {
-  return roadElevationAt(s);
+  return terrainElevationAt(s) + structuralElevationAt(s);
 }
 
-/** PLATEAU交通面の道路標高。未取得区間だけ既存の構造プロファイルへ戻す。 */
-export function roadElevationAt(s) {
-  return (
-    profileValue(
-      roadProfile,
-      s,
-      terrainElevationAt(s) + structuralElevationAt(s),
-    ) + ROAD_SURFACE_LIFT
-  );
+/** PLATEAU道路面を本線高さへ追従させる横方向の範囲。 */
+export function roadAttachmentHalfWidthAt(s) {
+  const sec = sectionAt(s);
+  const roadHalf = Math.max(sec.wL, sec.wR);
+  // 橋区間は中央車道の外に地上側道が隣接するため、橋車線の端を越えて
+  // 構造物高さを適用しない。通常区間だけ縁石・歩道分の余白を含める。
+  if (sec.bridge) return roadHalf + 0.05;
+  return roadHalf + (sec.sidewalk === "none" ? 0.75 : 3.4);
 }
 
 /** s 増加方向の路面勾配(dy/ds) */

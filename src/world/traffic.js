@@ -190,6 +190,16 @@ function setRoadPose(vehicle, x, z, heading, yOffset = 0.04) {
   setSurfacePose(vehicle, x, z, heading, roadHeightAtWorld, yOffset);
 }
 
+/** Main-route vehicles already know their route distance `s`.  Use that value
+ * directly instead of finding the nearest sampled road again from x/z.  The
+ * latter is ambiguous where roads run close together or cross at different
+ * levels, and could place a vehicle on the terrain below an elevated road. */
+function setRoutePose(vehicle, s, x, z, heading, dir = 1, yOffset = 0.04) {
+  vehicle.outer.position.set(x, elevationAt(s) + yOffset, z);
+  vehicle.outer.rotation.y = heading;
+  vehicle.inner.rotation.x = -Math.atan(gradeAt(s) * dir);
+}
+
 function setGroundRoadPose(vehicle, x, z, heading, yOffset = 0.04) {
   setSurfacePose(vehicle, x, z, heading, terrainHeightAtWorld, yOffset);
 }
@@ -1161,7 +1171,14 @@ export function buildTraffic(scene, path, events = {}) {
       const [tx, tz] = path.getTangent(c.s);
       const x = px - tz * c.latCur;
       const z = pz + tx * c.latCur;
-      setRoadPose(c, x, z, Math.atan2(tx * c.dir, tz * c.dir));
+      setRoutePose(
+        c,
+        c.s,
+        x,
+        z,
+        Math.atan2(tx * c.dir, tz * c.dir),
+        c.dir,
+      );
       checkBusCollision(c, busPose);
     }
   }

@@ -31,6 +31,8 @@ for (const preservedImport of [
 const routeData = fs.readFileSync(path.join(root, "src/route/routeData.js"), "utf8");
 if (!routeData.includes("terrainProfile")) throw new Error("routeData.js is not connected to PLATEAU terrain profile");
 if (!routeData.includes("structuralElevationAt")) throw new Error("Existing bridge/overpass elevation profile was not preserved");
+if (!routeData.includes("return terrainElevationAt(s) + structuralElevationAt(s);")) throw new Error("Road height is not defined from PLATEAU terrain plus structure height");
+if (routeData.includes("road-elevation.json")) throw new Error("Obsolete second road elevation profile is still imported");
 const config = JSON.parse(fs.readFileSync(path.join(root, "tools/world/world.config.json"), "utf8"));
 if (!config.plateau.downloadUrl.includes("26100_kyoto-shi_city_2025_citygml_1_op.zip")) throw new Error("Unexpected PLATEAU source URL");
 const expectedTypes = ["bldg", "tran", "dem", "brid", "frn", "wtr", "veg"];

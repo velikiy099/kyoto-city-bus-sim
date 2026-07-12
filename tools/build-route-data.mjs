@@ -22,7 +22,9 @@ import { fileURLToPath } from "node:url";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const CACHE = join(ROOT, "tools", "cache");
 const OUT = join(ROOT, "src", "data", "route18.json");
+const OSM_VISUAL_OUT = join(ROOT, "data", "osm", "route18-corridor.json");
 const RELATION_ID = 13027168;
+const SOUTHBOUND_RELATION_ID = 13027169;
 // 久我石原町の終点構内にある南北の parking_aisle(way 1454593592)は、
 // バス停への構内動線であって、終点付近の公道として描かない。
 const TERMINUS_INTERNAL_WAY_IDS = new Set([1454593592]);
@@ -53,6 +55,25 @@ const ROAD_TYPES = [
   "residential",
   "service",
 ];
+const VISUAL_ROAD_TYPES = [
+  "motorway",
+  "motorway_link",
+  "trunk",
+  "trunk_link",
+  "primary",
+  "primary_link",
+  "secondary",
+  "secondary_link",
+  "tertiary",
+  "tertiary_link",
+  "unclassified",
+  "residential",
+  "living_street",
+  "service",
+];
+const OSM_VISUAL_CORRIDOR_METERS = 240;
+const OSM_VEGETATION_CORRIDOR_METERS = 240;
+const NIJO_STATION_BBOX = [35.0094, 135.7394, 35.0134, 135.7438];
 // DETOUR_SOUTHBOUND(小枝橋→城南宮道→赤池→塔ノ森)はハードコード座標のため routeNodesQuery
 // の「経路ノード周辺」取得に乗らず、周辺道路・建物が一切取れない。bboxで直接補う。
 const DETOUR_BBOX = [34.943, 135.735, 34.956, 135.746]; // [south, west, north, east]
@@ -468,6 +489,17 @@ const INTERSECTION_OVERRIDES = [
 
 // 右左折交差点の脚オーバーライド(vertex 近傍の実座標でマッチ)
 const TURN_OVERRIDES = [
+  // 二条駅西口: 駅構内サービス路から御池通へ出る接続点。ここは単なる
+  // 経路の折れではなく、OSM way 987925655 の御池通西側が続くT字接続。
+  // 自動推定では経路のフィレットに隠れて交差道路名が落ちるため、実測方位を
+  // 明示して駅前の西向き腕を描く。
+  {
+    anchor: [35.0114432, 135.7404478],
+    crossName: "御池通",
+    stubInHeadingDeg: -80.3,
+    stubInHw: 4.0,
+    stubInLen: 100,
+  },
   {
     anchor: [34.97938, 135.74931],
     stubInHw: 4.0,
@@ -728,6 +760,125 @@ function project(latlon, origin) {
   ]);
 }
 
+const VISUAL_TAG_KEYS = [
+  "highway",
+  "name",
+  "oneway",
+  "lanes",
+  "lanes:forward",
+  "lanes:backward",
+  "width",
+  "sidewalk",
+  "sidewalk:left",
+  "sidewalk:right",
+  "sidewalk:both",
+  "footway",
+  "surface",
+  "junction",
+];
+
+function visualTags(tags = {}) {
+  return Object.fromEntries(
+    VISUAL_TAG_KEYS
+      .filter((key) => tags[key] != null && tags[key] !== "")
+      .map((key) => [key, tags[key]]),
+  );
+}
+
+function buildOsmVisualSource(ways, origin) {
+  const roads = [];
+  const sidewalks = [];
+  const stationRoads = [];
+  const [stationSouth, stationWest, stationNorth, stationEast] = NIJO_STATION_BBOX;
+  for (const way of ways ?? []) {
+    const tags = way.tags ?? {};
+    const geometry = way.geometry ?? [];
+    const points = rdp(
+      project(geometry.map((point) => [point.lat, point.lon]), origin)
+        .map(([x, z]) => [x * SCALE, z * SCALE]),
+      0.2,
+    ).map(([x, z]) => [+x.toFixed(2), +z.toFixed(2)]);
+    if (points.length < 2) continue;
+    const record = {
+      id: way.id,
+      points,
+      tags: visualTags(tags),
+      source: { provider: "OpenStreetMap", wayId: way.id },
+    };
+    const isSidewalk = tags.footway === "sidewalk" || tags["area:highway"] === "footway";
+    if (isSidewalk) sidewalks.push(record);
+    else if (VISUAL_ROAD_TYPES.includes(tags.highway)) roads.push(record);
+    if (
+      !isSidewalk &&
+      ["service", "unclassified"].includes(tags.highway) &&
+      geometry.some((point) =>
+        point.lat >= stationSouth && point.lat <= stationNorth &&
+        point.lon >= stationWest && point.lon <= stationEast,
+      )
+    ) {
+      stationRoads.push(record);
+    }
+  }
+  return { roads, sidewalks, stationRoads };
+}
+
+const OSM_TREE_AREA_TAGS = new Set(["wood", "forest", "scrub"]);
+const OSM_GREEN_AREA_TAGS = new Set(["grass", "park", "garden"]);
+
+function buildOsmVegetationSource(elements, origin) {
+  const trees = [];
+  const treeRows = [];
+  const treeAreas = [];
+  const greenAreas = [];
+  for (const element of elements ?? []) {
+    const tags = element.tags ?? {};
+    if (element.type === "node" && tags.natural === "tree") {
+      const [x, z] = project([[element.lat, element.lon]], origin)[0];
+      trees.push({
+        id: element.id,
+        point: [+(x * SCALE).toFixed(2), +(z * SCALE).toFixed(2)],
+        species: tags.species ?? tags.genus ?? null,
+      });
+      continue;
+    }
+    if (element.type !== "way" || !element.geometry?.length) continue;
+    let points = project(
+      element.geometry.map((point) => [point.lat, point.lon]),
+      origin,
+    ).map(([x, z]) => [x * SCALE, z * SCALE]);
+    if (points.length < 2) continue;
+    const natural = tags.natural ?? "";
+    const landuse = tags.landuse ?? "";
+    const leisure = tags.leisure ?? "";
+    if (natural === "tree_row") {
+      treeRows.push({
+        id: element.id,
+        points: rdp(points, 0.4).map(([x, z]) => [+x.toFixed(2), +z.toFixed(2)]),
+      });
+    }
+    if (OSM_TREE_AREA_TAGS.has(natural) || landuse === "forest") {
+      // 面wayは始点を終点に繰り返す閉じたリングになっている。
+      // 閉じたままRDPへ渡すと基準線の長さが0になり、全体が2点へ縮退するため、
+      // 簡略化前に終端の重複点だけ外す。レンダラー側で暗黙に閉じる。
+      if (points.length > 2 && dist2(points[0], points.at(-1)) < 0.25)
+        points = points.slice(0, -1);
+      treeAreas.push({
+        id: element.id,
+        kind: natural || landuse,
+        polygon: rdp(points, 0.8).map(([x, z]) => [+x.toFixed(2), +z.toFixed(2)]),
+      });
+    }
+    if (OSM_GREEN_AREA_TAGS.has(landuse) || OSM_GREEN_AREA_TAGS.has(leisure)) {
+      greenAreas.push({
+        id: element.id,
+        kind: landuse || leisure,
+        polygon: rdp(points, 0.8).map(([x, z]) => [+x.toFixed(2), +z.toFixed(2)]),
+      });
+    }
+  }
+  return { trees, treeRows, treeAreas, greenAreas };
+}
+
 // Ramer-Douglas-Peucker 簡略化
 function rdp(pts, eps) {
   if (pts.length < 3) return pts;
@@ -921,18 +1072,6 @@ function filletCorners(
   }
   out.push(pts.at(-1));
   return { pts: out, corners };
-}
-
-// Chaikin 平滑化(開曲線・端点保持)
-function chaikin(pts) {
-  const out = [pts[0]];
-  for (let i = 0; i < pts.length - 1; i++) {
-    const [a, b] = [pts[i], pts[i + 1]];
-    out.push([a[0] * 0.75 + b[0] * 0.25, a[1] * 0.75 + b[1] * 0.25]);
-    out.push([a[0] * 0.25 + b[0] * 0.75, a[1] * 0.25 + b[1] * 0.75]);
-  }
-  out.push(pts.at(-1));
-  return out;
 }
 
 // 等間隔リサンプル
@@ -1198,7 +1337,7 @@ function buildLaneSections(
         }));
     }
   }
-  // 跨線橋区間: 高架デッキは中央の片道2車線のみ(両脇の地上1車線は railways.js が側道として描く)
+  // 跨線橋区間: 中央の片道2車線だけを橋上車線とし、両外側の側道は地表に残す。
   // laneOverride が付いた elevations のみ対象(河川の小さな盛土は車線数を変えない)
   for (const e of elevations) {
     if (!e.laneOverride) continue;
@@ -1881,8 +2020,19 @@ async function buildFromOSM() {
     "route18_nodes.json",
     `[out:json][timeout:90];rel(${RELATION_ID});node(r);out body;`,
   );
+  const southboundRelData = await loadCachedOrFetch(
+    "route18_southbound_osm.json",
+    `[out:json][timeout:90];relation(${SOUTHBOUND_RELATION_ID});out body geom;`,
+  );
+  const southboundNodeData = await loadCachedOrFetch(
+    "route18_southbound_nodes.json",
+    `[out:json][timeout:90];rel(${SOUTHBOUND_RELATION_ID});node(r);out body;`,
+  );
 
   const rel = relData.elements.find((e) => e.type === "relation");
+  const southboundRel = southboundRelData.elements.find(
+    (e) => e.type === "relation" && e.id === SOUTHBOUND_RELATION_ID,
+  );
   // 経路ノード = 北行きリレーションの way + 南行き専用区間(十条〜旧千本通)の way
   const routeNodesQuery = `rel(${RELATION_ID})->.routeRel;
 way(r.routeRel)->.relWays;
@@ -1897,6 +2047,39 @@ ${routeNodesQuery}
   .routeWays;
   ${ROAD_TYPES.map((type) => `way(around.routeNodes:${ROAD_AROUND_RADIUS})["highway"="${type}"];`).join("\n  ")}
   node(around.routeNodes:${ROAD_AROUND_RADIUS})["highway"="traffic_signals"];
+);
+out body geom;`,
+  );
+  const [visualSouth, visualWest, visualNorth, visualEast] = DETOUR_BBOX;
+  const visualRoadPattern = `^(${VISUAL_ROAD_TYPES.join("|")})$`;
+  const visualData = await loadCachedOrFetch(
+    "route18_visual_roads.json",
+    `[out:json][timeout:120];
+${routeNodesQuery}
+(
+  way(around.routeNodes:${OSM_VISUAL_CORRIDOR_METERS})["highway"~"${visualRoadPattern}"];
+  way(around.routeNodes:${OSM_VISUAL_CORRIDOR_METERS})["footway"="sidewalk"];
+  way(around.routeNodes:${OSM_VISUAL_CORRIDOR_METERS})["highway"]["sidewalk"];
+  way["highway"~"${visualRoadPattern}"](${visualSouth},${visualWest},${visualNorth},${visualEast});
+  way["footway"="sidewalk"](${visualSouth},${visualWest},${visualNorth},${visualEast});
+  way["highway"] ["sidewalk"](${visualSouth},${visualWest},${visualNorth},${visualEast});
+);
+out body geom;`,
+  );
+  const [vegetationSouth, vegetationWest, vegetationNorth, vegetationEast] = DETOUR_BBOX;
+  const vegetationData = await loadCachedOrFetch(
+    "route18_vegetation.json",
+    `[out:json][timeout:120];
+${routeNodesQuery}
+(
+  node(around.routeNodes:${OSM_VEGETATION_CORRIDOR_METERS})["natural"="tree"];
+  way(around.routeNodes:${OSM_VEGETATION_CORRIDOR_METERS})["natural"~"^(wood|scrub|tree_row)$"];
+  way(around.routeNodes:${OSM_VEGETATION_CORRIDOR_METERS})["landuse"~"^(forest|grass|orchard|plant_nursery)$"];
+  way(around.routeNodes:${OSM_VEGETATION_CORRIDOR_METERS})["leisure"~"^(park|garden)$"];
+  node["natural"="tree"](${vegetationSouth},${vegetationWest},${vegetationNorth},${vegetationEast});
+  way["natural"~"^(wood|scrub|tree_row)$"](${vegetationSouth},${vegetationWest},${vegetationNorth},${vegetationEast});
+  way["landuse"~"^(forest|grass|orchard|plant_nursery)$"](${vegetationSouth},${vegetationWest},${vegetationNorth},${vegetationEast});
+  way["leisure"~"^(park|garden)$"](${vegetationSouth},${vegetationWest},${vegetationNorth},${vegetationEast});
 );
 out body geom;`,
   );
@@ -1973,10 +2156,14 @@ out geom;`,
       m.role === "" &&
       !TERMINUS_INTERNAL_WAY_IDS.has(m.ref),
   );
-  const platformRefs = rel.members
+  const northboundPlatformRefs = rel.members
     .filter((m) => m.role.startsWith("platform") || m.role.startsWith("stop"))
     .map((m) => m.ref);
+  const southboundPlatformRefs = southboundRel?.members
+    ?.filter((m) => m.role.startsWith("platform") || m.role.startsWith("stop"))
+    .map((m) => m.ref) ?? [];
   const nodeById = new Map(nodeData.elements.map((n) => [n.id, n]));
+  const southboundNodeById = new Map(southboundNodeData.elements.map((n) => [n.id, n]));
 
   console.log("[2/5] 北行き経路を連結 → 南行きへ反転・一方通行区間を差し替え");
   let line = connectWays(ways); // 北行き: 久我石原町 → 二条駅西口
@@ -2010,25 +2197,49 @@ out geom;`,
   );
 
   console.log("[3/5] 停留所を南行き順に整列");
-  // 北行きの platform 順(久我石原町→二条駅西口)を逆転し、南行き専用停を挿入
-  const osmStops = platformRefs
-    .map((ref) => nodeById.get(ref))
+  // 南行きリレーションのplatform順は二条駅西口→久我石原町なので、
+  // 反対車線の北行き停留所を反転して流用せず、南行き側を直接使う。
+  const useSouthboundStops = southboundPlatformRefs.length > 0;
+  const stopRefs = useSouthboundStops ? southboundPlatformRefs : northboundPlatformRefs;
+  const stopNodes = useSouthboundStops ? southboundNodeById : nodeById;
+  const osmStops = stopRefs
+    .map((ref) => stopNodes.get(ref))
     .filter(Boolean)
     .map((n) => ({
       name: NAME_ALIAS[n.tags?.name] ?? n.tags?.name,
       latlon: [n.lat, n.lon],
+      tags: n.tags ?? {},
+      osmId: n.id,
     }))
-    .reverse();
-  for (const [name, latlon] of Object.entries(EXTRA_STOPS))
-    osmStops.push({ name, latlon });
+    .filter((stop) => stop.name);
+  if (!useSouthboundStops) {
+    osmStops.reverse();
+    for (const [name, latlon] of Object.entries(EXTRA_STOPS))
+      osmStops.push({ name, latlon });
+  }
   for (const st of osmStops) {
-    if (SOUTHBOUND_STOP_OVERRIDES[st.name])
+    // 旧手動アンカーは北行きフォールバックと、南行きリレーションに
+    // 含まれない通過停留所の位置にだけ使う。
+    if ((!useSouthboundStops || st.name === "上鳥羽村山町") && SOUTHBOUND_STOP_OVERRIDES[st.name])
       st.latlon = SOUTHBOUND_STOP_OVERRIDES[st.name];
+  }
+  if (useSouthboundStops && !osmStops.some((stop) => stop.name === "上鳥羽村山町")) {
+    osmStops.push({
+      name: "上鳥羽村山町",
+      latlon: SOUTHBOUND_STOP_OVERRIDES["上鳥羽村山町"],
+      tags: {},
+      osmId: null,
+    });
   }
   const stopsLL = STOP_ORDER.map((name) => {
     const hit = osmStops.find((s) => s.name === name);
     if (!hit) throw new Error(`停留所がOSMデータに見つからない: ${name}`);
-    return { name, latlon: hit.latlon };
+    return {
+      name,
+      latlon: hit.latlon,
+      tags: hit.tags ?? {},
+      osmId: hit.osmId,
+    };
   });
 
   // OSM ID(建物relationは合成ID)で重複排除しつつ、detour bbox 由来の道路・建物・信号をマージ
@@ -2044,6 +2255,11 @@ out geom;`,
       (e) => e.type === "way" && isMajorRoad(e.tags) && e.geometry?.length > 1,
     ),
   ]);
+  const visualWays = byId(
+    visualData.elements.filter(
+      (e) => e.type === "way" && e.geometry?.length > 1,
+    ),
+  );
   const signalNodes = byId([
     ...roadData.elements.filter(
       (e) => e.type === "node" && e.tags?.highway === "traffic_signals",
@@ -2070,13 +2286,18 @@ out geom;`,
     line,
     stopsLL,
     roads,
+    visualWays,
+    southboundPlatformRefs,
+    southboundNodeById,
+    hasSouthboundRelation: Boolean(southboundRel),
+    vegetationElements: vegetationData.elements,
     signalNodes,
     buildings,
     railways,
     riverWays,
     extraRoadWays,
     umekojiTreesData,
-    source: `OpenStreetMap relation ${RELATION_ID} © OpenStreetMap contributors (ODbL)`,
+    source: `OpenStreetMap relations ${RELATION_ID} (route geometry) and ${SOUTHBOUND_RELATION_ID} (southbound stops) © OpenStreetMap contributors (ODbL)`,
   };
 }
 
@@ -2121,6 +2342,11 @@ function buildFallback() {
     line,
     stopsLL,
     roads: [],
+    visualWays: [],
+    southboundPlatformRefs: [],
+    southboundNodeById: new Map(),
+    hasSouthboundRelation: false,
+    vegetationElements: [],
     signalNodes: [],
     buildings: [],
     railways: [],
@@ -2137,6 +2363,8 @@ async function main() {
     line,
     stopsLL,
     roads,
+    visualWays,
+    vegetationElements,
     signalNodes,
     buildings: buildingWays,
     railways,
@@ -2147,12 +2375,32 @@ async function main() {
   } = fallback ? buildFallback() : await buildFromOSM();
 
   console.log(
-    "[4/5] 座標変換: 投影 → スケール → フィレット → 平滑化 → リサンプル",
+    "[4/5] 座標変換: 投影 → スケール → フィレット → リサンプル",
   );
   const origin = [
     line.reduce((a, p) => a + p[0], 0) / line.length,
     line.reduce((a, p) => a + p[1], 0) / line.length,
   ];
+  const osmVisual = buildOsmVisualSource(visualWays, origin);
+  const osmVegetation = buildOsmVegetationSource(vegetationElements, origin);
+  mkdirSync(dirname(OSM_VISUAL_OUT), { recursive: true });
+  writeFileSync(
+    OSM_VISUAL_OUT,
+    JSON.stringify({
+      version: 1,
+      generatedAt: new Date().toISOString(),
+      source: {
+        provider: "OpenStreetMap",
+        relationId: RELATION_ID,
+        license: "ODbL",
+        corridorMeters: OSM_VISUAL_CORRIDOR_METERS,
+      },
+      roads: osmVisual.roads,
+      sidewalks: osmVisual.sidewalks,
+      stationRoads: osmVisual.stationRoads,
+      vegetation: osmVegetation,
+    }),
+  );
   let path = project(line, origin).map(([x, z]) => [x * SCALE, z * SCALE]);
   path = rdp(path, 1.2);
   // 始端に助走 18m・終端に 30m を直線延長(始発でバスを停留所手前に置く / 終点で停まり切る)
@@ -2170,8 +2418,9 @@ async function main() {
     TURN_FILLET_RADIUS,
   );
   const turnCorners = filleted.corners;
-  path = chaikin(filleted.pts);
-  path = resample(path, RESAMPLE_STEP);
+  // OSM のway中心線から離れる全体平滑化は行わない。交差点だけは
+  // filletCorners() の実走用円弧で処理し、それ以外は OSM の実形状を保つ。
+  path = resample(filleted.pts, RESAMPLE_STEP);
   path = path.map(([x, z]) => [+x.toFixed(2), +z.toFixed(2)]);
 
   const cumLen = [0];
@@ -2207,11 +2456,19 @@ async function main() {
 
   console.log("[5/5] 停留所・橋・速度ゾーンを弧長に射影");
   let cursor = 0;
-  const stops = stopsLL.map(({ name, latlon }) => {
+  const stops = stopsLL.map(({ name, latlon, tags, osmId }) => {
     const pt = project([latlon], origin)[0].map((v) => v * SCALE);
     const { s, dist } = projectToPath(path, cumLen, pt, cursor);
     cursor = s + 10; // 次の停留所はこの先(単調性)
-    return { name, s: +s.toFixed(1), projDist: +dist.toFixed(1) };
+    return {
+      name,
+      s: +s.toFixed(1),
+      projDist: +dist.toFixed(1),
+      platform: pt.map((v) => +v.toFixed(2)),
+      ...(osmId != null ? { osmId } : {}),
+      ...(tags?.shelter === "yes" ? { shelter: true } : {}),
+      ...(tags?.bench === "yes" ? { bench: true } : {}),
+    };
   });
   const terminalStopLL = stopsLL.find((st) => st.name === "久我石原町");
   const terminalStopPt = terminalStopLL
@@ -2241,43 +2498,60 @@ async function main() {
     stopS("東寺東門前"),
   );
 
-  // 大宮跨線橋: JR在来線を跨ぎ、八条通も高架のまま跨いで東寺道交差点の手前約100mで着地。
-  // 高架は中央の片道2車線のみ(roadSections を橋区間だけ F2/B2 に上書き)。両脇の1車線は
-  // 地上の側道として railways.js が描画する。
+  // 大宮跨線橋: 大宮木津屋橋交差点の約30m南にある側道分岐から
+  // 中央4車線だけが上り始め、JR在来線との交点を最高点として、
+  // 東寺道交差点の手前約100mまで緩やかに下る。
+  // 両外側の側道はPLATEAU地表面のまま残す。
   const elevations = [];
   const railJR = railStructures.find(
     (r) => r.kind === "conventional-underpass",
   );
   if (railJR) {
-    // 東寺前交差点(東寺道)の手前約100mで完全に地上(高さ0)に降りる。八条通はデッキの下をくぐる。
-    // elevationAt() の "to" は下り勾配の開始点(まだ全高)なので、接地点(groundS)から
-    // approachOut を差し引いた点を渡す。
-    const APPROACH_IN = 50,
-      APPROACH_OUT = 90;
+    const omiyaKizuyabashi = intersections.find(
+      (ix) => ix.name === "木津屋橋通" && ix.s < railJR.s,
+    );
+    if (!omiyaKizuyabashi) {
+      throw new Error("大宮木津屋橋交差点が見つからないため、大宮跨線橋の開始点を決定できません");
+    }
     const tojimae = intersections.find(
       (ix) => ix.name === "東寺道" && ix.s > railJR.s,
     );
-    const from = railJR.fromS;
-    const groundS = tojimae ? +(tojimae.s - 100).toFixed(1) : railJR.toS + 90;
-    const to = +(groundS - APPROACH_OUT).toFixed(1);
+    // 実際の道路形状に合わせ、交差点中心から30m南を側道分岐・上り坂開始点とする。
+    // 無名OSM道路との交点(s=3446.3)は側道分岐ではないため、開始点には使わない。
+    const from = +(omiyaKizuyabashi.s + 30).toFixed(1);
+    const peak = +railJR.s.toFixed(1);
+    const to = tojimae ? +(tojimae.s - 100).toFixed(1) : +(railJR.toS + 262.2).toFixed(1);
     Object.assign(railJR, {
       bridgeFromS: from,
       bridgeToS: to,
-      approachIn: APPROACH_IN,
-      approachOut: APPROACH_OUT,
+      approachIn: 0,
+      approachOut: 0,
       deckHalf: 7.2,
     });
     elevations.push({
       name: "大宮跨線橋",
+      profile: "single-crest",
       from,
+      peak,
       to,
       height: 4,
-      approachIn: APPROACH_IN,
-      approachOut: APPROACH_OUT,
+      // 北側はPLATEAU地表の局所的な盛り上がりを越えつつ、JR交点で
+      // 勾配0になる単調なHermite曲線にする。3.5%は都市部跨線橋として
+      // 緩やかな範囲で、開始直後から路面が確実に地表より上へ離れる。
+      riseStartGrade: 0.035,
+      // South of the JR crossing the PLATEAU ground rises again. Use an
+      // absolute vertical alignment with a delayed power descent so the JR
+      // crossing remains the sole crest while the road stays above terrain.
+      fallPower: 3,
+      approachIn: 0,
+      approachOut: 0,
       laneOverride: 1,
+      // 自動運転は大宮木津屋橋交差点から中央側へ寄せ始め、
+      // 30m南の側道分岐・橋開始点で橋上車線への合流を完了する。
+      autoEntryFrom: +omiyaKizuyabashi.s.toFixed(1),
     });
     for (const ix of intersections) {
-      if (ix.s > from - 20 && ix.s < groundS + 20) ix.under = 1; // 八条通など高架下の交差道路は地上のまま
+      if (ix.s > from - 20 && ix.s < to + 20) ix.under = 1; // 八条通など高架下の交差道路は地上のまま
     }
     // 東寺東門前停留所: 東寺道交差点の約20m先(南)に実際の停留所がある
     const tojimonStop = stops.find((st) => st.name === "東寺東門前");
@@ -2315,34 +2589,21 @@ async function main() {
     const line = riverLines.get(name);
     return line && { bridgeName: name, river, ...line };
   }).filter(Boolean);
-  const koedaBridge = bridges.find((b) => b.name === "小枝橋(鴨川)");
-  if (koedaBridge) {
-    elevations.push({
-      name: "小枝橋(river valley)",
-      from: koedaBridge.s - 12,
-      to: koedaBridge.s + 12,
-      height: 2.6,
-      approachIn: 26,
-      approachOut: 26,
-    });
-  }
-  // 他の河川橋(京川橋・天神橋・久我橋)にも控えめな盛土を付け、地面側の掘り下げ(buildGround の
-  // 川沿いディップ)との間に不自然な段差・宙に浮いた橋桁が生じないようにする。
-  // 盛土(路面が上がっている区間)の半幅は実際の川幅(riverW。nature.js/buildGround と同じ
-  // 算出式)に合わせて伸縮させる — 以前は全橋一律 ±9m だったため、桂川(久我橋、川幅
-  // 約290m)のような広い川では中央のごく一部しか路面が上がらず、橋が実際よりはるかに
-  // 短く・水面の大半で路面が地面レベルのまま川を跨いでいるように見えていた。
+  // 河川橋は、実橋長の始点から終点まで一つの絶対標高で平坦にする。
+  // PLATEAU地表は routeData.js 側で参照し、橋面標高は区間内の地表最高点に
+  // 必要な構造物高さを加えて決定する。これにより始点・終点を含む橋面全体が
+  // 同じ高さになり、道路・自車・一般車・欄干が同一の elevationAt(s) を使える。
   for (const b of bridges) {
-    if (b.name === "小枝橋(鴨川)") continue;
-    const riverW = Math.max(18, b.length * 0.85);
-    const halfCore = Math.max(9, riverW / 2);
+    const halfLength = b.length / 2;
+    const isKoeda = b.name === "小枝橋(鴨川)";
     elevations.push({
-      name: `${b.name}(river valley)`,
-      from: b.s - halfCore,
-      to: b.s + halfCore,
-      height: 1.8,
-      approachIn: 22,
-      approachOut: 22,
+      name: `${b.name}(flat deck)`,
+      profile: "flat-deck",
+      from: +(b.s - halfLength).toFixed(2),
+      to: +(b.s + halfLength).toFixed(2),
+      height: isKoeda ? 2.6 : 1.8,
+      approachIn: isKoeda ? 26 : 22,
+      approachOut: isKoeda ? 26 : 22,
     });
   }
 
@@ -2548,6 +2809,22 @@ async function main() {
     }
   }
 
+  // 小枝橋東詰から城南宮道バス停までは、現在の迂回経路へ更新した後も
+  // PLATEAU道路面と route-elevation の参照経路がずれないよう、元ポリゴンの
+  // 本線車道部分を elevationAt(s) に合わせて置換する。追加の道路板は生成しない。
+  const roadSurfaceAlignments = [];
+  const koedaEastTurn = turnIntersections.find(
+    (turn) => turn.crossName === "千本通" && turn.s > 8200 && turn.s < 8400,
+  );
+  const jonanguStop = stops.find((stop) => stop.name === "城南宮道");
+  if (koedaEastTurn && jonanguStop) {
+    roadSurfaceAlignments.push({
+      name: "小枝橋東詰〜城南宮道",
+      from: +koedaEastTurn.s.toFixed(1),
+      to: +(jonanguStop.s + 8).toFixed(1),
+    });
+  }
+
   const out = {
     routeName: "18号系統",
     operator: "京都市交通局(横大路営業所)",
@@ -2562,12 +2839,20 @@ async function main() {
     terminalStop: terminalStopPt
       ? { x: +terminalStopPt[0].toFixed(2), z: +terminalStopPt[1].toFixed(2) }
       : null,
-    stops: stops.map(({ name, s }) => ({ name, s })),
+    stops: stops.map(({ name, s, platform, osmId, shelter, bench }) => ({
+      name,
+      s,
+      platform,
+      ...(osmId != null ? { osmId } : {}),
+      ...(shelter ? { shelter: true } : {}),
+      ...(bench ? { bench: true } : {}),
+    })),
     extraRoads,
     bridges,
     rivers,
     speedZones,
     roadSections,
+    roadSurfaceAlignments,
     intersections: intersections.map(({ dist, ...ix }) => ix),
     turnIntersections,
     signals: signalsOut,
@@ -2575,6 +2860,8 @@ async function main() {
     railStructures,
     elevations,
     umekojiTrees,
+    osmVegetation,
+    osmStationRoads: osmVisual.stationRoads,
   };
   writeFileSync(OUT, JSON.stringify(out));
 
