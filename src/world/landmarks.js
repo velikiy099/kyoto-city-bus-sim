@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
-import { route, rightWidthAt, leftWidthAt } from "../route/routeData.js";
+import { route, rightWidthAt } from "../route/routeData.js";
 import { lambertize } from "../util/lambertize.js";
 import { snapHierarchyToTerrain } from "./declarative/continuousTerrain.js";
 
@@ -265,117 +265,6 @@ function makeLabelTexture(text) {
 }
 
 /**
- * 箱型工場・倉庫を1棟配置(共通ヘルパー)。社名等の表示はしない。
- * lat は「道路端(実際の舗装+セットバック)から建物中心までの距離」として、道路半幅
- * (leftWidthAt/rightWidthAt)+ setback + 建物自身の半幅(f.w/2)から算出する
- * (単純な固定オフセットだと大きな建物ほど道路側へ食い込むため、必ず建物半幅を足す)。
- */
-function buildLabeledFactory(scene, path, f) {
-  const roadHW = f.side < 0 ? leftWidthAt(f.s) : rightWidthAt(f.s);
-  const lat = f.side * (roadHW + (f.setback ?? 8) + f.w / 2);
-  const a = anchor(path, f.s, lat);
-  const g = new THREE.Group();
-  g.position.set(a.x, 0, a.z);
-  g.rotation.y = a.ry;
-  const body = new THREE.Mesh(
-    new THREE.BoxGeometry(f.w, f.h, f.d),
-    mat(f.color),
-  );
-  body.position.y = f.h / 2;
-  g.add(body);
-  const roof = new THREE.Mesh(
-    new THREE.BoxGeometry(f.w + 1.2, 0.6, f.d + 1.2),
-    mat(0x5d6268),
-  );
-  roof.position.y = f.h + 0.3;
-  g.add(roof);
-  scene.add(g);
-  return { x: a.x, z: a.z, r: Math.max(f.w, f.d) / 2 + 8 };
-}
-
-/** 太陽の家・有本機業は手動箱を置かず、OSM建物フットプリントだけを表示する。 */
-function buildRiverIndustries() {
-  return [];
-}
-
-/**
- * 菱妻神社前〜久我石原町間の工場・倉庫群(玉村運輸・松下精機・原田工業・山幸製作所・
- * 京セラ京都伏見事業所)。京セラは終点(久我石原町バス停)の東隣の大規模な敷地として、
- * 終点直前に配置する。
- */
-function buildKugaIndustries(scene, path) {
-  const stopSByName = (name) => route.stops.find((st) => st.name === name)?.s;
-  const s0 = stopSByName("菱妻神社前");
-  const s1 = stopSByName("久我石原町");
-  if (s0 == null || s1 == null) return [];
-  const specs = [
-    {
-      name: "玉村運輸",
-      s: s0 + 55,
-      side: 1,
-      setback: 6,
-      w: 30,
-      d: 20,
-      h: 6.5,
-      color: 0xc9c2b0,
-    },
-    {
-      name: "松下精機",
-      s: s0 + 130,
-      side: -1,
-      setback: 6,
-      w: 26,
-      d: 22,
-      h: 7.5,
-      color: 0xb9bdb9,
-    },
-    {
-      name: "原田工業",
-      s: s0 + 215,
-      side: 1,
-      setback: 6,
-      w: 32,
-      d: 22,
-      h: 7,
-      color: 0xaeb4a8,
-    },
-    {
-      name: "山幸製作所",
-      s: s0 + 290,
-      side: -1,
-      setback: 6,
-      w: 24,
-      d: 20,
-      h: 6.5,
-      color: 0xc4bca6,
-    },
-    // 終点(久我石原町)敷地の道路反対側(西側)の倉庫群。実地図では PISORICO久我(手前)と
-    // クレアジオーネ伏見(奥)が連なる大型倉庫として並ぶ。
-    {
-      name: "PISORICO久我",
-      s: s1 - 95,
-      side: 1,
-      setback: 6,
-      w: 60,
-      d: 34,
-      h: 8,
-      color: 0xa9adae,
-    },
-    {
-      name: "クレアジオーネ伏見",
-      s: s1 - 45,
-      side: 1,
-      setback: 6,
-      w: 26,
-      d: 20,
-      h: 7,
-      color: 0xb8b2a0,
-    },
-  ];
-  return specs.map((f) => buildLabeledFactory(scene, path, f));
-}
-
-/**
  * 久我石原町バス終点(京セラ京都伏見事業所の西隣の敷地内)。実際の操車場と同じく、
  * 敷地は道路(経路)の向きに関係なく世界座標の南北・東西軸に揃えて置く(北側を出入口として
  * 開放した形)。府道202は敷地の北側を通り、敷地内に南へ伸びる公道は置かない。南東の角に
@@ -593,8 +482,7 @@ export function buildLandmarks(scene, path) {
     ...buildToji(scene, path),
     buildAquarium(scene, path),
     buildKyotoTower(scene, path),
-    ...buildRiverIndustries(scene, path),
-    ...buildKugaIndustries(scene, path),
+    // 桂川西岸の手動建物は置かない。久我石原町の終点転回場だけは残す。
     buildTerminus(scene, path),
     buildMibuDepot(scene, path),
   ];

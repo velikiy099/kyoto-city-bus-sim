@@ -450,22 +450,6 @@ if (towerS != null) {
   }
 }
 
-const kugaFrom = stopSByName("菱妻神社前");
-const kugaTo = stopSByName("久我石原町");
-if (kugaFrom != null && kugaTo != null) {
-  const factories = [
-    ["玉村運輸", kugaFrom + 55, 1, 30, 20, 6],
-    ["松下精機", kugaFrom + 130, -1, 26, 22, 6],
-    ["原田工業", kugaFrom + 215, 1, 32, 22, 6],
-    ["山幸製作所", kugaFrom + 290, -1, 24, 20, 6],
-    ["PISORICO久我", kugaTo - 95, 1, 60, 34, 6],
-    ["クレアジオーネ伏見", kugaTo - 45, 1, 26, 20, 6],
-  ];
-  for (const [name, s, side, widthValue, depth, setback] of factories) {
-    customObject(`custom-${name}`, routeRect(s, side * (roadHalfWidth(s, side) + setback + widthValue / 2), widthValue, depth), name);
-  }
-}
-
 const mibuS = stopSByName("みぶ操車場前");
 if (mibuS != null) customObject("mibu-depot", routeRect(mibuS, roadHalfWidth(mibuS, 1) + 33, 50, 56), "壬生操車場", "#9caeb5");
 const terminal = network.stops?.find((stop) => stop.name === "久我石原町")?.pose ?? raw.terminalStop;
