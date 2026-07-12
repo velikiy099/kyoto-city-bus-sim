@@ -40,7 +40,7 @@ import {
 import { buildLandmarks } from "./world/landmarks.js";
 import { buildNature } from "./world/nature.js";
 import { buildRailways } from "./world/railways.js";
-import { buildTraffic } from "./world/traffic.js";
+import { buildTraffic } from "./world/traffic/index.js";
 import { buildWorldScenery } from "./world/declarative/buildWorldScenery.js";
 import * as sfx from "./audio/sfx.js";
 import {

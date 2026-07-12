@@ -213,7 +213,10 @@ const routeData = fs.readFileSync("src/route/routeData.js", "utf8");
 const debug = fs.readFileSync("src/debug.js", "utf8");
 const scenery = fs.readFileSync("src/world/declarative/buildWorldScenery.js", "utf8");
 const landmarks = fs.readFileSync("src/world/landmarks.js", "utf8");
-const traffic = fs.readFileSync("src/world/traffic.js", "utf8");
+const traffic = [
+  fs.readFileSync("src/world/traffic/index.js", "utf8"),
+  fs.readFileSync("src/world/traffic/graphTraffic.js", "utf8"),
+].join("\n");
 const plateauRenderer = fs.readFileSync("src/world/declarative/PlateauWorldRenderer.js", "utf8");
 assert(routeData.includes('import drivingNetwork from "../data/generated/driving-network.json"'), "Runtime does not load the compiled network");
 assert(!routeData.includes("KOEDA_"), "Bridge-specific runtime coordinates remain");
@@ -221,7 +224,7 @@ assert(routeData.includes("export function laneCenterAt() { return 0; }"), "Runt
 assert(!debug.includes("laneCenterAt"), "Autopilot still imports a runtime lane model");
 assert(scenery.includes('throw new Error("PLATEAU building layer is empty; OSM building fallback is intentionally disabled.")'), "Station buildings may fall back to non-PLATEAU geometry");
 assert(!landmarks.includes("buildNijoStation"), "Hand-authored Nijo Station still masks the PLATEAU building");
-assert(traffic.includes("events.allowSyntheticIntersectionTraffic === true"), "Synthetic cross-street traffic is not opt-in");
+assert(!fs.existsSync(["src", "world", "traffic.js"].join("/")) && !traffic.includes("allowSyntheticIntersectionTraffic"), "Legacy synthetic traffic implementation should be removed");
 assert(plateauRenderer.includes("insideMarkingGap"), "Lane markings are still drawn through intersection boxes");
 console.log(JSON.stringify({
   status: "driving-network-ok",

@@ -24,7 +24,7 @@ if (!main.includes('import { buildWorldScenery } from "./world/declarative/build
 if (!main.includes("void buildWorldScenery(scene, path, route")) throw new Error("main.js does not start declarative world initialization");
 for (const preservedImport of [
   './bus/busPhysics.js', './game/stops.js', './game/passengers.js', './game/scoring.js',
-  './game/gameState.js', './world/traffic.js', './audio/sfx.js', './audio/announcements.js',
+  './game/gameState.js', './world/traffic/index.js', './audio/sfx.js', './audio/announcements.js',
 ]) {
   if (!main.includes(preservedImport)) throw new Error(`Existing gameplay import disappeared: ${preservedImport}`);
 }
