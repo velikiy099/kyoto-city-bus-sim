@@ -66,6 +66,7 @@ export const CFG = {
       maxDist: 1400, // 自車からこれ超の端点では発生しない [m]
       despawnRadius: 1600, // 自車からこれ以遠に離れた車は消滅 [m]
       initialFraction: 0.8, // 起動時に maxVehicles×この割合まで初期配置
+      refillRatePerSecond: 3, // 経路終端で減った初期交通量を中距離帯へ補充 [台/s]
       // 端点1レーンあたりの流入量 [台/分]
       baseRatePerMinute: {
         motorway: 6,
@@ -115,6 +116,7 @@ export const CFG = {
     perfectWindow: 1.0, // 正着判定 [m]
     curbWindow: 0.8, // 縁石からの許容ギャップ [m]
     departEarlyGrace: 5, // 早発猶予 [s]
+    autoDoorCloseLead: 5, // 自動運転で定時前到着したときのドア閉開始 [s]
     // ダイヤは timetable.js の固定時刻表(9:56 発〜10:44 着)を使用
   },
   // --- スコア ---

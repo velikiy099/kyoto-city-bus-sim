@@ -6,6 +6,7 @@ import { CFG } from "../../config.js";
  */
 export function createSpawner(runtime) {
   const spawnConfig = CFG.traffic.spawn;
+  let refillAccumulator = 0;
   const baseRates = spawnConfig.baseRatePerMinute ?? {};
   const configuredDefaultMultiplier = Number(CFG.traffic.defaultRegionMultiplier);
   const defaultRegionMultiplier = Number.isFinite(configuredDefaultMultiplier)
@@ -28,11 +29,14 @@ export function createSpawner(runtime) {
     .filter((point) => point.path);
 
   const eligibleEdges = [...(runtime.paths?.values() ?? [])]
-    .filter((path) => path.edge && path.length >= 16)
+    .filter((path) => path.edge
+      && path.length >= 16
+      && (runtime.continuingEdgeIds?.has(path.edge.id) ?? true))
     .map((path) => ({
       path,
       weight: edgeRatePerMinute(path.edge) * path.length,
     }));
+  const eligibleEdgeIds = new Set(eligibleEdges.map(({ path }) => path.edge.id));
 
   const horizontalDistance = (point, busPoint) => {
     if (!point || !Array.isArray(busPoint)) return Infinity;
@@ -50,6 +54,20 @@ export function createSpawner(runtime) {
       if (cursor < 0) return item.path;
     }
     return eligibleEdges.at(-1)?.path ?? null;
+  };
+
+  const trySpawnInterior = (busPoint, tryActivate, minDistance, maxDistance) => {
+    for (let attempt = 0; attempt < 12; attempt++) {
+      const path = chooseInitialEdge();
+      if (!path) return false;
+      const distance = 8 + Math.random() * Math.max(0, path.length - 16);
+      const pose = runtime.sample(path, distance);
+      if (!pose) continue;
+      const busDistance = horizontalDistance([pose.x, 0, pose.z], busPoint);
+      if (!(busDistance > minDistance && busDistance < maxDistance)) continue;
+      if (tryActivate?.(path, distance, 4 + Math.random() * 3)) return true;
+    }
+    return false;
   };
 
   const update = (dt, busPoint, activeCount, tryActivate) => {
@@ -70,6 +88,38 @@ export function createSpawner(runtime) {
       if (!tryActivate?.(point.path, 3, initialSpeed)) continue;
       point.accumulator -= 1;
       currentActive++;
+    }
+
+    // Safe connector filtering deliberately shortens some graph routes. Keep
+    // the configured initial traffic floor filled without restoring unsafe
+    // movements. Refill in the fogged middle distance so replacements do not
+    // pop into existence immediately beside the bus; boundary inflow may
+    // still raise the active count from this floor to maxVehicles.
+    const fraction = Number(spawnConfig.initialFraction);
+    const target = Math.min(
+      CFG.traffic.maxVehicles,
+      Math.max(0, Math.floor(CFG.traffic.maxVehicles * (Number.isFinite(fraction) ? fraction : 0))),
+    );
+    const configuredRate = Number(spawnConfig.refillRatePerSecond);
+    const refillRate = Number.isFinite(configuredRate) ? Math.max(0, configuredRate) : 3;
+    if (currentActive < target && refillRate > 0) {
+      refillAccumulator = Math.min(4, refillAccumulator + refillRate * delta);
+      const configuredCull = Number(CFG.traffic.lod?.cullRadius);
+      const cullRadius = Number.isFinite(configuredCull) ? configuredCull : spawnConfig.maxDist;
+      let refillMin = Math.max(spawnConfig.minDist, cullRadius * 0.35);
+      let refillMax = Math.min(spawnConfig.maxDist, cullRadius * 0.95);
+      if (!(refillMax > refillMin)) {
+        refillMin = spawnConfig.minDist;
+        refillMax = spawnConfig.maxDist;
+      }
+      let attempts = 0;
+      while (refillAccumulator >= 1 && currentActive < target && attempts++ < 4) {
+        if (!trySpawnInterior(busPoint, tryActivate, refillMin, refillMax)) break;
+        refillAccumulator -= 1;
+        currentActive++;
+      }
+    } else if (currentActive >= target) {
+      refillAccumulator = 0;
     }
   };
 
@@ -104,6 +154,7 @@ export function createSpawner(runtime) {
 
   return {
     spawnPoints,
+    eligibleEdgeIds,
     seedInitial,
     update,
   };

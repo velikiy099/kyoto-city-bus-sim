@@ -15,7 +15,16 @@ export const DOOR = {
  * events(任意): onDoorOpen/onDoorClose/onDepart(i)/onArrive(i)/onFare/onBuzzer/onComplete
  */
 export function createOps(ctx) {
-  const { bus, route, state, scoring, pax, stopsView, events = {} } = ctx;
+  const {
+    bus,
+    route,
+    state,
+    scoring,
+    pax,
+    stopsView,
+    events = {},
+    isAutoDrive = () => false,
+  } = ctx;
   const O = CFG.ops;
   const S = CFG.score;
 
@@ -71,6 +80,13 @@ export function createOps(ctx) {
     waitingDepart = true;
     stoppedIndex = state.nextStopIndex;
     state.buzzer = false;
+  }
+
+  function closeDoor() {
+    state.doorState = DOOR.CLOSING;
+    doorT = 0;
+    setDoorStatus(null);
+    events.onDoorClose?.();
   }
 
   function depart(early) {
@@ -226,12 +242,18 @@ export function createOps(ctx) {
             `降車 のこり${b.alightLeft}人 ・ 乗車 のこり${b.boardLeft}人<br>運賃箱 ¥${state.fareTotal.toLocaleString()}`,
           );
           if (!busy) {
-            prompt = "E : ドア閉";
-            if (ePressed) {
-              state.doorState = DOOR.CLOSING;
-              doorT = 0;
-              setDoorStatus(null);
-              events.onDoorClose?.();
+            const sched = schedule[i];
+            const untilDepart = sched ? sched.time - state.clock : 0;
+            const holdForAutoDeparture =
+              isAutoDrive() &&
+              sched?.checkpoint &&
+              untilDepart > O.autoDoorCloseLead;
+            if (holdForAutoDeparture) {
+              prompt = `自動運転: 発車時刻 ${fmtTime(sched.time)} までドア開放 (あと${Math.ceil(untilDepart - O.autoDoorCloseLead)}秒)`;
+            } else if (isAutoDrive() || ePressed) {
+              closeDoor();
+            } else {
+              prompt = "E : ドア閉";
             }
           }
           break;

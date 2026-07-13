@@ -168,6 +168,7 @@ const ops = createOps({
       }, 1200);
     },
   },
+  isAutoDrive: () => dbg.autoDrive,
 });
 
 function placeBusAtS(s) {

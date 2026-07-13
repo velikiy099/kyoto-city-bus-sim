@@ -16,8 +16,8 @@ function captureAndSnap(scene, build, heightAtWorld) {
 /**
  * Build the PLATEAU-authoritative scenery.
  *
- * OSM-derived data is consumed as route/network metadata, structural-height
- * metadata, and clipped road-marking/sidewalk overlays. Generic OSM building/ground
+ * OSM-derived data is consumed as route/network structure metadata and clipped
+ * road-marking/sidewalk overlays. Generic OSM building/ground
  * rendering is never added here. PLATEAU remains the terrain and road-surface source.
  * Where a route is structurally elevated, the matching carriageway portion of the
  * original PLATEAU transportation mesh is moved to the same height used by vehicles

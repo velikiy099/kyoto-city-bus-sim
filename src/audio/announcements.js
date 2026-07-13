@@ -116,5 +116,5 @@ export function announceTerminal() {
 }
 
 export function announceStart() {
-  speak("乗務を開始します。");
+  speak("18系統、大宮通りから千本十条、久我石原町へまいります。");
 }

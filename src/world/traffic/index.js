@@ -29,6 +29,8 @@ export function buildTraffic(scene, path, events = {}) {
         physicsCount: 0,
         visibleCount: 0,
         snapBacks: 0,
+        visibleDespawned: { sink: 0, blocked: 0, radius: 0, stuck: 0 },
+        visibleTerminalHolds: 0,
       },
       update(dt, busS, _busPos, busV) {
         signalsApi.update(dt, busS, busV, events.onRedLight);

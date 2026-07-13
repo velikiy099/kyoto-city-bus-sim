@@ -19,6 +19,7 @@ import { createSpawner } from "./spawner.js";
  * 遠方の車両はパスへスナップし、近傍の車両はキネマティック自転車で走行する。
  */
 export function createTrafficAgents(scene, path, runtime, events = {}, signalsApi, spawner) {
+  const PHYSICS_CONNECTOR_APPROACH = 25;
   const group = new THREE.Group();
   scene.add(group);
 
@@ -40,6 +41,8 @@ export function createTrafficAgents(scene, path, runtime, events = {}, signalsAp
     physicsCount: 0,
     visibleCount: 0,
     snapBacks: 0,
+    visibleDespawned: { sink: 0, blocked: 0, radius: 0, stuck: 0 },
+    visibleTerminalHolds: 0,
   };
   const maxVehicles = Math.max(0, Math.floor(CFG.traffic.maxVehicles));
   let serial = 0;
@@ -66,6 +69,7 @@ export function createTrafficAgents(scene, path, runtime, events = {}, signalsAp
       cursor: null,
       v: 0,
       stuckTime: 0,
+      terminalHolding: false,
       lod: "simple",
       phys: null,
     };
@@ -91,12 +95,12 @@ export function createTrafficAgents(scene, path, runtime, events = {}, signalsAp
     return true;
   };
 
-  /** 端点の先頭20mに車がいる場合は、そこへの流入を受け付けない。 */
+  /** 同じ経路の生成位置から20m以内に車がいる場合は流入させない。 */
   const tryActivate = (startPath, startDistance = 3, initialSpeed = 5) => {
     if (!startPath?.id || !runtime.paths.has(startPath.id)) return false;
     const entryOccupied = agents.some((agent) => agent.active
       && agent.cursor?.current?.id === startPath.id
-      && agent.cursor.distance < 20);
+      && Math.abs(agent.cursor.distance - startDistance) < 20);
     if (entryOccupied) return false;
 
     const agent = agents.find((candidate) => !candidate.active);
@@ -105,6 +109,7 @@ export function createTrafficAgents(scene, path, runtime, events = {}, signalsAp
     agent.cursor = cursor;
     agent.v = Number.isFinite(initialSpeed) ? Math.max(0, initialSpeed) : 5;
     agent.stuckTime = 0;
+    agent.terminalHolding = false;
     agent.lod = "simple";
     agent.phys = null;
     if (!place(agent)) {
@@ -121,10 +126,14 @@ export function createTrafficAgents(scene, path, runtime, events = {}, signalsAp
 
   const deactivate = (agent, reason) => {
     if (!agent.active) return;
+    if (agent.outer.visible && stats.visibleDespawned[reason] != null) {
+      stats.visibleDespawned[reason]++;
+    }
     agent.active = false;
     agent.cursor = null;
     agent.v = 0;
     agent.stuckTime = 0;
+    agent.terminalHolding = false;
     agent.lod = "simple";
     agent.phys = null;
     agent.outer.visible = false;
@@ -206,8 +215,12 @@ export function createTrafficAgents(scene, path, runtime, events = {}, signalsAp
     agent.outer.position.z - busPoint[1],
   );
 
+  const physicsPathClear = (agent) => Boolean(agent.cursor?.current?.edge)
+    && agent.cursor.current.edge.physicsSafe !== false
+    && agent.cursor.remainingOnCurrent() > PHYSICS_CONNECTOR_APPROACH;
+
   const promoteToPhysics = (agent) => {
-    if (!agent.active || agent.lod === "physics" || !agent.cursor) return false;
+    if (!agent.active || agent.lod === "physics" || !physicsPathClear(agent)) return false;
     const pose = agent.cursor.pose();
     const params = CFG.traffic.physics[agent.physics] ?? CFG.traffic.physics.car;
     if (!pose || !params) return false;
@@ -241,6 +254,15 @@ export function createTrafficAgents(scene, path, runtime, events = {}, signalsAp
     for (const { agent, distance } of ranked) {
       agent.outer.visible = distance <= cullRadius;
       if (agent.lod === "physics" && !agent.phys) agent.lod = "simple";
+      // Junction connectors are compiled path geometry.  Keep agents exactly
+      // on that geometry, then create a fresh physics state after they reach
+      // the next edge instead of carrying steering error through the turn.
+      if (agent.lod === "physics" && agent.cursor.current?.connector) {
+        demoteToSimple(agent);
+      }
+      if (agent.lod === "physics" && !physicsPathClear(agent)) {
+        demoteToSimple(agent);
+      }
       if (agent.lod === "physics" && agent.phys && distance > simpleRadius) {
         demoteToSimple(agent);
       }
@@ -259,7 +281,10 @@ export function createTrafficAgents(scene, path, runtime, events = {}, signalsAp
     );
     for (const { agent, distance } of ranked) {
       if (physicsCount >= maxPhysics) break;
-      if (agent.lod === "simple" && distance < physicsRadius && promoteToPhysics(agent)) {
+      if (agent.lod === "simple"
+        && physicsPathClear(agent)
+        && distance < physicsRadius
+        && promoteToPhysics(agent)) {
         physicsCount++;
       }
     }
@@ -301,6 +326,9 @@ export function createTrafficAgents(scene, path, runtime, events = {}, signalsAp
 
       for (const agent of agents) {
         if (!agent.active || !agent.cursor?.current) continue;
+        if (agent.lod === "physics" && !physicsPathClear(agent)) {
+          demoteToSimple(agent);
+        }
         const isPhysics = agent.lod === "physics" && agent.phys;
         const speed = isPhysics ? agent.phys.v : agent.v;
         const hasHorizon = agent.cursor.ensureHorizon(Math.max(40, speed * 4));
@@ -418,11 +446,28 @@ export function createTrafficAgents(scene, path, runtime, events = {}, signalsAp
           junctionBusy.set(res.enteredConnector.node, simulationTime + 2.5);
         }
         if (res.ended) {
+          // Core routing makes this unreachable for normal agents.  Retain a
+          // visible vehicle as a diagnostic-safe fallback; graph-boundary
+          // despawn is permitted only after it leaves the culling radius.
+          if (agent.outer.visible) {
+            agent.v = 0;
+            if (agent.phys) agent.phys.v = 0;
+            if (!agent.terminalHolding) {
+              agent.terminalHolding = true;
+              stats.visibleTerminalHolds++;
+            }
+            place(agent);
+            if (!hasHorizon) blockedTails++;
+            continue;
+          }
           deactivate(agent, endReason(agent));
           continue;
         }
 
-        if (isPhysics) placePhysics(agent);
+        if (agent.cursor.current?.connector && agent.lod === "physics") {
+          demoteToSimple(agent);
+        }
+        if (agent.lod === "physics" && agent.phys) placePhysics(agent);
         else place(agent);
         const busDistance = horizontalDistanceToBus(agent, busPoint);
         const configuredCullRadius = Number(CFG.traffic.lod?.cullRadius);

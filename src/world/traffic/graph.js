@@ -14,9 +14,24 @@ export function createGraphRuntime(trafficGraph) {
     if (!connectorsByEdge.has(connector.from)) connectorsByEdge.set(connector.from, []);
     connectorsByEdge.get(connector.from).push(connector);
   }
+  // Greatest fixed point of edges that always have a route into another edge
+  // in the same set.  Spawning and routing inside this directed core prevents
+  // agents from entering visible graph boundaries and disappearing there.
+  const continuingEdgeIds = new Set(edgeById.keys());
+  let removedContinuingEdge = true;
+  while (removedContinuingEdge) {
+    removedContinuingEdge = false;
+    for (const edgeId of [...continuingEdgeIds]) {
+      const hasContinuation = (connectorsByEdge.get(edgeId) ?? [])
+        .some((connector) => continuingEdgeIds.has(connector.to));
+      if (hasContinuation) continue;
+      continuingEdgeIds.delete(edgeId);
+      removedContinuingEdge = true;
+    }
+  }
 
   const paths = new Map();
-  const tessellateBezier = (points, divisions = 12) => {
+  const tessellateBezier = (points, divisions = 24) => {
     if (!Array.isArray(points) || points.length !== 4) return points;
     const [a, ctrlA, ctrlB, b] = points;
     const result = [];
@@ -46,13 +61,16 @@ export function createGraphRuntime(trafficGraph) {
       id,
       points,
       cumulative,
-      length: cumulative.at(-1) || 1,
+      length: cumulative.at(-1),
       ...extra,
     });
   };
   for (const edge of graph.edges ?? []) makePath(edge.id, edge.points, { edge });
   for (const connector of graph.connectors ?? []) {
-    makePath(connector.id, tessellateBezier(connector.points), { connector });
+    const points = connector.zeroLength
+      ? [connector.points[0], connector.points.at(-1)]
+      : tessellateBezier(connector.points);
+    makePath(connector.id, points, { connector });
   }
   const edgeEndHeading = new Map();
   for (const edge of graph.edges ?? []) {
@@ -124,7 +142,7 @@ export function createGraphRuntime(trafficGraph) {
     if (outgoing.length > 0 && (incoming.length === 0 || deadEnd)) {
       for (const edgeId of outgoing) {
         const edge = edgeById.get(edgeId);
-        if (edge && paths.has(edge.id)) spawnEdges.push(edge);
+        if (edge && paths.has(edge.id) && continuingEdgeIds.has(edge.id)) spawnEdges.push(edge);
       }
     }
     if (incoming.length > 0 && (outgoing.length === 0 || deadEnd)) sinkNodeIds.add(node.id);
@@ -162,10 +180,14 @@ export function createGraphRuntime(trafficGraph) {
 
   /** 次エッジの highway と旋回可否から、コネクタを重み付きで選ぶ。 */
   const chooseNextConnector = (edge, canTurn, rng = Math.random) => {
-    const options = connectorsByEdge.get(edge?.id) ?? [];
-    const candidates = canTurn
+    const options = (connectorsByEdge.get(edge?.id) ?? [])
+      .filter((connector) => continuingEdgeIds.has(connector.to));
+    const straightCandidates = options.filter((connector) => !isTurnConnector(connector));
+    // minStraightAfterTurn is a preference.  If obeying it would terminate
+    // the route, take the available legal turn and keep the vehicle alive.
+    const candidates = canTurn || !straightCandidates.length
       ? options
-      : options.filter((connector) => !isTurnConnector(connector));
+      : straightCandidates;
     if (!candidates.length) return null;
 
     const weights = candidates.map((connector) => {
@@ -190,6 +212,7 @@ export function createGraphRuntime(trafficGraph) {
     edgeById,
     nodeById,
     connectorsByEdge,
+    continuingEdgeIds,
     edgeEndHeading,
     spawnEdges,
     sinkNodeIds,
@@ -310,14 +333,24 @@ export class RouteCursor {
         this.distanceSinceTurn = 0;
       }
       if (finished.edge && next.connector) enteredConnector = next.connector;
-      if (remaining <= EPSILON) break;
+      // A zero-length straight connector is a graph transition, not a
+      // physical metre of road.  Consume it atomically even when this update
+      // landed exactly on the preceding edge endpoint, so pose() can never
+      // expose its undefined heading for one frame.
+      if (remaining <= EPSILON && next.length > EPSILON) break;
     }
 
     return { enteredConnector, ended };
   }
 
   pose() {
-    return this.runtime.sample(this.current, this.distance);
+    const EPSILON = 1e-9;
+    for (let index = 0; index < this.entries.length; index++) {
+      const item = this.entries[index].item;
+      if (item.length <= EPSILON) continue;
+      return this.runtime.sample(item, index === 0 ? this.distance : 0);
+    }
+    return null;
   }
 
   poseAt(ahead) {
@@ -327,6 +360,7 @@ export class RouteCursor {
       const item = this.entries[index].item;
       const start = index === 0 ? this.distance : 0;
       const available = item.length - start;
+      if (available <= 1e-9) continue;
       if (distance <= available) return this.runtime.sample(item, start + distance);
       distance -= available;
     }
