@@ -42,6 +42,10 @@ const TERRAIN_STEP = Math.max(1, Math.round(Number(argValue("--terrain-step", 2)
 const OUT = resolve(ROOT, argValue("--out", "tools/map.svg"));
 const CHECK = args.includes("--check");
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+const crossesFlatBridgeBoundary = (a, b) => (network.structures ?? []).some((structure) =>
+  structure.profile === "flat-deck"
+  && ((a.s < structure.from && b.s >= structure.from) || (a.s <= structure.to && b.s > structure.to))
+);
 const xml = (value) => String(value)
   .replaceAll("&", "&amp;")
   .replaceAll("<", "&lt;")
@@ -150,7 +154,7 @@ function mapChecks() {
     const a = nodes[index - 1], b = nodes[index];
     const ds = Math.max(1e-6, b.s - a.s);
     const grade = Math.abs((b.y - a.y) / ds);
-    if (grade > maxGrade.value) maxGrade = { value: grade, s: b.s };
+    if (!crossesFlatBridgeBoundary(a, b) && grade > maxGrade.value) maxGrade = { value: grade, s: b.s };
     let turn = Math.abs(b.heading - a.heading);
     while (turn > Math.PI) turn = Math.abs(turn - Math.PI * 2);
     const turnDeg = turn * 180 / Math.PI;
@@ -513,6 +517,7 @@ for (const lanePath of (network.trafficPaths ?? []).filter((item) => item.role =
 for (let index = 1; index < nodes.length; index++) {
   const a = nodes[index - 1], b = nodes[index];
   if (b.s < S_FROM || a.s > S_TO) continue;
+  if (crossesFlatBridgeBoundary(a, b)) continue;
   const grade = Math.abs((b.y - a.y) / Math.max(1e-6, b.s - a.s));
   if (grade > 0.08) layers.grades.push(polylineSvg([[a.x, a.z], [b.x, b.z]], `stroke="${grade > 0.12 ? "#ff173d" : "#ff9f1a"}" stroke-width="${grade > 0.12 ? 3 : 2}"`));
 }

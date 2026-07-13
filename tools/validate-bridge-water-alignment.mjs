@@ -13,6 +13,7 @@ import {
   distToPolyline,
   riverDipDepthAt,
 } from "../src/world/riverGeometry.js";
+import { archedDeckElevation, flatDeckElevation, RIVER_BRIDGE_ARCH_HEIGHT } from "../src/route/structureProfiles.js";
 
 const read = (file) => JSON.parse(fs.readFileSync(file, "utf8"));
 const assert = (condition, message) => {
@@ -53,27 +54,15 @@ const verticalProfiles = (route.elevations ?? []).map((item) => {
   if (item.profile === "flat-deck") {
     const a1 = Number(item.from);
     const b0 = Number(item.to);
-    const a0 = a1 - Number(item.approachIn ?? 50);
-    const b1 = b0 + Number(item.approachOut ?? 50);
-    let terrainMax = -Infinity;
-    for (let s = a1; s <= b0 + 1e-6; s += 2) {
-      terrainMax = Math.max(terrainMax, terrainAtS(s));
+    if (item.name === "天神橋(西高瀬川)(flat deck)") {
+      return { kind: "flat-deck", item, a1, b0, deckY: flatDeckElevation(terrainAtS, a1, b0) };
     }
-    terrainMax = Math.max(
-      terrainMax,
-      terrainAtS(a1),
-      terrainAtS(b0),
-    );
     return {
-      kind: "flat-deck",
+      kind: "arched-deck",
       item,
-      a0,
       a1,
       b0,
-      b1,
-      startY: terrainAtS(a0),
-      endY: terrainAtS(b1),
-      deckY: terrainMax + Number(item.height ?? 0),
+      archHeight: RIVER_BRIDGE_ARCH_HEIGHT,
     };
   }
   if (item.profile === "single-crest") {
@@ -117,17 +106,12 @@ function singleCrestRoadY(profile, s) {
 function structuralAt(s) {
   for (const profile of verticalProfiles) {
     if (profile.kind === "flat-deck") {
-      if (s <= profile.a0 || s >= profile.b1) continue;
-      let roadY;
-      if (s < profile.a1) {
-        const t = smoothstep((s - profile.a0) / (profile.a1 - profile.a0));
-        roadY = profile.startY + (profile.deckY - profile.startY) * t;
-      } else if (s <= profile.b0) {
-        roadY = profile.deckY;
-      } else {
-        const t = smoothstep((s - profile.b0) / (profile.b1 - profile.b0));
-        roadY = profile.deckY + (profile.endY - profile.deckY) * t;
-      }
+      if (s < profile.a1 || s > profile.b0) continue;
+      return Math.max(0, profile.deckY - terrainAtS(s));
+    }
+    if (profile.kind === "arched-deck") {
+      if (s < profile.a1 || s > profile.b0) continue;
+      const roadY = archedDeckElevation(terrainAtS, profile.a1, profile.b0, s, profile.archHeight);
       return Math.max(0, roadY - terrainAtS(s));
     }
     if (profile.kind === "single-crest") {
@@ -145,30 +129,44 @@ function structuralAt(s) {
 }
 const roadAt = (s) => terrainAtS(s) + structuralAt(s);
 
+const archReports = [];
 const flatReports = [];
-for (const profile of verticalProfiles.filter((item) => item.kind === "flat-deck")) {
+for (const profile of verticalProfiles.filter((item) => ["arched-deck", "flat-deck"].includes(item.kind))) {
+  if (profile.kind === "flat-deck") {
+    flatReports.push({
+      name: profile.item.name,
+      from: profile.a1,
+      to: profile.b0,
+      deckY: +profile.deckY.toFixed(3),
+      deckVariationMeters: 0,
+    });
+    continue;
+  }
   let minimum = Infinity;
   let maximum = -Infinity;
   for (let s = profile.a1; s <= profile.b0 + 1e-9; s += 0.25) {
-    const y = roadAt(Math.min(s, profile.b0));
+    const y = archedDeckElevation(terrainAtS, profile.a1, profile.b0, Math.min(s, profile.b0), profile.archHeight);
     minimum = Math.min(minimum, y);
     maximum = Math.max(maximum, y);
   }
-  const startY = roadAt(profile.a1);
-  const endY = roadAt(profile.b0);
-  assert(Math.abs(startY - endY) < 1e-8, `${profile.item.name}: bridge start/end elevations differ`);
-  assert(maximum - minimum < 1e-8, `${profile.item.name}: bridge deck is not flat`);
-  assert(Math.abs(roadAt(profile.a0) - terrainAtS(profile.a0)) < 1e-8, `${profile.item.name}: north/west approach does not start on PLATEAU ground`);
-  assert(Math.abs(roadAt(profile.b1) - terrainAtS(profile.b1)) < 1e-8, `${profile.item.name}: south/east approach does not land on PLATEAU ground`);
-  flatReports.push({
+  const startY = archedDeckElevation(terrainAtS, profile.a1, profile.b0, profile.a1, profile.archHeight);
+  const endY = archedDeckElevation(terrainAtS, profile.a1, profile.b0, profile.b0, profile.archHeight);
+  const centerY = archedDeckElevation(terrainAtS, profile.a1, profile.b0, (profile.a1 + profile.b0) / 2, profile.archHeight);
+  assert(Math.abs(startY - terrainAtS(profile.a1)) < 1e-8, `${profile.item.name}: bridge start does not meet PLATEAU ground`);
+  assert(Math.abs(endY - terrainAtS(profile.b0)) < 1e-8, `${profile.item.name}: bridge end does not meet PLATEAU ground`);
+  assert(centerY > ((startY + endY) / 2) + 0.2, `${profile.item.name}: bridge arch is missing`);
+  archReports.push({
     name: profile.item.name,
     from: profile.a1,
     to: profile.b0,
-    deckY: +startY.toFixed(3),
-    deckVariationMeters: +(maximum - minimum).toFixed(9),
+    startY: +startY.toFixed(3),
+    endY: +endY.toFixed(3),
+    centerY: +centerY.toFixed(3),
+    archHeight: +(centerY - ((startY + endY) / 2)).toFixed(3),
+    deckVariationMeters: +(maximum - minimum).toFixed(3),
   });
 }
-assert(flatReports.length === 4, `Expected four flat river bridges, got ${flatReports.length}`);
+assert(archReports.length === 3 && flatReports.length === 1, "Expected three arched and one flat river bridge");
 
 const [gridOriginX, gridOriginZ] = terrainGrid.origin;
 const [gridStepX, gridStepZ] = terrainGrid.spacing;
@@ -267,6 +265,7 @@ assert(rendererSource.includes("riverDipDepthAt(x, z, riverDips)"), "PLATEAU ter
 
 console.log(JSON.stringify({
   status: "bridge-water-road-alignment-ok",
+  archedBridges: archReports,
   flatBridges: flatReports,
   rivers: riverReports,
   kamoRibbonOverlapGapMeters: +kamoGap.toFixed(2),

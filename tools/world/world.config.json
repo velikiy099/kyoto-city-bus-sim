@@ -54,7 +54,7 @@
     "roadVisualPolicy": "plateau-transportation-plus-osm-markings-sidewalks",
     "terrainPolicy": "plateau-dem-with-route-profile",
     "buildingPolicy": "plateau-only",
-    "bridgePolicy": "plateau-visual-plus-existing-structural-profile",
+    "bridgePolicy": "plateau-visual-plus-arched-deck-profile",
     "signalPolicy": "osm-control-plus-plateau-visual-if-identifiable",
     "fallbackToLegacy": false
   },

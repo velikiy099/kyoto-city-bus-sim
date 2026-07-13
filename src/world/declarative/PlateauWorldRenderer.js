@@ -194,11 +194,11 @@ export function structuralRoadZones(path, routeData) {
   if (!path) return [];
   const inputs = [
     ...(routeData?.elevations ?? [])
-      .filter((item) => Number(item.height) > 0)
+      .filter((item) => item.profile === "flat-deck" || Number(item.height) > 0)
       .map((item) => ({
         ...item,
-        from: Math.max(0, Number(item.from) - Number(item.approachIn ?? 50)),
-        to: Math.min(path.length, Number(item.to) + Number(item.approachOut ?? 50)),
+        from: Math.max(0, Number(item.from) - (item.profile === "flat-deck" ? 0 : Number(item.approachIn ?? 50))),
+        to: Math.min(path.length, Number(item.to) + (item.profile === "flat-deck" ? 0 : Number(item.approachOut ?? 50))),
         reason: "structure",
       })),
   ];
@@ -581,9 +581,9 @@ function drivingSurfacePatchMeshes(network) {
 }
 
 /** OSM topology details compiled with the driving network: medians, explicit
- * zebra crossings and pedestrian bridges.  Their vertices already carry the
- * selected PLATEAU road elevation, so they never resample a competing surface
- * at runtime. */
+ * zebra crossings, bridge-attached sidewalks and pedestrian bridges. Their
+ * vertices already carry the selected PLATEAU road elevation, so they never
+ * resample a competing surface at runtime. */
 function compiledRoadDetailMeshes(network, terrainHeightAtWorld) {
   const result = [];
   const rowsMesh = (rows, name, material, lift = 0.03) => {
@@ -637,7 +637,12 @@ function compiledRoadDetailMeshes(network, terrainHeightAtWorld) {
     }
   }
   const deckMat = new THREE.MeshLambertMaterial({ color: 0x8c9194 });
+  const sidewalkMat = new THREE.MeshLambertMaterial({ color: 0xcfd2cc, side: THREE.DoubleSide });
   const railMat = new THREE.MeshLambertMaterial({ color: 0xd8dde0 });
+  for (const sidewalk of details.bridgeSidewalks ?? []) {
+    const mesh = rowsMesh(sidewalk.rows, `osm-bridge-sidewalk:${sidewalk.id}`, sidewalkMat, 0.045);
+    if (mesh) result.push(mesh);
+  }
   for (const structure of details.footbridges ?? []) {
     const points = structure.points ?? [];
     const group = new THREE.Group();

@@ -7,6 +7,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { config, resolveRoot, valueAfter, writeJson } from "./lib.mjs";
+import { archedDeckElevation, flatDeckElevation } from "../../src/route/structureProfiles.js";
 
 const cfg = config();
 const routeFile = path.resolve(valueAfter("--route") ?? resolveRoot(cfg.osm.routeFile));
@@ -484,53 +485,70 @@ function baseTerrainAtRaw(rawS) {
   const t = clamp((rawS - a.rawS) / Math.max(1e-6, b.rawS - a.rawS), 0, 1);
   return baseTerrainY[index] + (baseTerrainY[index + 1] - baseTerrainY[index]) * t;
 }
-const effectiveStructureApproaches = new Map();
-const MAX_STRUCTURE_GRADE = 0.07;
-for (const structure of route.elevations ?? []) {
-  const from = Number(structure.from), to = Number(structure.to);
-  const approachIn = Number(structure.approachIn ?? 50), approachOut = Number(structure.approachOut ?? 50);
-  if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from) continue;
-  // Snapshot the already-built profile.  Closely spaced bridges may have
-  // overlapping approaches; the later bridge must join the existing road
-  // profile, not jump back to raw terrain at its first sample.
-  const inputProfile = nodes.map((node) => node.y);
-  const inputAtRaw = (rawS) => {
-    let index = 0;
-    while (index < nodes.length - 2 && nodes[index + 1].rawS < rawS) index++;
-    const a = nodes[index], b = nodes[index + 1];
-    const t = clamp((rawS - a.rawS) / Math.max(1e-6, b.rawS - a.rawS), 0, 1);
-    return inputProfile[index] + (inputProfile[index + 1] - inputProfile[index]) * t;
+
+const KOGA_BRIDGE_WAY_ID = 27829715;
+const kogaBridgeRoad = (osmSource.roads ?? []).find((road) =>
+  Number(road.id) === KOGA_BRIDGE_WAY_ID
+  || (road.tags?.bridge === "yes" && road.tags?.name === "伏見向日線")
+);
+
+function rawSAtPoint(point) {
+  let best = { distance2: Infinity, rawS: null };
+  for (let index = 1; index < nodes.length; index++) {
+    const a = nodes[index - 1], b = nodes[index];
+    const dx = b.x - a.x, dz = b.z - a.z;
+    const length2 = dx * dx + dz * dz || 1;
+    const t = clamp(((point[0] - a.x) * dx + (point[1] - a.z) * dz) / length2, 0, 1);
+    const x = a.x + dx * t, z = a.z + dz * t;
+    const distance2 = (point[0] - x) ** 2 + (point[1] - z) ** 2;
+    if (distance2 < best.distance2) best = { distance2, rawS: a.rawS + (b.rawS - a.rawS) * t };
+  }
+  return best.rawS;
+}
+
+const kogaBridgeRawRange = kogaBridgeRoad?.points?.length >= 2
+  ? [rawSAtPoint(kogaBridgeRoad.points[0]), rawSAtPoint(kogaBridgeRoad.points.at(-1))].sort((a, b) => a - b)
+  : null;
+
+function resolvedStructure(structure) {
+  const range = structure.name === "久我橋(桂川)(flat deck)" && kogaBridgeRawRange
+    ? kogaBridgeRawRange
+    : [Number(structure.from), Number(structure.to)];
+  const isKogaFlatDeck = structure.name === "久我橋(桂川)(flat deck)"
+    && structure.profile === "flat-deck"
+    && Boolean(kogaBridgeRawRange);
+  return {
+    ...structure,
+    from: range[0],
+    to: range[1],
+    ...(isKogaFlatDeck ? { approachIn: 0, approachOut: 0 } : {}),
   };
+}
+
+const effectiveStructureApproaches = new Map();
+for (const structure of route.elevations ?? []) {
+  const resolved = resolvedStructure(structure);
+  const from = Number(resolved.from), to = Number(resolved.to);
+  if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from) continue;
   if (structure.profile === "flat-deck") {
-    const deckY = Math.max(...nodes.filter((n) => n.rawS >= from && n.rawS <= to).map((n) => baseTerrainAtRaw(n.rawS))) + Number(structure.height ?? 1.8);
-    const requiredApproach = (edge, direction, configured) => {
-      // Include a short landing buffer outside the declared bridge approach;
-      // PLATEAU DEM triangles often put their steepest change exactly at the
-      // bank edge, which otherwise survives as a one-sample road-height step.
-      let length = Math.max(20, configured + 12);
-      for (let iteration = 0; iteration < 4; iteration++) {
-        const endpoint = clamp(edge + direction * length, nodes[0].rawS, nodes.at(-1).rawS);
-        const delta = Math.abs(deckY - inputAtRaw(endpoint));
-        // smoothstep's peak derivative is 1.5.  The small extra allowance
-        // covers the underlying PLATEAU terrain grade at the landing.
-        length = Math.max(length, delta * 1.65 / MAX_STRUCTURE_GRADE);
-      }
-      return Math.min(length, direction < 0 ? edge - nodes[0].rawS : nodes.at(-1).rawS - edge);
-    };
-    const effectiveIn = requiredApproach(from, -1, approachIn);
-    const effectiveOut = requiredApproach(to, 1, approachOut);
-    const requestedStart = from - effectiveIn, requestedEnd = to + effectiveOut;
-    const startIndex = Math.max(0, nodes.findIndex((node) => node.rawS >= requestedStart) - 1);
-    const foundEnd = nodes.findIndex((node) => node.rawS >= requestedEnd);
-    const endIndex = foundEnd < 0 ? nodes.length - 1 : foundEnd;
-    const start = nodes[startIndex].rawS, end = nodes[endIndex].rawS;
-    const startY = inputProfile[startIndex], endY = inputProfile[endIndex];
-    effectiveStructureApproaches.set(structure.name, { approachIn: from - start, approachOut: end - to });
+    const isTenjinFlatDeck = resolved.name === "天神橋(西高瀬川)(flat deck)";
+    // Keep the roadway on PLATEAU at both bridge ends. The elevation change
+    // is absorbed inside the bridge by a shallow parabolic arch; no approach
+    // terrain is modified before or after the bridge.
+    const startIndex = Math.max(0, nodes.findIndex((node) => node.rawS >= from));
+    const firstAfter = nodes.findIndex((node) => node.rawS > to);
+    const endIndex = firstAfter < 0 ? nodes.length - 1 : firstAfter - 1;
+    if (endIndex < startIndex) continue;
+    effectiveStructureApproaches.set(structure.name, {
+      approachIn: 0,
+      approachOut: 0,
+    });
     for (let nodeIndex = startIndex; nodeIndex <= endIndex; nodeIndex++) {
       const node = nodes[nodeIndex];
-      if (node.rawS < from) node.y = +(startY + (deckY - startY) * smoothstep((node.rawS - start) / Math.max(1e-6, from - start))).toFixed(3);
-      else if (node.rawS <= to) node.y = +deckY.toFixed(3);
-      else node.y = +(deckY + (endY - deckY) * smoothstep((node.rawS - to) / Math.max(1e-6, end - to))).toFixed(3);
+      const deckY = isTenjinFlatDeck
+        ? flatDeckElevation(baseTerrainAtRaw, from, to)
+        : archedDeckElevation(baseTerrainAtRaw, from, to, node.rawS);
+      node.y = +deckY.toFixed(3);
       node.structure = structure.name;
     }
   } else if (structure.profile === "single-crest" && Number.isFinite(Number(structure.peak))) {
@@ -865,6 +883,22 @@ function graphHeading(points, atStart) {
   const b = atStart ? points[1] : points.at(-1);
   return Math.atan2(b[0] - a[0], b[1] - a[1]);
 }
+function graphMaxHeadingJump(points) {
+  const headings = [];
+  for (let index = 1; index < points.length; index++) {
+    const dx = points[index][0] - points[index - 1][0];
+    const dz = points[index][2] - points[index - 1][2];
+    if (Math.hypot(dx, dz) > 1e-6) headings.push(Math.atan2(dx, dz));
+  }
+  let maximum = 0;
+  for (let index = 1; index < headings.length; index++) {
+    let delta = headings[index] - headings[index - 1];
+    while (delta > Math.PI) delta -= Math.PI * 2;
+    while (delta < -Math.PI) delta += Math.PI * 2;
+    maximum = Math.max(maximum, Math.abs(delta));
+  }
+  return maximum;
+}
 function graphRoadAllowed(road) {
   const tags = road.tags ?? {};
   if (OMIYA_OVERPASS_SIDE_ROAD_WAY_IDS.has(Number(road.id))) return false;
@@ -902,7 +936,9 @@ function graphLanePoints(points, offset) {
     const a = points[Math.max(0, i - 1)], b = points[Math.min(points.length - 1, i + 1)];
     const dx = b[0] - a[0], dz = b[1] - a[1];
     const length = Math.hypot(dx, dz) || 1;
-    const candidate = [points[i][0] + (-dz / length) * offset, points[i][1] + (dx / length) * offset];
+    // x=east, z=south.  [dz, -dx] is the left-hand normal for the
+    // oriented travel direction, matching Japan's left-side traffic.
+    const candidate = [points[i][0] + (dz / length) * offset, points[i][1] + (-dx / length) * offset];
     const hit = snapToSurface(candidate[0], candidate[1], previousFeature?.id);
     previousFeature = hit.feature;
     result.push([+hit.point[0].toFixed(3), +gridHeight(...hit.point).toFixed(3), +hit.point[1].toFixed(3)]);
@@ -917,6 +953,27 @@ function surfaceYAt(x, z) {
   }
   return best && best.d2 < 16 * 16 ? best.y : gridHeight(x, z);
 }
+const BRIDGE_SIDEWALK_WAY_IDS = new Set([
+  621846876, 621846878, 621846879, 621846882, 621846892, 621846894,
+]);
+// This short footway on the east side of Koeda Bridge duplicates the OSM
+// zebra crossing with the same source way and should not be rendered as an
+// elevated pedestrian bridge.
+const REMOVED_OVERLAPPING_FOOTBRIDGE_WAY_IDS = new Set([621846895]);
+function sidewalkRows(points, width, yAt) {
+  return points.map((point, index) => {
+    const previous = points[Math.max(0, index - 1)];
+    const next = points[Math.min(points.length - 1, index + 1)];
+    const dx = next[0] - previous[0], dz = next[1] - previous[1];
+    const length = Math.hypot(dx, dz) || 1;
+    const nx = -dz / length, nz = dx / length;
+    const y = yAt(point[0], point[1]);
+    return [
+      [+(point[0] - nx * width / 2).toFixed(3), +y.toFixed(3), +(point[1] - nz * width / 2).toFixed(3)],
+      [+(point[0] + nx * width / 2).toFixed(3), +y.toFixed(3), +(point[1] + nz * width / 2).toFixed(3)],
+    ];
+  });
+}
 function pointInPolygon2d(point, polygon) {
   let inside = false;
   for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
@@ -930,10 +987,46 @@ function nearestLineDistance(point, points) {
   for (let i = 1; i < points.length; i++) best = Math.min(best, nearestOnSegment(point[0], point[1], points[i - 1], points[i]).distance);
   return best;
 }
+function tessellateGraphConnector(points, divisions = 24) {
+  if (!Array.isArray(points) || points.length !== 4) return points ?? [];
+  const [a, ctrlA, ctrlB, b] = points;
+  const result = [];
+  for (let index = 0; index <= divisions; index++) {
+    const t = index / divisions;
+    const inv = 1 - t;
+    const w0 = inv ** 3;
+    const w1 = 3 * inv ** 2 * t;
+    const w2 = 3 * inv * t ** 2;
+    const w3 = t ** 3;
+    result.push([
+      w0 * a[0] + w1 * ctrlA[0] + w2 * ctrlB[0] + w3 * b[0],
+      w0 * a[1] + w1 * ctrlA[1] + w2 * ctrlB[1] + w3 * b[1],
+      w0 * a[2] + w1 * ctrlA[2] + w2 * ctrlB[2] + w3 * b[2],
+    ]);
+  }
+  return result;
+}
+function graphConnectorGeometryValid(points, inVector, outVector) {
+  const segments = [];
+  const samples = tessellateGraphConnector(points);
+  for (let index = 1; index < samples.length; index++) {
+    const dx = samples[index][0] - samples[index - 1][0];
+    const dz = samples[index][2] - samples[index - 1][2];
+    const length = Math.hypot(dx, dz);
+    if (length > 1e-6) segments.push([dx / length, dz / length]);
+  }
+  if (!segments.length) return false;
+  if (segments[0][0] * inVector[0] + segments[0][1] * inVector[1] <= 0) return false;
+  if (segments.at(-1)[0] * outVector[0] + segments.at(-1)[1] * outVector[1] <= 0) return false;
+  for (let index = 1; index < segments.length; index++) {
+    if (segments[index - 1][0] * segments[index][0] + segments[index - 1][1] * segments[index][1] <= 0) return false;
+  }
+  return true;
+}
 function buildTrafficGraph() {
   const sourceRoads = (osmSource.roads ?? []).filter(graphRoadAllowed);
   const nodesByKey = new Map();
-  const edges = [];
+  let edges = [];
   const nodeUse = new Map();
   const pointUse = new Map();
   for (const road of sourceRoads) {
@@ -1012,6 +1105,7 @@ function buildTrafficGraph() {
             segmentIndex,
             points: samples,
             length: +length.toFixed(3),
+            physicsSafe: graphMaxHeadingJump(samples) < Math.PI / 4,
             speed: Math.max(15, numberTag(tags.maxspeed, tags.highway === "service" ? 20 : 40)) / 3.6,
           };
           edges.push(edge);
@@ -1019,6 +1113,44 @@ function buildTrafficGraph() {
           nodesByKey.get(edge.to).incoming.push(id);
         }
       }
+    }
+  }
+  // PLATEAU surface snapping can collapse both directions of a narrow OSM
+  // road onto the same polygon boundary.  Such a segment cannot represent
+  // safe two-way traffic, so exclude the complete segment instead of keeping
+  // overlapping opposing lanes.
+  const edgeByLaneKey = new Map(edges.map((edge) => [
+    `${edge.wayId}:${edge.segmentIndex}:${edge.direction}:${edge.lane}`,
+    edge,
+  ]));
+  const unsafeTwoWaySegments = new Set();
+  for (const forward of edges) {
+    if (forward.oneway || forward.direction !== 1 || forward.lane !== 0) continue;
+    const reverse = edgeByLaneKey.get(`${forward.wayId}:${forward.segmentIndex}:-1:0`);
+    if (!reverse || forward.points.length !== reverse.points.length) continue;
+    for (let index = 0; index < forward.points.length; index++) {
+      const a = forward.points[Math.max(0, index - 1)];
+      const b = forward.points[Math.min(forward.points.length - 1, index + 1)];
+      const dx = b[0] - a[0], dz = b[2] - a[2];
+      const length = Math.hypot(dx, dz) || 1;
+      const opposing = reverse.points[reverse.points.length - 1 - index];
+      const signedSeparation = (forward.points[index][0] - opposing[0]) * (dz / length)
+        + (forward.points[index][2] - opposing[2]) * (-dx / length);
+      if (signedSeparation < 0.5) {
+        unsafeTwoWaySegments.add(`${forward.wayId}:${forward.segmentIndex}`);
+        break;
+      }
+    }
+  }
+  if (unsafeTwoWaySegments.size) {
+    edges = edges.filter((edge) => !unsafeTwoWaySegments.has(`${edge.wayId}:${edge.segmentIndex}`));
+    for (const node of nodesByKey.values()) {
+      node.incoming = [];
+      node.outgoing = [];
+    }
+    for (const edge of edges) {
+      nodesByKey.get(edge.from).outgoing.push(edge.id);
+      nodesByKey.get(edge.to).incoming.push(edge.id);
     }
   }
   const edgeById = new Map(edges.map((edge) => [edge.id, edge]));
@@ -1043,14 +1175,35 @@ function buildTrafficGraph() {
       // was previously falling through as a "straight" connector and could
       // send an NPC back along its incoming lane.
       if (Math.abs(delta) >= Math.PI * 0.8) continue;
-      const isRight = delta > Math.PI / 5 && delta < Math.PI * 0.8;
-      const isLeft = delta < -Math.PI / 5 && delta > -Math.PI * 0.8;
+      // With heading=atan2(dx,dz), positive rotation is left and negative is
+      // right in the x=east, z=south world coordinate system.
+      const isLeft = delta > Math.PI / 5 && delta < Math.PI * 0.8;
+      const isRight = delta < -Math.PI / 5 && delta > -Math.PI * 0.8;
       const isTurn = isRight || isLeft;
+      // Keep one deterministic target lane per road movement.  Source lanes
+      // remain unrestricted because this model has no pre-junction lane
+      // changing; restricting them would strand agents at intersections.
+      const targetLane = isLeft
+        ? outgoing.laneCount - 1
+        : isRight
+          ? 0
+          : Math.min(incoming.lane, outgoing.laneCount - 1);
+      if (outgoing.lane !== targetLane) continue;
       const a = incoming.points.at(-1), b = outgoing.points[0];
       const inVector = [Math.sin(inHeading), Math.cos(inHeading)];
       const outVector = [Math.sin(outHeading), Math.cos(outHeading)];
-      const ctrlA = [a[0] + inVector[0] * 3.5, surfaceYAt(a[0], a[2]), a[2] + inVector[1] * 3.5];
-      const ctrlB = [b[0] - outVector[0] * 3.5, surfaceYAt(b[0], b[2]), b[2] - outVector[1] * 3.5];
+      const chord = Math.hypot(b[0] - a[0], b[2] - a[2]);
+      if (isTurn && chord < 0.5) continue;
+      const zeroLength = !isTurn && chord < 1e-3;
+      const handle = Math.min(3.5, chord / 3);
+      const ctrlA = zeroLength
+        ? [...a]
+        : [a[0] + inVector[0] * handle, surfaceYAt(a[0], a[2]), a[2] + inVector[1] * handle];
+      const ctrlB = zeroLength
+        ? [...b]
+        : [b[0] - outVector[0] * handle, surfaceYAt(b[0], b[2]), b[2] - outVector[1] * handle];
+      const points = [a, ctrlA, ctrlB, b];
+      if (!zeroLength && !graphConnectorGeometryValid(points, inVector, outVector)) continue;
       connectors.push({
         id: `turn-${incoming.id}-${outgoing.id}`,
         node: node.id,
@@ -1059,11 +1212,12 @@ function buildTrafficGraph() {
         right: isRight,
         turn: isTurn,
         turnDirection: isRight ? "right" : isLeft ? "left" : "straight",
-        points: [a, ctrlA, ctrlB, b],
+        zeroLength,
+        points,
       });
     }
   }
-  return { version: 2, branchMeters: TRAFFIC_BRANCH_METERS, nodes: [...nodesByKey.values()], edges, connectors };
+  return { version: 3, branchMeters: TRAFFIC_BRANCH_METERS, nodes: [...nodesByKey.values()], edges, connectors };
 }
 
 function buildRoadOverlays(graph, bridgeRanges = []) {
@@ -1273,26 +1427,49 @@ function buildRoadOverlays(graph, bridgeRanges = []) {
     }
   }
   const pedestrianWays = osmSource.pedestrianWays ?? [];
+  const bridgeSidewalks = pedestrianWays
+    .filter((way) => BRIDGE_SIDEWALK_WAY_IDS.has(Number(way.id)))
+    .map((way) => {
+      const points = way.points ?? [];
+      return {
+        id: `sidewalk-${way.id}`,
+        wayId: Number(way.id),
+        width: numberTag(way.tags?.width, 2.0),
+        rows: sidewalkRows(points, numberTag(way.tags?.width, 2.0), surfaceYAt),
+      };
+    })
+    .filter((item) => item.rows.length >= 2);
   const deckEnds = new Set(pedestrianWays.filter((way) => way.tags?.highway !== "steps").flatMap((way) => [graphPointKey(way.points[0]), graphPointKey(way.points.at(-1))]));
-  const footbridges = pedestrianWays.map((way) => {
-    const points = way.points ?? [];
-    const deckY = Math.max(...points.map(([x, z]) => surfaceYAt(x, z))) + 5.2;
-    const steps = way.tags?.highway === "steps";
-    const aHigh = deckEnds.has(graphPointKey(points[0]));
-    const bHigh = deckEnds.has(graphPointKey(points.at(-1)));
-    return {
-      id: `pedestrian-${way.id}`,
-      kind: steps ? "stairs" : "deck",
-      width: numberTag(way.tags?.width, steps ? 1.8 : 2.0),
-      points: points.map(([x, z], index) => {
-        const ground = surfaceYAt(x, z);
-        const t = points.length <= 1 ? 0 : index / (points.length - 1);
-        const y = steps ? ((aHigh ? deckY : ground) * (1 - t) + (bHigh ? deckY : ground) * t) : deckY;
-        return [x, y, z];
-      }),
-    };
-  }).filter((item) => item.points.length >= 2);
-  return { medians, crosswalks, footbridges };
+  const footbridges = pedestrianWays
+    .filter((way) =>
+      !BRIDGE_SIDEWALK_WAY_IDS.has(Number(way.id))
+      && !REMOVED_OVERLAPPING_FOOTBRIDGE_WAY_IDS.has(Number(way.id)),
+    )
+    .map((way) => {
+      const points = way.points ?? [];
+      // Sidewalks beside a river bridge are part of the same deck.  Use the
+      // compiled PLATEAU road surface directly instead of floating them above
+      // it with an independent pedestrian-bridge clearance.
+      const isKogaSidewalk = kogaBridgeRawRange
+        && ["621846879", "621846882"].includes(String(way.id));
+      const deckY = isKogaSidewalk ? null : Math.max(...points.map(([x, z]) => surfaceYAt(x, z))) + 5.2;
+      const steps = way.tags?.highway === "steps";
+      const aHigh = deckEnds.has(graphPointKey(points[0]));
+      const bHigh = deckEnds.has(graphPointKey(points.at(-1)));
+      return {
+        id: `pedestrian-${way.id}`,
+        kind: steps ? "stairs" : "deck",
+        width: numberTag(way.tags?.width, steps ? 1.8 : 2.0),
+        points: points.map(([x, z], index) => {
+          const ground = surfaceYAt(x, z);
+          const t = points.length <= 1 ? 0 : index / (points.length - 1);
+          const pointDeckY = isKogaSidewalk ? ground : deckY;
+          const y = steps ? ((aHigh ? pointDeckY : ground) * (1 - t) + (bHigh ? pointDeckY : ground) * t) : pointDeckY;
+          return [x, y, z];
+        }),
+      };
+    }).filter((item) => item.points.length >= 2);
+  return { medians, crosswalks, footbridges, bridgeSidewalks };
 }
 
 function nearestNode(x, z, start = 0) {
@@ -1354,8 +1531,22 @@ const crosswalkExclusions = (route.elevations ?? [])
   .map((structure) => ({ from: compiledS(structure.from), to: compiledS(structure.to) }));
 const roadOverlays = buildRoadOverlays(trafficGraph, crosswalkExclusions);
 
+function compiledBridge(bridge) {
+  const result = { ...compiledRouteObject(bridge) };
+  // Keep the visible bridge rails on the same OSM span as the road deck.
+  // The generated bridge table is intentionally approximate, while the OSM
+  // bridge way gives us the authoritative endpoints for 久我橋.
+  if (bridge.name === "久我橋(桂川)" && kogaBridgeRawRange) {
+    const from = compiledS(kogaBridgeRawRange[0]);
+    const to = compiledS(kogaBridgeRawRange[1]);
+    result.s = +((from + to) / 2).toFixed(3);
+    result.length = +(to - from).toFixed(3);
+  }
+  return result;
+}
+
 function railEdgesForBridge(bridge) {
-  const center = compiledRouteObject(bridge);
+  const center = compiledBridge(bridge);
   const from = Math.max(0, center.s - Number(center.length ?? 0) / 2);
   const to = Math.min(nodes.at(-1).s, center.s + Number(center.length ?? 0) / 2);
   const at = (s) => {
@@ -1442,6 +1633,17 @@ for (const trafficPath of trafficPaths.filter((item) => item.role === "main" && 
   }
 }
 
+function compiledStructure(structure) {
+  const result = {
+    ...compiledRouteObject(resolvedStructure(structure)),
+    ...(effectiveStructureApproaches.get(structure.name) ?? {}),
+  };
+  // Flat river decks use PLATEAU terrain only; structural clearance is not
+  // carried into the runtime route metadata.
+  if (structure.profile === "flat-deck") delete result.height;
+  return result;
+}
+
 const network = {
   version: 2,
   generatedAt: new Date().toISOString(),
@@ -1461,10 +1663,7 @@ const network = {
   intersections: compiledIntersections,
   turnIntersections: compiledTurnIntersections,
   stops,
-  structures: (route.elevations ?? []).map((structure) => ({
-    ...compiledRouteObject(structure),
-    ...(effectiveStructureApproaches.get(structure.name) ?? {}),
-  })),
+  structures: (route.elevations ?? []).map(compiledStructure),
   bridges: (route.bridges ?? []).map(railEdgesForBridge),
   railStructures: (route.railStructures ?? []).map(compiledRouteObject),
   selectedSurfaceIds: [...new Set(nodes.map((n) => n.surfaceId))],

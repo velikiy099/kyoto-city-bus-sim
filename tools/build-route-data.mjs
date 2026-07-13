@@ -2865,10 +2865,10 @@ async function main() {
     const line = riverLines.get(name);
     return line && { bridgeName: name, river, ...line };
   }).filter(Boolean);
-  // 河川橋は、実橋長の始点から終点まで一つの絶対標高で平坦にする。
-  // PLATEAU地表は routeData.js 側で参照し、橋面標高は区間内の地表最高点に
-  // 必要な構造物高さを加えて決定する。これにより始点・終点を含む橋面全体が
-  // 同じ高さになり、道路・自車・一般車・欄干が同一の elevationAt(s) を使える。
+  // 河川橋は、実橋長の始点から終点までPLATEAU地表の範囲内で一つの絶対標高に
+  // 平坦化する。構造物高さは加えず、橋面標高の決定は driving-network の
+  // flat-deck コンパイルに委ねる。道路・自車・一般車・欄干は同一の
+  // elevationAt(s) を使う。
   for (const b of bridges) {
     const halfLength = b.length / 2;
     const isKoeda = b.name === "小枝橋(鴨川)";
@@ -2877,9 +2877,8 @@ async function main() {
       profile: "flat-deck",
       from: +(b.s - halfLength).toFixed(2),
       to: +(b.s + halfLength).toFixed(2),
-      height: isKoeda ? 2.6 : 1.8,
-      approachIn: isKoeda ? 26 : 22,
-      approachOut: isKoeda ? 26 : 22,
+      approachIn: 0,
+      approachOut: 0,
     });
   }
 

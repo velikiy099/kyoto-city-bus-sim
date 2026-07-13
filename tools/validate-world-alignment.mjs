@@ -125,15 +125,17 @@ for (let s = omiyaProfile.peak + 0.5; s <= omiyaProfile.to; s += 0.5) {
   assert(roadAt(s) < roadAt(s - 0.5), "Absolute Omiya road profile does not descend continuously after JR");
 }
 
-const bridgeProfileChecks = (route.elevations ?? []).filter((item) => Number(item.height) > 0).map((item) => {
-  const sampleS = item.profile === "single-crest"
-    ? Number(item.peak)
-    : (Number(item.from) + Number(item.to)) / 2;
-  const terrainY = terrainAtS(sampleS);
-  const delta = structuralAt(sampleS);
-  return { name: item.name, sampleS, terrainY, roadY: roadAt(sampleS), delta, expected: Number(item.height) };
-});
-assert(bridgeProfileChecks.every((item) => Math.abs(item.delta - item.expected) < 1e-6), "Structural bridge height is not applied to the PLATEAU terrain profile");
+const bridgeProfileChecks = (route.elevations ?? [])
+  .filter((item) => item.profile !== "flat-deck" && Number(item.height) > 0)
+  .map((item) => {
+    const sampleS = item.profile === "single-crest"
+      ? Number(item.peak)
+      : (Number(item.from) + Number(item.to)) / 2;
+    const terrainY = terrainAtS(sampleS);
+    const delta = structuralAt(sampleS);
+    return { name: item.name, sampleS, terrainY, roadY: roadAt(sampleS), delta, expected: Number(item.height) };
+  });
+assert(bridgeProfileChecks.every((item) => Math.abs(item.delta - item.expected) < 1e-6), "Structural overpass height is not applied to the PLATEAU terrain profile");
 
 const [originX, originZ] = terrain.origin;
 const [stepX, stepZ] = terrain.spacing;
