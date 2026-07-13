@@ -1,4 +1,4 @@
-import RIVER_DEFS from "../../data/definitions/rivers.json";
+import RIVER_DEFS from "../../data/definitions/rivers.json" with { type: "json" };
 
 const clamp01 = (value) => Math.max(0, Math.min(1, value));
 const smoothstep = (value) => {
