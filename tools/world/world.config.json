@@ -32,6 +32,36 @@
     "terrainGridSmoothingPasses": 2,
     "maximumSurfacePolygonsPerLayer": 60000
   },
+  "terrainRebuild": {
+    "note": "rebuild_generated_terrain.py(レガシーtriangles入力の経路拘束付き再構築)用。値は挙動保存のため2026-07時点のハードコードを厳密転記。",
+    "sourceCellMeters": 12.0,
+    "indexCellMeters": 90.0,
+    "routeIndexCellMeters": 100.0,
+    "maxNeighbors": 18,
+    "routeStepMeters": 2.0,
+    "residualClampMeters": 18.0,
+    "idwEpsilon": 225.0,
+    "sourceQualityWeights": { "dem": 1.0, "building": 0.55, "transport": 0.35 },
+    "aggregation": {
+      "demWeight": 1.0,
+      "buildingCenterWeight": 0.7,
+      "buildingFootprintWeight": 0.35,
+      "buildingFootprintSampleDivisor": 4,
+      "transportWeight": 0.25,
+      "transportSampleDivisor": 6
+    },
+    "influence": {
+      "nearFieldMeters": 45,
+      "corridorMeters": 420,
+      "corridorFalloff": 0.45,
+      "corridorRangeMeters": 375,
+      "decayMeters": 220.0,
+      "decayBase": 0.55
+    },
+    "routeConstraintMeters": 28.0,
+    "smoothing": { "passes": 3, "nearSourceMeters": 60, "nearAlpha": 0.12, "farAlpha": 0.28 },
+    "slopeClamp": { "maxCellDeltaMeters": 7.5, "passes": 2 }
+  },
   "osm": {
     "relationId": 13027168,
     "routeFile": "src/data/route18.json",

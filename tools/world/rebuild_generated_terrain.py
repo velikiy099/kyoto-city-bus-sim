@@ -7,6 +7,9 @@ from collections import defaultdict
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+_CONFIG = json.loads((ROOT / "tools/world/world.config.json").read_text(encoding="utf-8"))
+_PLATEAU = _CONFIG["plateau"]
+_REBUILD = _CONFIG["terrainRebuild"]
 PUBLIC = ROOT / "public/world/generated"
 ROUTE_FILE = ROOT / "src/data/route18.json"
 PROFILE_FILE = ROOT / "src/world/declarative/generated/route-elevation.json"
@@ -17,12 +20,12 @@ OUTPUT_PUBLIC = SOURCE_TERRAIN
 OUTPUT_RUNTIME = ROOT / "src/world/declarative/generated/terrain-grid.json"
 MANIFEST = ROOT / "public/world/world-manifest.json"
 
-GRID_SPACING = 30.0
-PADDING = 650.0
-SOURCE_CELL = 12.0
-INDEX_CELL = 90.0
-ROUTE_INDEX_CELL = 100.0
-MAX_NEIGHBORS = 18
+GRID_SPACING = float(_PLATEAU["terrainGridSpacingMeters"])
+PADDING = float(_PLATEAU["terrainGridPaddingMeters"])
+SOURCE_CELL = float(_REBUILD["sourceCellMeters"])
+INDEX_CELL = float(_REBUILD["indexCellMeters"])
+ROUTE_INDEX_CELL = float(_REBUILD["routeIndexCellMeters"])
+MAX_NEIGHBORS = int(_REBUILD["maxNeighbors"])
 
 
 def load(path: Path):
@@ -92,7 +95,7 @@ def aggregate_sources(terrain_doc, buildings_doc, transport_doc):
 
     for tri in terrain_doc.get("triangles", []):
         for x, y, z in tri:
-            put(float(x), float(y), float(z), 1.0, 1)
+            put(float(x), float(y), float(z), float(_REBUILD["aggregation"]["demWeight"]), 1)
 
     # Building GroundSurface/baseHeight is useful outside the aggressively cropped DEM strip.
     for building in buildings_doc.get("features", []):
@@ -100,20 +103,20 @@ def aggregate_sources(terrain_doc, buildings_doc, transport_doc):
         footprint = building.get("footprint") or []
         center = building.get("center")
         if center:
-            put(float(center[0]), base, float(center[1]), 0.7, 2)
+            put(float(center[0]), base, float(center[1]), float(_REBUILD["aggregation"]["buildingCenterWeight"]), 2)
         # Sparse footprint samples keep broad blocks from flattening into a single center point.
-        step = max(1, len(footprint) // 4)
+        step = max(1, len(footprint) // int(_REBUILD["aggregation"]["buildingFootprintSampleDivisor"]))
         for x, z in footprint[::step]:
-            put(float(x), base, float(z), 0.35, 2)
+            put(float(x), base, float(z), float(_REBUILD["aggregation"]["buildingFootprintWeight"]), 2)
 
     for feature in transport_doc.get("features", []):
         polygon = feature.get("polygon") or []
         if not polygon:
             continue
         # Transportation surfaces are often planar and reliable enough as weak elevation samples.
-        step = max(1, len(polygon) // 6)
+        step = max(1, len(polygon) // int(_REBUILD["aggregation"]["transportSampleDivisor"]))
         for x, y, z in polygon[::step]:
-            put(float(x), float(y), float(z), 0.25, 4)
+            put(float(x), float(y), float(z), float(_REBUILD["aggregation"]["transportWeight"]), 4)
 
     samples = []
     for sx, sy, sz, sw, mask in cells.values():
@@ -124,7 +127,7 @@ def aggregate_sources(terrain_doc, buildings_doc, transport_doc):
 
 def build_grid(route, profile, sources):
     path = route["path"]
-    route_step = 2.0
+    route_step = float(_REBUILD["routeStepMeters"])
     profile_at = route_profile_sampler(profile["samples"])
     route_elevations = [profile_at(i * route_step) for i in range(len(path))]
     route_index = RouteIndex(path, route_elevations)
@@ -135,7 +138,7 @@ def build_grid(route, profile, sources):
     residual_samples = []
     for x, y, z, mask in sources:
         baseline, route_distance, _ = route_index.nearest(x, z)
-        residual = max(-18.0, min(18.0, y - baseline))
+        residual = max(-float(_REBUILD["residualClampMeters"]), min(float(_REBUILD["residualClampMeters"]), y - baseline))
         idx = len(residual_samples)
         residual_samples.append((x, z, residual, route_distance, mask))
         sample_grid[(math.floor(x / INDEX_CELL), math.floor(z / INDEX_CELL))].append(idx)
@@ -188,23 +191,23 @@ def build_grid(route, profile, sources):
             weights = 0.0
             for d2, residual, sample_route_distance, mask in nearest:
                 # DEM samples dominate; building/transport samples only extend coverage.
-                quality = 1.0 if mask & 1 else (0.55 if mask & 2 else 0.35)
-                w = quality / (d2 + 225.0)
+                quality = float(_REBUILD["sourceQualityWeights"]["dem"]) if mask & 1 else (float(_REBUILD["sourceQualityWeights"]["building"]) if mask & 2 else float(_REBUILD["sourceQualityWeights"]["transport"]))
+                w = quality / (d2 + float(_REBUILD["idwEpsilon"]))
                 weighted += residual * w
                 weights += w
             residual = weighted / weights if weights else 0.0
 
             # Keep measured influence through the intended 420 m corridor, then decay
             # smoothly so the terrain continues without a cliff into the far field.
-            if source_distance <= 45:
+            if source_distance <= _REBUILD["influence"]["nearFieldMeters"]:
                 influence = 1.0
-            elif source_distance <= 420:
-                influence = 1.0 - 0.45 * ((source_distance - 45) / 375) ** 2
+            elif source_distance <= _REBUILD["influence"]["corridorMeters"]:
+                influence = 1.0 - float(_REBUILD["influence"]["corridorFalloff"]) * ((source_distance - _REBUILD["influence"]["nearFieldMeters"]) / _REBUILD["influence"]["corridorRangeMeters"]) ** 2
             else:
-                influence = 0.55 * math.exp(-(source_distance - 420) / 220.0)
+                influence = float(_REBUILD["influence"]["decayBase"]) * math.exp(-(source_distance - _REBUILD["influence"]["corridorMeters"]) / float(_REBUILD["influence"]["decayMeters"]))
             # Close to the route, the generated route elevation is the exact road/terrain
             # constraint. Blend out over 28 m to avoid roads floating above the terrain.
-            route_constraint = max(0.0, min(1.0, route_distance / 28.0))
+            route_constraint = max(0.0, min(1.0, route_distance / float(_REBUILD["routeConstraintMeters"])))
             values[k] = baseline + residual * influence * route_constraint
 
     def smooth_once(src):
@@ -214,11 +217,11 @@ def build_grid(route, profile, sources):
                 k = iz * width + ix
                 avg = (src[k - 1] + src[k + 1] + src[k - width] + src[k + width]) * 0.25
                 # More smoothing in extrapolated areas, less where DEM points are close.
-                alpha = 0.12 if source_distances[k] < 60 else 0.28
+                alpha = float(_REBUILD["smoothing"]["nearAlpha"]) if source_distances[k] < _REBUILD["smoothing"]["nearSourceMeters"] else float(_REBUILD["smoothing"]["farAlpha"])
                 dst[k] = src[k] * (1 - alpha) + avg * alpha
         return dst
 
-    for _ in range(3):
+    for _ in range(int(_REBUILD["smoothing"]["passes"])):
         values = smooth_once(values)
 
     # Reapply route constraint after smoothing and limit implausible cell-to-cell slopes.
@@ -228,12 +231,12 @@ def build_grid(route, profile, sources):
             x = min_x + ix * step_x
             k = iz * width + ix
             baseline, route_distance, _ = route_index.nearest(x, z)
-            if route_distance < 28:
-                blend = 1.0 - route_distance / 28.0
+            if route_distance < _REBUILD["routeConstraintMeters"]:
+                blend = 1.0 - route_distance / float(_REBUILD["routeConstraintMeters"])
                 values[k] = values[k] * (1 - blend) + baseline * blend
 
-    max_delta = 7.5
-    for _ in range(2):
+    max_delta = float(_REBUILD["slopeClamp"]["maxCellDeltaMeters"])
+    for _ in range(int(_REBUILD["slopeClamp"]["passes"])):
         for iz in range(height):
             for ix in range(width):
                 k = iz * width + ix
