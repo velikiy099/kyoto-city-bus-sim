@@ -1,0 +1,23 @@
+{
+  "note": "自然要素のOSM実測由来データと配置定数。座標系はゲーム座標(m)。",
+  "RIVER_DEPTH": 3.2,
+  "BRIDGE_RAIL": { "clearanceM": 1.1, "heightM": 1.0, "widthM": 0.32, "segmentLengthM": 6 },
+  "TREE_DENSITY": { "forestAreaM2PerTree": 15, "scrubAreaM2PerTree": 30 },
+  "STREET_TREES": { "startS": 40, "routeFraction": 0.62, "stepM": 42, "sidewalkOffsetM": 2.4 },
+  "BRIDGE_SPAN": {
+    "paddingM": 10,
+    "exactWidthBridges": ["久我橋(桂川)", "天神橋(西高瀬川)"],
+    "note": "既定は川幅+10mを橋桁スパンに使うが、exactWidthBridges は実際の川幅相当に揃える(欄干が接続道路まで伸びるのを防ぐ)"
+  },
+  "TOBA_PARK": {
+    "note": "鳥羽離宮跡公園。OSM実測 way 341709499 の敷地形状(約130m×154mの矩形)。重心=城南宮道停留所の67m先・進行方向左71m",
+    "stopName": "城南宮道",
+    "sOffsetM": 67,
+    "lateralM": -71,
+    "halfW": 68,
+    "halfD": 80,
+    "exclusionMarginM": 5,
+    "treeCount": 150,
+    "seed": 9001
+  }
+}

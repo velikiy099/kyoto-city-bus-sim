@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import RAILWAY_DEFS from "../data/definitions/railways.json" with { type: "json" };
 import {
   route,
   elevationAt,
@@ -106,8 +107,8 @@ function buildConventionalUnderpass(scene, path, spec) {
     g.add(wall);
   }
 
-  const trackCount = spec.trackCount ?? 6;
-  const spacing = 3.2;
+  const trackCount = spec.trackCount ?? RAILWAY_DEFS.CONVENTIONAL_UNDERPASS.trackCountDefault;
+  const spacing = RAILWAY_DEFS.CONVENTIONAL_UNDERPASS.trackSpacingM;
   const first = -((trackCount - 1) * spacing) / 2;
   for (let i = 0; i < trackCount; i++)
     addRailPair(g, first + i * spacing, -0.05, length - 8);
@@ -119,9 +120,9 @@ function buildConventionalUnderpass(scene, path, spec) {
   // 高架桁の範囲(bridgeFromS/bridgeToS があれば八条通の先まで延伸)
   const sFrom = spec.bridgeFromS ?? railFrom;
   const sTo = spec.bridgeToS ?? railTo;
-  const aIn = spec.approachIn ?? 52;
-  const aOut = spec.approachOut ?? 52;
-  const deckHalf = spec.deckHalf ?? 7.2; // 車道の外縁(橋上に歩道は無い実際の大宮跨線橋に合わせる)
+  const aIn = spec.approachIn ?? RAILWAY_DEFS.CONVENTIONAL_UNDERPASS.approachDefaultM;
+  const aOut = spec.approachOut ?? RAILWAY_DEFS.CONVENTIONAL_UNDERPASS.approachDefaultM;
+  const deckHalf = spec.deckHalf ?? RAILWAY_DEFS.CONVENTIONAL_UNDERPASS.deckHalfDefaultM; // 車道の外縁(橋上に歩道は無い実際の大宮跨線橋に合わせる)
   // 大宮跨線橋では路面を覆う灰色デッキ・桁・擁壁を重ねない。
   // 橋上には、唯一の路面高さ elevationAt(s) を基準にした約1m高の欄干だけを生成する。
   addOmiyaParapets(scene, path, sFrom - aIn, sTo + aOut, deckHalf);
@@ -139,7 +140,7 @@ function buildShinkansenViaduct(scene, path, spec) {
 
   const length = spec.length ?? 190;
   const width = spec.width ?? 16;
-  const deckY = 8.2;
+  const deckY = RAILWAY_DEFS.SHINKANSEN_VIADUCT.deckY;
   const girder = new THREE.Mesh(
     new THREE.BoxGeometry(width, 1.05, length),
     mat(0xd7d9d6),
@@ -150,7 +151,7 @@ function buildShinkansenViaduct(scene, path, spec) {
 
   // 橋脚(道路上には立てない — 高架は線路が道路と直交して跨ぐ)
   const clearHalf = halfWidthAt(spec.s) + 4;
-  for (const z of [-70, -35, 0, 35, 70]) {
+  for (const z of RAILWAY_DEFS.SHINKANSEN_VIADUCT.pierRowsM) {
     if (Math.abs(z) < clearHalf) continue;
     const wx = p.x + Math.sin(spec.heading) * z;
     const wz = p.z + Math.cos(spec.heading) * z;
@@ -179,7 +180,7 @@ function buildExpresswayViaduct(scene, path, spec) {
 
   const length = spec.length ?? 210;
   const width = spec.width ?? 27;
-  const deckY = 7.0;
+  const deckY = RAILWAY_DEFS.EXPRESSWAY_VIADUCT.deckY;
   const girder = new THREE.Mesh(
     new THREE.BoxGeometry(width, 1.2, length),
     mat(0xaeb2ae),
@@ -225,8 +226,8 @@ function buildExpresswayViaduct(scene, path, spec) {
     g.add(parapet);
   }
 
-  const isKoeda = spec.name?.includes("鴨川・小枝橋");
-  const isHishizuma = spec.name?.includes("桂川・菱妻神社");
+  const isKoeda = spec.name?.includes(RAILWAY_DEFS.EXPRESSWAY_VIADUCT.nameMatchKoeda);
+  const isHishizuma = spec.name?.includes(RAILWAY_DEFS.EXPRESSWAY_VIADUCT.nameMatchHishizuma);
 
   const addFenceLine = (z, span, height = 2.2) => {
     const fenceMat = mat(0xb9bfbd, { transparent: true, opacity: 0.78 });
@@ -281,7 +282,7 @@ function buildExpresswayViaduct(scene, path, spec) {
     const b = at(path, br.s);
     return { x: b.x, z: b.z, r: Math.max(18, br.length * 0.85) / 2 + 24 };
   });
-  const pierRows = spec.pierRows ?? (isKoeda ? [-90, 90] : [-75, 75]);
+  const pierRows = spec.pierRows ?? (isKoeda ? RAILWAY_DEFS.EXPRESSWAY_VIADUCT.pierRowsKoedaM : RAILWAY_DEFS.EXPRESSWAY_VIADUCT.pierRowsDefaultM);
   const pierX = Math.min(
     width / 2 - 1.5,
     Math.max(clearHalf + 1, width * 0.38),

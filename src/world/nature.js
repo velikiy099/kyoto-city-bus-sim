@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import NATURE_DEFS from "../data/definitions/nature.json" with { type: "json" };
 import {
   route,
   leftWidthAt,
@@ -16,19 +17,19 @@ const mat = (color, opts = {}) =>
 
 // 川底を地表(y=0)より低く見せる深さ[m]。橋は road.js のデッキ(elevationAt)がそのまま
 // 川の上を跨ぐので、川岸ぶんだけ相対的に「道路が高く・川が低く」見える。
-const RIVER_DEPTH = 3.2;
+const RIVER_DEPTH = NATURE_DEFS.RIVER_DEPTH;
 const BANK_TIERS = [
   { h: 1.2, w: 6, color: 0x7ba15e }, // 上段: 芝の土手
   { h: RIVER_DEPTH - 1.2, w: 4.5, color: 0x9c9178 }, // 下段: 護岸(土)
 ];
-const BRIDGE_RAIL_CLEARANCE = 1.1; // 車道端から欄干中心まで [m]
-const BRIDGE_RAIL_HEIGHT = 1.0;
-const BRIDGE_RAIL_WIDTH = 0.32;
-const RAIL_SEGMENT_LENGTH = 6; // 曲線・勾配へ追従するため短く分割 [m]
+const BRIDGE_RAIL_CLEARANCE = NATURE_DEFS.BRIDGE_RAIL.clearanceM; // 車道端から欄干中心まで [m]
+const BRIDGE_RAIL_HEIGHT = NATURE_DEFS.BRIDGE_RAIL.heightM;
+const BRIDGE_RAIL_WIDTH = NATURE_DEFS.BRIDGE_RAIL.widthM;
+const RAIL_SEGMENT_LENGTH = NATURE_DEFS.BRIDGE_RAIL.segmentLengthM; // 曲線・勾配へ追従するため短く分割 [m]
 // 梅小路公園・鳥羽離宮跡で使ってきた樹林配置(area/60)を基準に、
 // OSMの森林は約4倍、低木林は森林の半分の密度にする。
-const FOREST_TREE_AREA_M2 = 15;
-const SCRUB_AREA_M2 = 30;
+const FOREST_TREE_AREA_M2 = NATURE_DEFS.TREE_DENSITY.forestAreaM2PerTree;
+const SCRUB_AREA_M2 = NATURE_DEFS.TREE_DENSITY.scrubAreaM2PerTree;
 
 /**
  * 川(鴨川・桂川・西高瀬川)・橋・遠景の山・街路樹
@@ -173,10 +174,9 @@ export function buildNature(scene, path) {
     // 久我橋・天神橋は従来の「川幅+10m」を橋桁にも流用していたため、
     // 端部の欄干が接続道路まで伸びていた。橋桁と欄干は実際の川幅相当の
     // スパンに揃え、その他の橋の見た目は従来値を維持する。
-    const bridgeSpan =
-      br.name === "久我橋(桂川)" || br.name === "天神橋(西高瀬川)"
-        ? w
-        : w + 10;
+    const bridgeSpan = NATURE_DEFS.BRIDGE_SPAN.exactWidthBridges.includes(br.name)
+      ? w
+      : w + NATURE_DEFS.BRIDGE_SPAN.paddingM;
 
     // 実測ポリライン(同一河川の隣接橋まで届く分は road.js の clippedRiverPoints で
     // 橋の直近だけに切り詰め済み)。buildGround(road.js)の地面沈み込みと必ず
@@ -455,14 +455,14 @@ export function buildNature(scene, path) {
     }
   }
 
-  for (let s = 40; s < path.length * 0.62; s += 42) {
+  for (let s = NATURE_DEFS.STREET_TREES.startS; s < path.length * NATURE_DEFS.STREET_TREES.routeFraction; s += NATURE_DEFS.STREET_TREES.stepM) {
     if (railZones.some((z) => s > z.from && s < z.to)) continue;
     if (noSidewalkZones.some((z) => s > z.from && s < z.to)) continue;
     for (const side of [-1, 1]) {
-      if (((s / 42) | 0) % 2 === (side === -1 ? 0 : 1)) continue; // 互い違い
+      if (((s / NATURE_DEFS.STREET_TREES.stepM) | 0) % 2 === (side === -1 ? 0 : 1)) continue; // 互い違い
       const [px, pz] = path.getPoint(s);
       const [tx, tz] = path.getTangent(s);
-      const lat = side * ((side < 0 ? leftWidthAt(s) : rightWidthAt(s)) + 2.4); // 道路幅に合わせて外側へ
+      const lat = side * ((side < 0 ? leftWidthAt(s) : rightWidthAt(s)) + NATURE_DEFS.STREET_TREES.sidewalkOffsetM); // 道路幅に合わせて外側へ
       const x = px + -tz * lat,
         z = pz + tx * lat;
       if (turnZones.some((e) => (x - e.x) ** 2 + (z - e.z) ** 2 < e.r * e.r))
@@ -474,23 +474,23 @@ export function buildNature(scene, path) {
   // 実測ポリゴン(約130m×154mの矩形)の重心を経路へ投影した結果: 城南宮道停留所の67m先・
   // 進行方向左へ71mの位置。以前は停留所+90m・半径190mの粗い円で過大に除外していたため、
   // 実際の公園より外側の区画にも建物が置けないままになっていた。
-  const tobaStop = route.stops.find((st) => st.name === "城南宮道");
+  const tobaStop = route.stops.find((st) => st.name === NATURE_DEFS.TOBA_PARK.stopName);
   if (tobaStop) {
-    const anchorS = Math.min(path.length, tobaStop.s + 67);
+    const anchorS = Math.min(path.length, tobaStop.s + NATURE_DEFS.TOBA_PARK.sOffsetM);
     const [apx, apz] = path.getPoint(anchorS);
     const [atx, atz] = path.getTangent(anchorS);
     const anx = -atz,
       anz = atx;
-    const [cx, cz] = [apx + anx * -71, apz + anz * -71];
-    const halfW = 68,
-      halfD = 80; // 実測バウンディングボックス(約130m×154m)+若干の余白
-    exclusions.push({ x: cx, z: cz, r: Math.hypot(halfW, halfD) + 5 });
-    let seed = 9001;
+    const [cx, cz] = [apx + anx * NATURE_DEFS.TOBA_PARK.lateralM, apz + anz * NATURE_DEFS.TOBA_PARK.lateralM];
+    const halfW = NATURE_DEFS.TOBA_PARK.halfW,
+      halfD = NATURE_DEFS.TOBA_PARK.halfD; // 実測バウンディングボックス(約130m×154m)+若干の余白
+    exclusions.push({ x: cx, z: cz, r: Math.hypot(halfW, halfD) + NATURE_DEFS.TOBA_PARK.exclusionMarginM });
+    let seed = NATURE_DEFS.TOBA_PARK.seed;
     const rndSeeded = () => {
       seed = (seed * 1103515245 + 12345) & 0x7fffffff;
       return seed / 0x7fffffff;
     };
-    for (let i = 0; i < 150; i++) {
+    for (let i = 0; i < NATURE_DEFS.TOBA_PARK.treeCount; i++) {
       const x = cx + (rndSeeded() - 0.5) * 2 * halfW;
       const z = cz + (rndSeeded() - 0.5) * 2 * halfD;
       if (turnZones.some((e) => (x - e.x) ** 2 + (z - e.z) ** 2 < e.r * e.r))

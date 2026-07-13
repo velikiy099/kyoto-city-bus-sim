@@ -1,0 +1,12 @@
+{
+  "note": "鉄道・高速道路高架のレンダリング定義。名前マッチはroute18.json由来のrailStructures.nameに対応。",
+  "CONVENTIONAL_UNDERPASS": { "trackCountDefault": 6, "trackSpacingM": 3.2, "approachDefaultM": 52, "deckHalfDefaultM": 7.2 },
+  "SHINKANSEN_VIADUCT": { "deckY": 8.2, "pierRowsM": [-70, -35, 0, 35, 70] },
+  "EXPRESSWAY_VIADUCT": {
+    "deckY": 7.0,
+    "nameMatchKoeda": "鴨川・小枝橋",
+    "nameMatchHishizuma": "桂川・菱妻神社",
+    "pierRowsKoedaM": [-90, 90],
+    "pierRowsDefaultM": [-75, 75]
+  }
+}
