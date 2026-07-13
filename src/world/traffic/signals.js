@@ -5,8 +5,10 @@ import {
   laneCenterAt,
   halfWidthAt,
 } from "../../route/routeData.js";
+import SIGNAL_DEFS from "../../data/definitions/signals.json" with { type: "json" };
 import { signalStopLineS, busSignalStopTargetS } from "./dynamics.js";
 
+const SIGNAL_TIMING = SIGNAL_DEFS.TIMING;
 const mat = (color) => new THREE.MeshLambertMaterial({ color });
 const signalMat = (color) => new THREE.MeshBasicMaterial({ color });
 
@@ -30,40 +32,32 @@ const stopS = (name) => route.stops.find((st) => st.name === name)?.s ?? null;
 
 export const nodePhase = (id) =>
   [...String(id ?? "")].reduce(
-    (hash, character) => (hash * 33 + character.charCodeAt(0)) % 42,
+    (hash, character) => (hash * 33 + character.charCodeAt(0)) % SIGNAL_TIMING.cycleS,
     0,
   );
 
 export const isNpcStopPhase = (nodeId, simulationTime) =>
-  ((simulationTime + nodePhase(nodeId)) % 42) >= 22;
+  ((simulationTime + nodePhase(nodeId)) % SIGNAL_TIMING.cycleS) >= SIGNAL_TIMING.greenS;
 
 function fallbackSignalPositions(path) {
-  const SIG_STOPS = [
-    "四条大宮",
-    "大宮五条",
-    "七条大宮・京都水族館前",
-    "九条大宮",
-    "千本十条",
-    "城南宮道",
-  ];
-  return SIG_STOPS.map((name) => {
+  return SIGNAL_DEFS.FALLBACK.stops.map((name) => {
     const s0 = stopS(name);
-    return s0 == null ? null : { s: s0 + 32, name };
-  }).filter((sig) => sig && sig.s <= path.length - 30);
+    return s0 == null ? null : { s: s0 + SIGNAL_DEFS.FALLBACK.offsetM, name };
+  }).filter((sig) => sig && sig.s <= path.length - SIGNAL_DEFS.FALLBACK.endMarginM);
 }
 
 export function buildSignals(group, path) {
   // ================= 信号 =================
   // 位相: 自道 青22→黄3→赤17 / 交差道は自道が赤の間に 全赤1→青14→黄2(交差点内で連動)
-  const CYCLE = 42,
-    GREEN = 22,
-    YELLOW = 3;
+  const CYCLE = SIGNAL_TIMING.cycleS,
+    GREEN = SIGNAL_TIMING.greenS,
+    YELLOW = SIGNAL_TIMING.yellowS;
   const mainStateOf = (ph) =>
     ph < GREEN ? "green" : ph < GREEN + YELLOW ? "yellow" : "red";
   const crossStateOf = (ph) =>
-    ph >= GREEN + YELLOW + 1 && ph < CYCLE - 2
+    ph >= GREEN + YELLOW + SIGNAL_TIMING.crossAllRedLeadS && ph < CYCLE - SIGNAL_TIMING.crossYellowS
       ? "green"
-      : ph >= CYCLE - 2
+      : ph >= CYCLE - SIGNAL_TIMING.crossYellowS
         ? "yellow"
         : "red";
 

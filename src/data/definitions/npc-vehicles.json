@@ -1,0 +1,10 @@
+{
+  "note": "NPC車両カタログ。kind は vehicleModels のファクトリ(car/truck)、color は車体ペイント。寸法m、vMax は m/s。",
+  "VEHICLES": [
+    { "kind": "car", "color": "#d8dde2", "length": 4.5, "width": 1.82, "height": 1.8, "vMax": 11, "physics": "car" },
+    { "kind": "car", "color": "#4e637b", "length": 4.5, "width": 1.82, "height": 1.8, "vMax": 10.5, "physics": "car" },
+    { "kind": "truck", "color": "#7d8288", "length": 6.6, "width": 2.15, "height": 2.8, "vMax": 9.5, "physics": "truck" },
+    { "kind": "car", "color": "#704044", "length": 4.5, "width": 1.82, "height": 1.8, "vMax": 11.5, "physics": "car" },
+    { "kind": "car", "color": "#9aa3ab", "length": 4.5, "width": 1.82, "height": 1.8, "vMax": 10.5, "physics": "car" }
+  ]
+}

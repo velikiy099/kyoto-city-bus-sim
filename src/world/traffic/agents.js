@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { CFG } from "../../config.js";
 import { elevationAt, laneCenterAt } from "../../route/routeData.js";
 import { makeCar, makeTruck } from "./vehicleModels.js";
+import NPC_VEHICLE_DEFS from "../../data/definitions/npc-vehicles.json" with { type: "json" };
 import {
   clamp,
   idmAcceleration,
@@ -23,13 +24,11 @@ export function createTrafficAgents(scene, path, runtime, events = {}, signalsAp
   const group = new THREE.Group();
   scene.add(group);
 
-  const defs = [
-    { make: () => makeCar(0xd8dde2), length: 4.5, width: 1.82, height: 1.8, vMax: 11, physics: "car" },
-    { make: () => makeCar(0x4e637b), length: 4.5, width: 1.82, height: 1.8, vMax: 10.5, physics: "car" },
-    { make: () => makeTruck(0x7d8288), length: 6.6, width: 2.15, height: 2.8, vMax: 9.5, physics: "truck" },
-    { make: () => makeCar(0x704044), length: 4.5, width: 1.82, height: 1.8, vMax: 11.5, physics: "car" },
-    { make: () => makeCar(0x9aa3ab), length: 4.5, width: 1.82, height: 1.8, vMax: 10.5, physics: "car" },
-  ];
+  const vehicleFactories = { car: makeCar, truck: makeTruck };
+  const defs = NPC_VEHICLE_DEFS.VEHICLES.map(({ kind, color, ...spec }) => ({
+    make: () => vehicleFactories[kind](parseInt(color.slice(1), 16)),
+    ...spec,
+  }));
   const trafficSpawner = spawner ?? createSpawner(runtime);
   const agents = [];
   const stats = {
