@@ -1,3 +1,5 @@
+import RIVER_DEFS from "../../data/definitions/rivers.json";
+
 const clamp01 = (value) => Math.max(0, Math.min(1, value));
 const smoothstep = (value) => {
   const t = clamp01(value);
@@ -6,11 +8,7 @@ const smoothstep = (value) => {
 
 export const RIVER_LINE_REACH = 400;
 export const RIVER_TERRAIN_DIP_DEPTH = 3.4;
-const OSM_LINE_WIDTH_FALLBACK = {
-  "桂川": 48,
-  "鴨川": 22,
-  "西高瀬川": 8,
-};
+const OSM_LINE_WIDTH_FALLBACK = RIVER_DEFS.OSM_LINE_WIDTH_FALLBACK;
 
 /**
  * OSM waterway=river is normally a centreline, not a water-surface polygon.
@@ -21,7 +19,7 @@ const OSM_LINE_WIDTH_FALLBACK = {
 export function riverWidthMeters(bridge, line = null) {
   const tagged = Number(line?.widthMeters ?? bridge?.riverWidth);
   if (Number.isFinite(tagged) && tagged > 0) return tagged;
-  return OSM_LINE_WIDTH_FALLBACK[bridge?.river] ?? 12;
+  return OSM_LINE_WIDTH_FALLBACK[bridge?.river] ?? RIVER_DEFS.DEFAULT_RIVER_WIDTH_M;
 }
 
 /** Point-to-polyline distance in the world x-z plane. */

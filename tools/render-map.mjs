@@ -25,6 +25,7 @@ const roadOverlays = readJson("public/world/generated/osm-road-overlays.json");
 const osmCorridor = readJson("data/osm/route18-corridor.json");
 const buildings = readJson("public/world/generated/plateau-buildings.json");
 const water = readJson("public/world/generated/plateau-water.json");
+const RIVER_DEFS = readJson("data/definitions/rivers.json");
 const terrain = readJson("src/world/declarative/generated/terrain-grid.json");
 
 const args = process.argv.slice(2);
@@ -237,7 +238,7 @@ function ribbonPoints(points, halfWidth) {
 const waterLineWidth = (river, bridge) => {
   const tagged = Number(river?.widthMeters ?? bridge?.riverWidth);
   if (Number.isFinite(tagged) && tagged > 0) return tagged;
-  return ({ "桂川": 48, "鴨川": 22, "西高瀬川": 8 })[river?.river] ?? 12;
+  return RIVER_DEFS.OSM_LINE_WIDTH_FALLBACK[river?.river] ?? RIVER_DEFS.DEFAULT_RIVER_WIDTH_M;
 };
 
 // The simulator's connected terrain grid, rendered as a subdued elevation
