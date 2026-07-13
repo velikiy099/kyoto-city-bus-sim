@@ -183,5 +183,90 @@
     { "fromStop": "赤池", "toStop": "久我", "limit": 50 },
     { "fromStop": "久我", "toStop": null, "limit": 40 }
   ],
-  "FORCE_PLAIN_CURVE_ANCHORS": [[34.95066, 135.74276]]
+  "FORCE_PLAIN_CURVE_ANCHORS": [[34.95066, 135.74276]],
+  "FALLBACK_STOP_COORDS": {
+    "二条駅西口": [35.011273, 135.74124],
+    "二条駅前": [35.0115206, 135.7424701],
+    "千本三条・朱雀立命館前": [35.0089865, 135.7425339],
+    "みぶ操車場前": [35.0061817, 135.7456743],
+    "四条大宮": [35.0040538, 135.7484709],
+    "大宮松原": [34.9992554, 135.7490947],
+    "大宮五条": [34.9970686, 135.7491156],
+    "島原口": [34.9933278, 135.7490955],
+    "七条大宮・京都水族館前": [34.9884228, 135.7490843],
+    "東寺東門前": [34.9823598, 135.7491945],
+    "九条大宮": [34.9801091, 135.7491864],
+    "東寺南門前": [34.9793729, 135.7469272],
+    "羅城門": [34.97912, 135.7429916],
+    "唐戸町": [34.9760434, 135.7413693],
+    "城ケ前町": [34.9626138, 135.7424736],
+    "岩ノ本町": [34.9607101, 135.7425161],
+    "久我": [34.945528, 135.7342175],
+    "菱妻神社前": [34.94775, 135.7293566],
+    "久我石原町": [34.9476875, 135.7248118]
+  },
+  "OMIYA_OVERPASS": {
+    "note": "大宮跨線橋: 木津屋橋交差点+30mから上り、JR交点を頂点に東寺道-100mまで下る単峰。東寺東門前停留所は東寺道+20m。",
+    "name": "大宮跨線橋",
+    "startIntersection": "木津屋橋通",
+    "endIntersection": "東寺道",
+    "fromOffsetM": 30,
+    "toOffsetM": -100,
+    "fallbackToOffsetM": 262.2,
+    "height": 4,
+    "riseStartGrade": 0.035,
+    "fallPower": 3,
+    "laneOverride": 1,
+    "deckHalf": 7.2,
+    "underMarginM": 20,
+    "tojiHigashimonStopName": "東寺東門前",
+    "tojiHigashimonStopOffsetM": 20
+  },
+  "RAILWAY_CLASSIFICATION": {
+    "shinkansen": {
+      "gauges": ["1435"],
+      "nameIncludes": ["新幹線"],
+      "displayName": "東海道新幹線",
+      "length": 190,
+      "width": 16,
+      "trackCount": 2,
+      "layer": 3
+    },
+    "conventional": {
+      "gauges": ["1067"],
+      "nameIncludes": ["東海道本線", "山陰本線"],
+      "displayName": "JR在来線(東海道本線・山陰本線)",
+      "length": 185,
+      "trackWidthPerTrack": 3.2,
+      "widthPadding": 8,
+      "trackCountMin": 4,
+      "trackCountMax": 8,
+      "endMarginM": 18,
+      "layer": 0,
+      "roadLayer": 1
+    }
+  },
+  "WATER_SURFACE_NAMING": {
+    "maxAnchorDistanceM": 1800
+  },
+  "EXTRA_ROAD_TAG_OVERRIDES": {
+    "63124509": {
+      "name": "地蔵前南側北行き一方通行",
+      "lanes": 1,
+      "direction": "northbound"
+    },
+    "621847402": {
+      "name": "小枝橋西行き車線橋",
+      "lanes": 2,
+      "direction": "westbound"
+    }
+  },
+  "EXTRA_ROAD_WIDTH_M": 3.2,
+  "EXPRESSWAY_VIADUCT_DEFAULTS": {
+    "maxProjectionErrorM": 60,
+    "length": 210,
+    "width": 27,
+    "lanesEachWay": 3,
+    "layer": 2
+  }
 }

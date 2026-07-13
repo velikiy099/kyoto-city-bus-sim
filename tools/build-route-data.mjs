@@ -23,68 +23,49 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const OSM_PATCHES = JSON.parse(
   readFileSync(join(ROOT, "data", "definitions", "route18-osm-patches.json"), "utf8"),
 );
+const TUNING = JSON.parse(readFileSync(join(ROOT, "data", "definitions", "route18-pipeline-tuning.json"), "utf8"));
+const ROUTE18_INTERSECTIONS = JSON.parse(
+  readFileSync(join(ROOT, "data", "definitions", "route18-intersections.json"), "utf8"),
+);
 const CACHE = join(ROOT, "tools", "cache");
 const OUT = join(ROOT, "src", "data", "route18.json");
 const OSM_VISUAL_OUT = join(ROOT, "data", "osm", "route18-corridor.json");
 const RELATION_ID = OSM_PATCHES.RELATION_ID;
 const SOUTHBOUND_RELATION_ID = OSM_PATCHES.SOUTHBOUND_RELATION_ID;
 const KATSURA_RIVER_RELATION_ID = OSM_PATCHES.KATSURA_RIVER_RELATION_ID;
+const RAILWAY_CLASSIFICATION = OSM_PATCHES.RAILWAY_CLASSIFICATION;
+const EXPRESSWAY_VIADUCT_DEFAULTS = OSM_PATCHES.EXPRESSWAY_VIADUCT_DEFAULTS;
 // 久我石原町の終点構内にある南北の parking_aisle(way 1454593592)は、
 // バス停への構内動線であって、終点付近の公道として描かない。
 const TERMINUS_INTERNAL_WAY_IDS = new Set(OSM_PATCHES.TERMINUS_INTERNAL_WAY_IDS);
-const OVERPASS_ENDPOINTS = [
-  "https://overpass-api.de/api/interpreter",
-  "https://overpass.kumi.systems/api/interpreter",
-];
+const OVERPASS_ENDPOINTS = TUNING.OVERPASS_ENDPOINTS;
 const REFRESH_OSM = process.argv.includes("--refresh-osm");
 const REFRESH_RIVER_ONLY = process.argv.includes("--refresh-river");
 const OSM_RIVER_MAP = process.argv.find((arg) => arg.startsWith("--osm-river-map="))?.split("=").slice(1).join("=") ?? null;
 
 // 距離スケール: 実距離に乗算。1.0 で OSM 実距離どおり。
-const SCALE = 1.0;
-const CROSS_STREET_ARM_LEN = 100; // 交差点の腕(交差道路)を舗装・建物とも延ばす距離 [m]
-const CROSS_STREET_ARM_MIN = 15; // これ未満は「腕なし(行き止まり)」とみなす
-const RESAMPLE_STEP = 2; // 最終ポリラインの点間隔 [m]
-const FILLET_RADIUS = 18; // 緩い折れの円弧半径 [m]
-const FILLET_MIN_ANGLE = 25; // この角度[deg]を超える折れをフィレット化
-const TURN_MIN_ANGLE = 55; // この角度[deg]以上の折れは「右左折交差点」扱い(小半径+交差描画)
-const TURN_FILLET_RADIUS = 12; // 交差点内でバスが曲がる現実的な回転半径 [m]
-const ROAD_AROUND_RADIUS = 90; // route node 周辺から接続道路を拾う距離 [m]
-const BUILDING_AROUND_RADIUS = 95; // route node 周辺から沿道建物を拾う距離 [m]
-const BUILDING_ROADSIDE_DEPTH = 20; // 道路端から沿道建物として拾う奥行き [m]
-const FALLBACK_BUILDING_ROAD_HALF_WIDTH = 6;
-const RAILWAY_BBOX = [34.982, 135.744, 34.9895, 135.752]; // 七条大宮〜東寺東門前のJR線群
-const ROAD_TYPES = [
-  "primary",
-  "secondary",
-  "tertiary",
-  "unclassified",
-  "residential",
-  "service",
-];
-const VISUAL_ROAD_TYPES = [
-  "motorway",
-  "motorway_link",
-  "trunk",
-  "trunk_link",
-  "primary",
-  "primary_link",
-  "secondary",
-  "secondary_link",
-  "tertiary",
-  "tertiary_link",
-  "unclassified",
-  "residential",
-  "living_street",
-  "service",
-];
-const OSM_VISUAL_CORRIDOR_METERS = 240;
-const OSM_VEGETATION_CORRIDOR_METERS = 240;
-const NIJO_STATION_BBOX = [35.0094, 135.7394, 35.0134, 135.7438];
+const SCALE = TUNING.SCALE;
+const CROSS_STREET_ARM_LEN = TUNING.CROSS_STREET_ARM_LEN; // 交差点の腕(交差道路)を舗装・建物とも延ばす距離 [m]
+const CROSS_STREET_ARM_MIN = TUNING.CROSS_STREET_ARM_MIN; // これ未満は「腕なし(行き止まり)」とみなす
+const RESAMPLE_STEP = TUNING.RESAMPLE_STEP; // 最終ポリラインの点間隔 [m]
+const FILLET_RADIUS = TUNING.FILLET_RADIUS; // 緩い折れの円弧半径 [m]
+const FILLET_MIN_ANGLE = TUNING.FILLET_MIN_ANGLE; // この角度[deg]を超える折れをフィレット化
+const TURN_MIN_ANGLE = TUNING.TURN_MIN_ANGLE; // この角度[deg]以上の折れは「右左折交差点」扱い(小半径+交差描画)
+const TURN_FILLET_RADIUS = TUNING.TURN_FILLET_RADIUS; // 交差点内でバスが曲がる現実的な回転半径 [m]
+const ROAD_AROUND_RADIUS = TUNING.ROAD_AROUND_RADIUS; // route node 周辺から接続道路を拾う距離 [m]
+const BUILDING_AROUND_RADIUS = TUNING.BUILDING_AROUND_RADIUS; // route node 周辺から沿道建物を拾う距離 [m]
+const BUILDING_ROADSIDE_DEPTH = TUNING.BUILDING_ROADSIDE_DEPTH; // 道路端から沿道建物として拾う奥行き [m]
+const FALLBACK_BUILDING_ROAD_HALF_WIDTH = TUNING.FALLBACK_BUILDING_ROAD_HALF_WIDTH;
+const RAILWAY_BBOX = TUNING.RAILWAY_BBOX; // 七条大宮〜東寺東門前のJR線群
+const ROAD_TYPES = TUNING.ROAD_TYPES;
+const VISUAL_ROAD_TYPES = TUNING.VISUAL_ROAD_TYPES;
+const OSM_VISUAL_CORRIDOR_METERS = TUNING.OSM_VISUAL_CORRIDOR_METERS;
+const OSM_VEGETATION_CORRIDOR_METERS = TUNING.OSM_VEGETATION_CORRIDOR_METERS;
+const NIJO_STATION_BBOX = TUNING.NIJO_STATION_BBOX;
 // DETOUR_SOUTHBOUND(小枝橋→城南宮道→赤池→塔ノ森)はハードコード座標のため routeNodesQuery
 // の「経路ノード周辺」取得に乗らず、周辺道路・建物が一切取れない。bboxで直接補う。
-const DETOUR_BBOX = [34.943, 135.735, 34.956, 135.746]; // [south, west, north, east]
-const RIVER_BBOX = [34.93, 135.715, 34.965, 135.755]; // 鴨川・西高瀬川・桂川(小枝橋〜久我橋)
+const DETOUR_BBOX = TUNING.DETOUR_BBOX; // [south, west, north, east]
+const RIVER_BBOX = TUNING.RIVER_BBOX; // 鴨川・西高瀬川・桂川(小枝橋〜久我橋)
 
 // 南行き本線とは別の北行き一方通行路。地蔵前南側の対向車と景観道路に使う。
 // OSM way 63124509 は南端→北端の順で収録されているため、そのまま北行きの交通経路にする。
@@ -184,162 +165,50 @@ const HIGHWAY_CROSSINGS = OSM_PATCHES.HIGHWAY_CROSSINGS;
 // 久我地区
 const SPEED_ZONES = OSM_PATCHES.SPEED_ZONES;
 
-const LANE_W = 3.2; // 1車線幅 [m]
+const LANE_W = TUNING.LANE_W; // 1車線幅 [m]
 
 // 交差道路の実勢オーバーライド(交差点スタブの幅・車線数を交通量調査どおりに)
 // arms: heading方向(side:1)/heading+PI方向(side:-1)ごとの実在・車線・歩行者専用の上書き。
 // lanesF=heading方向(+heading)の車線数、lanesB=heading+PI方向の車線数(道路全体で共通)。
-const INTERSECTION_OVERRIDES = [
-  {
-    name: "四条通",
-    lanes: 5,
-    width: 17.6, // 片道2+右折で計5
-    arms: [
-      {
-        side: 1,
-        exists: true,
-        length: CROSS_STREET_ARM_LEN,
-        lanesF: 2,
-        lanesB: 2,
-      },
-      {
-        side: -1,
-        exists: true,
-        length: CROSS_STREET_ARM_LEN,
-        lanesF: 2,
-        lanesB: 2,
-      },
-    ],
-  },
-  {
-    name: "五条大宮",
-    label: "五条通",
-    lanes: 9,
-    width: 30.8,
-    median: 1, // 片道4+中央分離帯、交差点付近計9
-    arms: [
-      {
-        side: 1,
-        exists: true,
-        length: CROSS_STREET_ARM_LEN,
-        lanesF: 4,
-        lanesB: 4,
-      },
-      {
-        side: -1,
-        exists: true,
-        length: CROSS_STREET_ARM_LEN,
-        lanesF: 4,
-        lanesB: 4,
-      },
-    ],
-  },
-  {
-    name: "七条通",
-    lanes: 4,
-    width: 14.4, // 片道2
-    arms: [
-      {
-        side: 1,
-        exists: true,
-        length: CROSS_STREET_ARM_LEN,
-        lanesF: 2,
-        lanesB: 2,
-      },
-      {
-        side: -1,
-        exists: true,
-        length: CROSS_STREET_ARM_LEN,
-        lanesF: 2,
-        lanesB: 2,
-      },
-    ],
-  },
-  // 千本三条: heading(side1)は西向き。西側=東行き3車線・西行き2車線(実在)。
-  // 東側(side-1)は商店街(歩行者専用、車道なし)
-  {
-    name: "三条通",
-    arms: [
-      {
-        side: 1,
-        exists: true,
-        length: CROSS_STREET_ARM_LEN,
-        lanesF: 2,
-        lanesB: 3,
-      },
-      {
-        side: -1,
-        exists: true,
-        length: CROSS_STREET_ARM_LEN,
-        pedestrian: true,
-        lanesF: 0,
-        lanesB: 0,
-      },
-    ],
-  },
-  // 京阪国道口(国道1号): heading(side1)は南向き。北行き1車線・南行き2車線(実在、南北とも)。
-  // 交差点自体の幅(計5車線分の広さ)は width で表現。
-  {
-    name: "壬生通",
-    label: "京阪国道口(国道1号)",
-    lanes: 5,
-    width: 17.6,
-    arms: [
-      {
-        side: 1,
-        exists: true,
-        length: CROSS_STREET_ARM_LEN,
-        lanesF: 2,
-        lanesB: 1,
-      },
-      {
-        side: -1,
-        exists: true,
-        length: CROSS_STREET_ARM_LEN,
-        lanesF: 2,
-        lanesB: 1,
-      },
-    ],
-  },
-];
+// 片道2+右折で計5
+// 片道4+中央分離帯、交差点付近計9
+// 片道2
+// 千本三条: heading(side1)は西向き。西側=東行き3車線・西行き2車線(実在)。
+// 東側(side-1)は商店街(歩行者専用、車道なし)
+// 京阪国道口(国道1号): heading(side1)は南向き。北行き1車線・南行き2車線(実在、南北とも)。
+// 交差点自体の幅(計5車線分の広さ)は width で表現。
+const INTERSECTION_OVERRIDES = ROUTE18_INTERSECTIONS.INTERSECTION_OVERRIDES.map(
+  (entry) => ({
+    ...entry,
+    ...(entry.arms
+      ? {
+          arms: entry.arms.map((arm) => ({
+            ...arm,
+            length: arm.length ?? CROSS_STREET_ARM_LEN,
+          })),
+        }
+      : {}),
+  }),
+);
 
 // 右左折交差点の脚オーバーライド(vertex 近傍の実座標でマッチ)
-const TURN_OVERRIDES = [
-  // 二条駅西口: 駅構内サービス路から御池通へ出る接続点。ここは単なる
-  // 経路の折れではなく、OSM way 987925655 の御池通西側が続くT字接続。
-  // 自動推定では経路のフィレットに隠れて交差道路名が落ちるため、実測方位を
-  // 明示して駅前の西向き腕を描く。
-  {
-    anchor: [35.0114432, 135.7404478],
-    crossName: "御池通",
-    stubInHeadingDeg: -80.3,
-    stubInHw: 4.0,
-    stubInLen: 100,
-  },
-  {
-    anchor: [34.97938, 135.74931],
-    stubInHw: 4.0,
-    crossWidth: 8.0,
-    crossLanes: 2,
-  }, // 九条大宮: 大宮通(九条以南)は片道1
-  { anchor: [34.95865, 135.74266], crossName: "千本通" }, // Overpass実測で確認(way 63124503等)
-  // 久我石原町終点の南北 parking_aisle は TERMINUS_INTERNAL_WAY_IDS で経路から除外。
-  // そのため、ここは右左折交差点として扱わない。
-  // 小枝橋(鴨川)西詰: 千本通(北)から小枝橋(東)へ折れる分岐点。上河原橋方面への
-  // 一方通行ペア(way 27829570 北東行き / way 621847404 南西行き)が南西へ分岐する
-  // 実在の交差点(OSM に信号ノードは無い)。直進スタブは実道路の方位(南西、実測 -68.2°)
-  // へ向け、交差点の西側には道路が実在しないため退出道路の後方延長は描かない。
-  {
-    anchor: [34.9511124, 135.7413116],
-    crossName: "羽束師墨染線(上河原橋方面)",
-    stubInLen: 100,
-    stubInHeadingDeg: -68.2, // 直進スタブの絶対方位 [deg](atan2(dx,dz)規約、A→(34.9508024,135.7403621) の実測)
-    stubBackLen: 0, // 交差点の向こう(西=鴨川の土手)に道路は実在しない
-  },
-  // 小枝橋(鴨川)東詰: 小枝橋側の道路(羽束師墨染線)から千本通(城南宮方面)へ乗り換える
-  // 実在の分岐点。進入路(羽束師墨染線)はこの先も約100m実景観に合わせて続く。
-  { anchor: [34.9513353, 135.7427624], crossName: "千本通", stubInLen: 100 },
-];
+// 二条駅西口: 駅構内サービス路から御池通へ出る接続点。ここは単なる
+// 経路の折れではなく、OSM way 987925655 の御池通西側が続くT字接続。
+// 自動推定では経路のフィレットに隠れて交差道路名が落ちるため、実測方位を
+// 明示して駅前の西向き腕を描く。
+// 九条大宮: 大宮通(九条以南)は片道1
+// Overpass実測で確認(way 63124503等)
+// 久我石原町終点の南北 parking_aisle は TERMINUS_INTERNAL_WAY_IDS で経路から除外。
+// そのため、ここは右左折交差点として扱わない。
+// 小枝橋(鴨川)西詰: 千本通(北)から小枝橋(東)へ折れる分岐点。上河原橋方面への
+// 一方通行ペア(way 27829570 北東行き / way 621847404 南西行き)が南西へ分岐する
+// 実在の交差点(OSM に信号ノードは無い)。直進スタブは実道路の方位(南西、実測 -68.2°)
+// へ向け、交差点の西側には道路が実在しないため退出道路の後方延長は描かない。
+// 直進スタブの絶対方位 [deg](atan2(dx,dz)規約、A→(34.9508024,135.7403621) の実測)
+// 交差点の向こう(西=鴨川の土手)に道路は実在しない
+// 小枝橋(鴨川)東詰: 小枝橋側の道路(羽束師墨染線)から千本通(城南宮方面)へ乗り換える
+// 実在の分岐点。進入路(羽束師墨染線)はこの先も約100m実景観に合わせて続く。
+const TURN_OVERRIDES = ROUTE18_INTERSECTIONS.TURN_OVERRIDES;
 
 // ---------------------------------------------------------------- utilities
 
@@ -1709,12 +1578,11 @@ function railwayMetadata(path, cumLen, origin, railWays, sFrom, sTo) {
     const name = tags["name:ja"] ?? tags.name ?? "";
     const isShinkansen =
       tags.highspeed === "yes" ||
-      tags.gauge === "1435" ||
-      name.includes("新幹線");
+      RAILWAY_CLASSIFICATION.shinkansen.gauges.includes(tags.gauge) ||
+      RAILWAY_CLASSIFICATION.shinkansen.nameIncludes.some((kw) => name.includes(kw));
     const isConventional =
-      tags.gauge === "1067" ||
-      name.includes("東海道本線") ||
-      name.includes("山陰本線");
+      RAILWAY_CLASSIFICATION.conventional.gauges.includes(tags.gauge) ||
+      RAILWAY_CLASSIFICATION.conventional.nameIncludes.some((kw) => name.includes(kw));
     if (!isShinkansen && !isConventional) continue;
     groups[isShinkansen ? "shinkansen" : "conventional"].push({
       s: hit.s,
@@ -1746,28 +1614,35 @@ function railwayMetadata(path, cumLen, origin, railWays, sFrom, sTo) {
     if (kind === "shinkansen") {
       return {
         kind: "shinkansen-viaduct",
-        name: "東海道新幹線",
+        name: RAILWAY_CLASSIFICATION.shinkansen.displayName,
         s: +s.toFixed(1),
         heading: +heading.toFixed(4),
-        length: 190,
-        width: 16,
-        trackCount: 2,
-        layer: 3,
+        length: RAILWAY_CLASSIFICATION.shinkansen.length,
+        width: RAILWAY_CLASSIFICATION.shinkansen.width,
+        trackCount: RAILWAY_CLASSIFICATION.shinkansen.trackCount,
+        layer: RAILWAY_CLASSIFICATION.shinkansen.layer,
       };
     }
-    const trackCount = clamp(Math.round(mainTracks || sorted.length), 4, 8);
+    const trackCount = clamp(
+      Math.round(mainTracks || sorted.length),
+      RAILWAY_CLASSIFICATION.conventional.trackCountMin,
+      RAILWAY_CLASSIFICATION.conventional.trackCountMax,
+    );
     return {
       kind: "conventional-underpass",
-      name: "JR在来線(東海道本線・山陰本線)",
+      name: RAILWAY_CLASSIFICATION.conventional.displayName,
       s: +s.toFixed(1),
-      fromS: +Math.max(sFrom, sMin - 18).toFixed(1),
-      toS: +Math.min(sTo, sMax + 18).toFixed(1),
+      fromS: +Math.max(sFrom, sMin - RAILWAY_CLASSIFICATION.conventional.endMarginM).toFixed(1),
+      toS: +Math.min(sTo, sMax + RAILWAY_CLASSIFICATION.conventional.endMarginM).toFixed(1),
       heading: +heading.toFixed(4),
-      length: 185,
-      width: +(trackCount * 3.2 + 8).toFixed(1),
+      length: RAILWAY_CLASSIFICATION.conventional.length,
+      width: +(
+        trackCount * RAILWAY_CLASSIFICATION.conventional.trackWidthPerTrack +
+        RAILWAY_CLASSIFICATION.conventional.widthPadding
+      ).toFixed(1),
       trackCount,
-      layer: 0,
-      roadLayer: 1,
+      layer: RAILWAY_CLASSIFICATION.conventional.layer,
+      roadLayer: RAILWAY_CLASSIFICATION.conventional.roadLayer,
     };
   };
 
@@ -2413,36 +2288,18 @@ function buildFallback() {
   console.log("[fallback] 内蔵の実測停留所座標(OSM由来)を直結して経路を生成");
   // OSMから取得済みの実座標を埋め込み(南行き順)
   const coords = {
-    二条駅西口: [35.011273, 135.74124],
-    二条駅前: [35.0115206, 135.7424701],
-    "千本三条・朱雀立命館前": [35.0089865, 135.7425339],
-    みぶ操車場前: [35.0061817, 135.7456743],
-    四条大宮: [35.0040538, 135.7484709],
-    大宮松原: [34.9992554, 135.7490947],
-    大宮五条: [34.9970686, 135.7491156],
-    島原口: [34.9933278, 135.7490955],
-    "七条大宮・京都水族館前": [34.9884228, 135.7490843],
-    東寺東門前: [34.9823598, 135.7491945],
-    九条大宮: [34.9801091, 135.7491864],
-    東寺南門前: [34.9793729, 135.7469272],
-    羅城門: [34.97912, 135.7429916],
-    唐戸町: [34.9760434, 135.7413693],
+    ...OSM_PATCHES.FALLBACK_STOP_COORDS,
     千本十条: SOUTHBOUND_STOP_OVERRIDES["千本十条"],
     五丁橋: SOUTHBOUND_STOP_OVERRIDES["五丁橋"],
     上ノ町: SOUTHBOUND_STOP_OVERRIDES["上ノ町"],
     上鳥羽村山町: SOUTHBOUND_STOP_OVERRIDES["上鳥羽村山町"],
     上鳥羽小学校前: SOUTHBOUND_STOP_OVERRIDES["上鳥羽小学校前"],
-    城ケ前町: [34.9626138, 135.7424736],
-    岩ノ本町: [34.9607101, 135.7425161],
     地蔵前: SOUTHBOUND_STOP_OVERRIDES["地蔵前"],
     奈須野: SOUTHBOUND_STOP_OVERRIDES["奈須野"],
     小枝橋: SOUTHBOUND_STOP_OVERRIDES["小枝橋"],
     城南宮道: EXTRA_STOPS["城南宮道"],
     赤池: EXTRA_STOPS["赤池"],
     上鳥羽塔ノ森: SOUTHBOUND_STOP_OVERRIDES["上鳥羽塔ノ森"],
-    久我: [34.945528, 135.7342175],
-    菱妻神社前: [34.94775, 135.7293566],
-    久我石原町: [34.9476875, 135.7248118],
   };
   const line = STOP_ORDER.map((n) => coords[n]);
   const stopsLL = STOP_ORDER.map((n) => ({ name: n, latlon: coords[n] }));
@@ -2518,7 +2375,9 @@ async function main() {
         ),
       }))
       .sort((a, b) => a.distance - b.distance)[0];
-    return nearest?.distance <= 1800 ? nearest.name : null;
+    return nearest?.distance <= OSM_PATCHES.WATER_SURFACE_NAMING.maxAnchorDistanceM
+      ? nearest.name
+      : null;
   };
   const waterPolygons = waterElements.map((element) => {
     const polygon = project(
@@ -2564,8 +2423,8 @@ async function main() {
     const l = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1e-9;
     return [a[0] + ((a[0] - b[0]) / l) * d, a[1] + ((a[1] - b[1]) / l) * d];
   };
-  path.unshift(ext(path[0], path[1], 18));
-  path.push(ext(path.at(-1), path.at(-2), 30));
+  path.unshift(ext(path[0], path[1], TUNING.PATH_START_EXTENSION_M));
+  path.push(ext(path.at(-1), path.at(-2), TUNING.PATH_END_EXTENSION_M));
   const filleted = filletCorners(
     path,
     FILLET_RADIUS,
@@ -2590,6 +2449,7 @@ async function main() {
 
   // 景観道路・交通AIが共有するOSMポリライン。wayの向きは南端→北端へ正規化する。
   const extraRoads = (extraRoadWays ?? []).map((way) => {
+    const override = OSM_PATCHES.EXTRA_ROAD_TAG_OVERRIDES[String(way.id)] ?? {};
     const geometry = way.geometry.map((p) => [p.lat, p.lon]);
     if (geometry[0][0] > geometry.at(-1)[0]) geometry.reverse();
     const points = rdp(
@@ -2599,13 +2459,12 @@ async function main() {
     const merge = projectToPath(path, cumLen, points.at(-1), 0);
     return {
       id: way.id,
-      name: way.tags?.name ??
-        (way.id === 621847402 ? "小枝橋西行き車線橋" : "地蔵前南側北行き一方通行"),
+      name: way.tags?.name ?? override.name,
       points,
-      width: 3.2,
-      lanes: Number(way.tags?.lanes) || (way.id === 621847402 ? 2 : 1),
+      width: OSM_PATCHES.EXTRA_ROAD_WIDTH_M,
+      lanes: Number(way.tags?.lanes) || override.lanes,
       oneway: true,
-      direction: way.id === 621847402 ? "westbound" : "northbound",
+      direction: override.direction,
       mergeS: +merge.s.toFixed(1),
     };
   });
@@ -2664,54 +2523,65 @@ async function main() {
   );
   if (railJR) {
     const omiyaKizuyabashi = intersections.find(
-      (ix) => ix.name === "木津屋橋通" && ix.s < railJR.s,
+      (ix) => ix.name === OSM_PATCHES.OMIYA_OVERPASS.startIntersection && ix.s < railJR.s,
     );
     if (!omiyaKizuyabashi) {
       throw new Error("大宮木津屋橋交差点が見つからないため、大宮跨線橋の開始点を決定できません");
     }
     const tojimae = intersections.find(
-      (ix) => ix.name === "東寺道" && ix.s > railJR.s,
+      (ix) => ix.name === OSM_PATCHES.OMIYA_OVERPASS.endIntersection && ix.s > railJR.s,
     );
     // 実際の道路形状に合わせ、交差点中心から30m南を側道分岐・上り坂開始点とする。
     // 無名OSM道路との交点(s=3446.3)は側道分岐ではないため、開始点には使わない。
-    const from = +(omiyaKizuyabashi.s + 30).toFixed(1);
+    const from = +(omiyaKizuyabashi.s + OSM_PATCHES.OMIYA_OVERPASS.fromOffsetM).toFixed(1);
     const peak = +railJR.s.toFixed(1);
-    const to = tojimae ? +(tojimae.s - 100).toFixed(1) : +(railJR.toS + 262.2).toFixed(1);
+    const to = tojimae
+      ? +(tojimae.s + OSM_PATCHES.OMIYA_OVERPASS.toOffsetM).toFixed(1)
+      : +(railJR.toS + OSM_PATCHES.OMIYA_OVERPASS.fallbackToOffsetM).toFixed(1);
     Object.assign(railJR, {
       bridgeFromS: from,
       bridgeToS: to,
       approachIn: 0,
       approachOut: 0,
-      deckHalf: 7.2,
+      deckHalf: OSM_PATCHES.OMIYA_OVERPASS.deckHalf,
     });
     elevations.push({
-      name: "大宮跨線橋",
+      name: OSM_PATCHES.OMIYA_OVERPASS.name,
       profile: "single-crest",
       from,
       peak,
       to,
-      height: 4,
+      height: OSM_PATCHES.OMIYA_OVERPASS.height,
       // 北側はPLATEAU地表の局所的な盛り上がりを越えつつ、JR交点で
       // 勾配0になる単調なHermite曲線にする。3.5%は都市部跨線橋として
       // 緩やかな範囲で、開始直後から路面が確実に地表より上へ離れる。
-      riseStartGrade: 0.035,
+      riseStartGrade: OSM_PATCHES.OMIYA_OVERPASS.riseStartGrade,
       // South of the JR crossing the PLATEAU ground rises again. Use an
       // absolute vertical alignment with a delayed power descent so the JR
       // crossing remains the sole crest while the road stays above terrain.
-      fallPower: 3,
+      fallPower: OSM_PATCHES.OMIYA_OVERPASS.fallPower,
       approachIn: 0,
       approachOut: 0,
-      laneOverride: 1,
+      laneOverride: OSM_PATCHES.OMIYA_OVERPASS.laneOverride,
       // 自動運転は大宮木津屋橋交差点から中央側へ寄せ始め、
       // 30m南の側道分岐・橋開始点で橋上車線への合流を完了する。
       autoEntryFrom: +omiyaKizuyabashi.s.toFixed(1),
     });
     for (const ix of intersections) {
-      if (ix.s > from - 20 && ix.s < to + 20) ix.under = 1; // 八条通など高架下の交差道路は地上のまま
+      if (
+        ix.s > from - OSM_PATCHES.OMIYA_OVERPASS.underMarginM &&
+        ix.s < to + OSM_PATCHES.OMIYA_OVERPASS.underMarginM
+      ) ix.under = 1; // 八条通など高架下の交差道路は地上のまま
     }
     // 東寺東門前停留所: 東寺道交差点の約20m先(南)に実際の停留所がある
-    const tojimonStop = stops.find((st) => st.name === "東寺東門前");
-    if (tojimae && tojimonStop) tojimonStop.s = +(tojimae.s + 20).toFixed(1);
+    const tojimonStop = stops.find(
+      (st) => st.name === OSM_PATCHES.OMIYA_OVERPASS.tojiHigashimonStopName,
+    );
+    if (tojimae && tojimonStop) {
+      tojimonStop.s = +(
+        tojimae.s + OSM_PATCHES.OMIYA_OVERPASS.tojiHigashimonStopOffsetM
+      ).toFixed(1);
+    }
   }
   // 鴨川(小枝橋)・名神高速道路が近接して交差する地点: 川岸なので道路をわずかに高く、
   // 川を低く見せる(river-crossing elevation。車線数は変えない = laneOverride なし)
@@ -2767,7 +2637,7 @@ async function main() {
   for (const hc of HIGHWAY_CROSSINGS) {
     const pt = project([hc.anchor], origin)[0].map((v) => v * SCALE);
     const { s, dist } = projectToPath(path, cumLen, pt, 0);
-    if (dist > 60) {
+    if (dist > EXPRESSWAY_VIADUCT_DEFAULTS.maxProjectionErrorM) {
       console.warn(
         `  警告: 名神高速クロッシングの射影誤差 ${dist.toFixed(0)}m @ ${hc.name}`,
       );
@@ -2778,10 +2648,10 @@ async function main() {
       name: hc.name,
       s: +s.toFixed(1),
       heading: +(routeHeadingAt(path, cumLen, s) + Math.PI / 2).toFixed(4),
-      length: hc.length ?? 210,
-      width: 27,
-      lanesEachWay: 3,
-      layer: 2,
+      length: hc.length ?? EXPRESSWAY_VIADUCT_DEFAULTS.length,
+      width: EXPRESSWAY_VIADUCT_DEFAULTS.width,
+      lanesEachWay: EXPRESSWAY_VIADUCT_DEFAULTS.lanesEachWay,
+      layer: EXPRESSWAY_VIADUCT_DEFAULTS.layer,
     });
   }
   railStructures.sort((a, b) => a.s - b.s);

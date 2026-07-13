@@ -1,0 +1,84 @@
+{
+  "INTERSECTION_OVERRIDES": [
+    {
+      "name": "四条通",
+      "lanes": 5,
+      "width": 17.6,
+      "arms": [
+        { "side": 1, "exists": true, "lanesF": 2, "lanesB": 2 },
+        { "side": -1, "exists": true, "lanesF": 2, "lanesB": 2 }
+      ]
+    },
+    {
+      "name": "五条大宮",
+      "label": "五条通",
+      "lanes": 9,
+      "width": 30.8,
+      "median": 1,
+      "arms": [
+        { "side": 1, "exists": true, "lanesF": 4, "lanesB": 4 },
+        { "side": -1, "exists": true, "lanesF": 4, "lanesB": 4 }
+      ]
+    },
+    {
+      "name": "七条通",
+      "lanes": 4,
+      "width": 14.4,
+      "arms": [
+        { "side": 1, "exists": true, "lanesF": 2, "lanesB": 2 },
+        { "side": -1, "exists": true, "lanesF": 2, "lanesB": 2 }
+      ]
+    },
+    {
+      "name": "三条通",
+      "arms": [
+        { "side": 1, "exists": true, "lanesF": 2, "lanesB": 3 },
+        {
+          "side": -1,
+          "exists": true,
+          "pedestrian": true,
+          "lanesF": 0,
+          "lanesB": 0
+        }
+      ]
+    },
+    {
+      "name": "壬生通",
+      "label": "京阪国道口(国道1号)",
+      "lanes": 5,
+      "width": 17.6,
+      "arms": [
+        { "side": 1, "exists": true, "lanesF": 2, "lanesB": 1 },
+        { "side": -1, "exists": true, "lanesF": 2, "lanesB": 1 }
+      ]
+    }
+  ],
+  "TURN_OVERRIDES": [
+    {
+      "anchor": [35.0114432, 135.7404478],
+      "crossName": "御池通",
+      "stubInHeadingDeg": -80.3,
+      "stubInHw": 4.0,
+      "stubInLen": 100
+    },
+    {
+      "anchor": [34.97938, 135.74931],
+      "stubInHw": 4.0,
+      "crossWidth": 8.0,
+      "crossLanes": 2
+    },
+    { "anchor": [34.95865, 135.74266], "crossName": "千本通" },
+    {
+      "anchor": [34.9511124, 135.7413116],
+      "crossName": "羽束師墨染線(上河原橋方面)",
+      "stubInLen": 100,
+      "stubInHeadingDeg": -68.2,
+      "stubBackLen": 0
+    },
+    {
+      "anchor": [34.9513353, 135.7427624],
+      "crossName": "千本通",
+      "stubInLen": 100
+    }
+  ]
+}
