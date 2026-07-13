@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import ROUTE_SEMANTICS from "../data/definitions/route-semantics.json" with { type: "json" };
 import { elevationAt } from "../route/routeData.js";
 import { terrainHeightAtWorld } from "../world/declarative/continuousTerrain.js";
 import { loadProps } from "../util/propsLib.js";
@@ -106,7 +107,7 @@ export function buildStops(scene, path, stops) {
   }
 
   stops.forEach((stop, i) => {
-    const terminal = stop.name === "久我石原町"
+    const terminal = stop.name === ROUTE_SEMANTICS.terminal
       ? terminusStopAnchor(terminusLotAnchor(path))
       : null;
     // The stopping pose is the single source for the stop marker, pole,

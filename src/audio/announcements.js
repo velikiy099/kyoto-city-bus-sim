@@ -1,4 +1,6 @@
 /** 車内アナウンス(Web Speech API・ja-JP がなければ既定音声で読み上げ) */
+import ANNOUNCEMENT_COPY from "../data/definitions/announcements.json" with { type: "json" };
+
 let jaVoice = null;
 let available = false;
 let currentUtterance = null;
@@ -98,23 +100,23 @@ function speak(text, { queueIfBusy = false } = {}) {
 }
 
 export function announceNext(stopName) {
-  speak(`次は、${stopName}、${stopName}です。`);
+  speak(ANNOUNCEMENT_COPY.next.replaceAll("{stop}", stopName));
 }
 
 /** 降車ボタン押下相当(次停に降車客がいて接近した)時のアナウンス。
  * 「次は、〇〇です」発話中に鳴った場合は、その発話が終わるまで割り込まず待つ。 */
 export function announceStopping() {
-  speak("次、止まります。危険ですのでバスが停車してから席をお立ちください。", {
+  speak(ANNOUNCEMENT_COPY.stopping, {
     queueIfBusy: true,
   });
 }
 
 export function announceTerminal() {
   speak(
-    "久我石原町、終点です。本日は京都市バスをご利用いただき、ありがとうございました。",
+    ANNOUNCEMENT_COPY.terminal,
   );
 }
 
 export function announceStart() {
-  speak("18系統、大宮通りから千本十条、久我石原町へまいります。");
+  speak(ANNOUNCEMENT_COPY.start);
 }

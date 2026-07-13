@@ -1,4 +1,6 @@
 /** ミニマップ(canvas 2D・縦長路線図) */
+import ROUTE_SEMANTICS from "../data/definitions/route-semantics.json" with { type: "json" };
+
 export function createMinimap(path, stops) {
   const W = 150,
     H = 430,
@@ -73,9 +75,9 @@ export function createMinimap(path, stops) {
       ctx.font = "bold 10px sans-serif";
       ctx.textAlign = "center";
       const [tx, ty] = stopPts[0];
-      ctx.fillText("二条駅西口", tx, ty - 7);
+      ctx.fillText(ROUTE_SEMANTICS.origin, tx, ty - 7);
       const [gx, gy] = stopPts[stopPts.length - 1];
-      ctx.fillText("久我石原町", gx, gy + 14);
+      ctx.fillText(ROUTE_SEMANTICS.terminal, gx, gy + 14);
     },
   };
 }

@@ -1,5 +1,6 @@
 import raw from "../data/route18.json";
 import drivingNetwork from "../data/generated/driving-network.json";
+import ROUTE_SEMANTICS from "../data/definitions/route-semantics.json" with { type: "json" };
 import { RoutePath } from "./path.js";
 
 /**
@@ -41,7 +42,7 @@ export const route = {
   path,
   surfacePath,
   terminalStop: raw.terminalStop ?? null,
-  stops: (drivingNetwork.stops ?? []).filter((stop) => stop.name !== "上鳥羽村山町"),
+  stops: (drivingNetwork.stops ?? []).filter((stop) => !ROUTE_SEMANTICS.excludedStops.includes(stop.name)),
   bridges: drivingNetwork.bridges ?? [],
   rivers: raw.rivers ?? [],
   waterPolygons: raw.waterPolygons ?? [],

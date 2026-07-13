@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import ROUTE_SEMANTICS from "../data/definitions/route-semantics.json" with { type: "json" };
 
 const SIGN_WIDTH = 512;
 const SIGN_HEIGHT = 128;
@@ -10,23 +11,8 @@ const ENGLISH_MAX_SIZE = 23;
 const DIVIDER_Y = 81;
 const NUMBER_VERTICAL_SCALE = 1.3;
 
-const DISPLAY_COPY = {
-  selfBeforeKujo: {
-    via: "大宮通",
-    japanese: "東寺・久我石原町",
-    english: "Koga Ishiharacho",
-  },
-  selfAfterKujo: {
-    via: null,
-    japanese: "久我石原町",
-    english: "Koga Ishiharacho",
-  },
-  oncoming: {
-    via: "大宮通",
-    japanese: "四条大宮・二条駅",
-    english: "Nijo Sta. Via Shijo Omiya",
-  },
-};
+const DISPLAY_COPY = ROUTE_SEMANTICS.HEADSIGNS;
+const ROUTE_NUMBER = ROUTE_SEMANTICS.routeNumber;
 
 function fittedFont(ctx, text, maxSize, maxWidth, weight = "bold") {
   let size = maxSize;
@@ -86,7 +72,7 @@ function drawDisplay(ctx, copy) {
   ctx.fillStyle = NUMBER_BOX_COLOR;
   ctx.fillRect(NUMBER_BOX_X, 0, SIGN_WIDTH - NUMBER_BOX_X, SIGN_HEIGHT);
   const numberPanelWidth = SIGN_WIDTH - NUMBER_BOX_X;
-  ctx.font = fittedFont(ctx, "18", 128, numberPanelWidth - 8);
+  ctx.font = fittedFont(ctx, ROUTE_NUMBER, 128, numberPanelWidth - 8);
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   const numberX = NUMBER_BOX_X + numberPanelWidth / 2;
@@ -96,9 +82,9 @@ function drawDisplay(ctx, copy) {
   ctx.save();
   ctx.translate(numberX, 66);
   ctx.scale(1, NUMBER_VERTICAL_SCALE);
-  ctx.strokeText("18", 0, 0);
+  ctx.strokeText(ROUTE_NUMBER, 0, 0);
   ctx.fillStyle = "#ffffff";
-  ctx.fillText("18", 0, 0);
+  ctx.fillText(ROUTE_NUMBER, 0, 0);
   ctx.restore();
 
   // The compact terminal display has no left frame and uses a white divider.

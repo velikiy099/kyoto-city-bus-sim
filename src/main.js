@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import "./style.css";
+import ROUTE_SEMANTICS from "./data/definitions/route-semantics.json" with { type: "json" };
 import { CFG } from "./config.js";
 import {
   route,
@@ -54,7 +55,7 @@ import {
 const STEP = 1 / 60;
 const DOOR_OFFSET = CFG.bus.wheelbase + 1.3; // 後軸→前扉
 const path = route.path;
-const kujoOmiyaS = route.stops.find((stop) => stop.name === "九条大宮")?.s ?? Infinity;
+const kujoOmiyaS = route.stops.find((stop) => stop.name === ROUTE_SEMANTICS.headsignPhaseSwitchStop)?.s ?? Infinity;
 configureWorldHeightSamplers(
   path,
   terrainElevationAt,
