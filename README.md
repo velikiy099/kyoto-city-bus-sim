@@ -13,6 +13,24 @@ npm run dev
 
 ブラウザで `http://localhost:5173` を開きます。
 
+## データ生成(初回セットアップ)
+
+OSM/PLATEAU由来の生成データ（`src/data/route18.json`、`src/data/generated/`、`src/world/declarative/generated/`、`public/world/generated/`、`public/world/world-manifest.json`、`data/osm/`）は、gitにコミットしない方針です。路線データとPLATEAUワールドデータの詳細は後述の各節を参照してください。
+
+クローン直後は生成データがないため、`npm run dev` / `npm run build` がプリフライトチェック（`tools/check-generated-data.mjs`）で失敗し、不足しているファイルと再生成手順が表示されます。
+
+再生成手順:
+
+```bash
+npm run build-data
+npm run world:download
+npm run world:build
+```
+
+所要時間の目安は、PLATEAUのダウンロードに数GB、変換に数十分です。
+
+注意: `git clean -fdx` 等は、git管理外の生成データやOSMキャッシュ（`tools/cache/`）を削除するため、実行前に注意してください。
+
 ## 操作
 
 | キー | 操作 |

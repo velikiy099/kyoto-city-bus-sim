@@ -4,6 +4,9 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "predev": "node tools/check-generated-data.mjs",
+    "prebuild": "node tools/check-generated-data.mjs",
+    "check-data": "node tools/check-generated-data.mjs",
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
