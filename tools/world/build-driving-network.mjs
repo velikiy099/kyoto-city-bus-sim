@@ -10,6 +10,7 @@ import { config, resolveRoot, valueAfter, writeJson } from "./lib.mjs";
 import { archedDeckElevation, flatDeckElevation } from "../../src/route/structureProfiles.js";
 
 const cfg = config();
+const PATCHES = JSON.parse(fs.readFileSync(resolveRoot("data/definitions/driving-network-patches.json"), "utf8"));
 const routeFile = path.resolve(valueAfter("--route") ?? resolveRoot(cfg.osm.routeFile));
 const transportFile = path.resolve(valueAfter("--transportation") ?? resolveRoot(cfg.output.plateauTransportation));
 const terrainFile = path.resolve(valueAfter("--terrain") ?? resolveRoot(cfg.output.plateauTerrain));
@@ -22,9 +23,10 @@ const terrain = read(terrainFile).grid;
 const osmSource = read(osmSourceFile);
 const TRAFFIC_BRANCH_METERS = Number(cfg.osm.trafficBranchMeters ?? 250);
 
-const CELL = 40;
-const SNAP_LIMIT = 12;
-const BUS_HALF_WIDTH = 1.28;
+const CELL = PATCHES.CELL;
+const SNAP_LIMIT = PATCHES.SNAP_LIMIT;
+const BUS_HALF_WIDTH = PATCHES.BUS_HALF_WIDTH;
+const LANE_WIDTH = PATCHES.LANE_WIDTH;
 const key = (x, z) => `${Math.floor(x / CELL)}:${Math.floor(z / CELL)}`;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 
@@ -303,7 +305,7 @@ const physicalLaneRows = center.map((point, index) => {
     const outerSide = Math.sign(nijoRotary.busLateral || -1);
     for (let lane = 0; lane < forwardCount; lane++) {
       active.forward[lane] = true;
-      offsets.forward[lane] = nijoRotary.busLateral - outerSide * 3.2 * lane;
+      offsets.forward[lane] = nijoRotary.busLateral - outerSide * LANE_WIDTH * lane;
     }
     const outer = nijoRotary.busLateral + outerSide * 1.6;
     const inner = nijoRotary.busLateral - outerSide * 4.8;
@@ -486,10 +488,10 @@ function baseTerrainAtRaw(rawS) {
   return baseTerrainY[index] + (baseTerrainY[index + 1] - baseTerrainY[index]) * t;
 }
 
-const KOGA_BRIDGE_WAY_ID = 27829715;
+const KOGA_BRIDGE_WAY_ID = PATCHES.KOGA_BRIDGE_WAY_ID;
 const kogaBridgeRoad = (osmSource.roads ?? []).find((road) =>
   Number(road.id) === KOGA_BRIDGE_WAY_ID
-  || (road.tags?.bridge === "yes" && road.tags?.name === "伏見向日線")
+  || (road.tags?.bridge === "yes" && road.tags?.name === PATCHES.KOGA_BRIDGE_NAME_FALLBACK)
 );
 
 function rawSAtPoint(point) {
@@ -511,10 +513,10 @@ const kogaBridgeRawRange = kogaBridgeRoad?.points?.length >= 2
   : null;
 
 function resolvedStructure(structure) {
-  const range = structure.name === "久我橋(桂川)(flat deck)" && kogaBridgeRawRange
+  const range = structure.name === PATCHES.KOGA_FLAT_DECK_STRUCTURE_NAME && kogaBridgeRawRange
     ? kogaBridgeRawRange
     : [Number(structure.from), Number(structure.to)];
-  const isKogaFlatDeck = structure.name === "久我橋(桂川)(flat deck)"
+  const isKogaFlatDeck = structure.name === PATCHES.KOGA_FLAT_DECK_STRUCTURE_NAME
     && structure.profile === "flat-deck"
     && Boolean(kogaBridgeRawRange);
   return {
@@ -531,7 +533,7 @@ for (const structure of route.elevations ?? []) {
   const from = Number(resolved.from), to = Number(resolved.to);
   if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from) continue;
   if (structure.profile === "flat-deck") {
-    const isTenjinFlatDeck = resolved.name === "天神橋(西高瀬川)(flat deck)";
+    const isTenjinFlatDeck = resolved.name === PATCHES.TENJIN_FLAT_DECK_STRUCTURE_NAME;
     // Keep the roadway on PLATEAU at both bridge ends. The elevation change
     // is absorbed inside the bridge by a shallow parabolic arch; no approach
     // terrain is modified before or after the bridge.
@@ -767,7 +769,7 @@ function nijoVegetation() {
 
 function nijoRoadOverlay() {
   if (!nijoRotary) return null;
-  const laneWidth = 3.2;
+  const laneWidth = LANE_WIDTH;
   const outerSide = Math.sign(nijoRotary.busLateral || -1);
   const outer = nijoRotary.busLateral + outerSide * laneWidth / 2;
   const divider = nijoRotary.busLateral - outerSide * laneWidth / 2;
@@ -799,12 +801,10 @@ const GRAPH_ROAD_TYPES = new Set([
 // 大宮跨線橋の左右に並行する側道。橋上の大宮通は交通グラフへ残し、
 // この8 wayだけを除外してNPCが側道へ流入・側道上を走行しないようにする。
 // OSMのwayは南北2本の一方通行側道を分割して記録している。
-const OMIYA_OVERPASS_SIDE_ROAD_WAY_IDS = new Set([
-  27574722, 27574729, 27574731,
-  27904454,
-  290407940, 290407941, 290407942, 290407943,
-]);
-const OMIYA_BRIDGE = route.elevations?.find((item) => item.name === "大宮跨線橋") ?? null;
+const OMIYA_OVERPASS_SIDE_ROAD_WAY_IDS = new Set(PATCHES.OMIYA_OVERPASS_SIDE_ROAD_WAY_IDS);
+const OMIYA_BRIDGE = route.elevations?.find((item) => item.name === PATCHES.OMIYA_OVERPASS_NAME) ?? null;
+const OMIYA_CORRIDOR_MAX_DISTANCE = PATCHES.OMIYA_CORRIDOR.maxDistanceM;
+const OMIYA_CORRIDOR_MIN_ALIGNMENT = PATCHES.OMIYA_CORRIDOR.minAlignment;
 // `route18.json` stores these values in the precompiled route distance. Map
 // them onto the current lane-centred distance before applying the bridge
 // exclusion, otherwise a lane/path rebuild can move the exclusion window.
@@ -850,8 +850,8 @@ function graphRoadCrossesOmiyaBridge(road) {
       if (
         projection.s >= OMIYA_BRIDGE_NETWORK_RANGE.from
         && projection.s <= OMIYA_BRIDGE_NETWORK_RANGE.to
-        && projection.distance < 18
-        && alignment(projection) < 0.82
+        && projection.distance < OMIYA_CORRIDOR_MAX_DISTANCE
+        && alignment(projection) < OMIYA_CORRIDOR_MIN_ALIGNMENT
       ) return true;
     }
   }
@@ -860,7 +860,7 @@ function graphRoadCrossesOmiyaBridge(road) {
 function graphNodeOnOmiyaBridge(point) {
   if (!OMIYA_BRIDGE_NETWORK_RANGE) return false;
   const projection = graphRouteProjection(point);
-  return projection.distance < 18
+  return projection.distance < OMIYA_CORRIDOR_MAX_DISTANCE
     && projection.s >= OMIYA_BRIDGE_NETWORK_RANGE.from
     && projection.s <= OMIYA_BRIDGE_NETWORK_RANGE.to;
 }
@@ -926,8 +926,8 @@ function graphLaneOffset(tags, direction, laneIndex, laneCount) {
   // graphLanePoints computes its normal from the oriented travel direction.
   // Two-way lane zero is the inner lane; one-way lanes are centred on the way.
   return oneway
-    ? 3.2 * (laneIndex - (laneCount - 1) / 2)
-    : 3.2 * (laneIndex + 0.5);
+    ? LANE_WIDTH * (laneIndex - (laneCount - 1) / 2)
+    : LANE_WIDTH * (laneIndex + 0.5);
 }
 function graphLanePoints(points, offset) {
   let previousFeature = null;
@@ -953,13 +953,11 @@ function surfaceYAt(x, z) {
   }
   return best && best.d2 < 16 * 16 ? best.y : gridHeight(x, z);
 }
-const BRIDGE_SIDEWALK_WAY_IDS = new Set([
-  621846876, 621846878, 621846879, 621846882, 621846892, 621846894,
-]);
+const BRIDGE_SIDEWALK_WAY_IDS = new Set(PATCHES.BRIDGE_SIDEWALK_WAY_IDS);
 // This short footway on the east side of Koeda Bridge duplicates the OSM
 // zebra crossing with the same source way and should not be rendered as an
 // elevated pedestrian bridge.
-const REMOVED_OVERLAPPING_FOOTBRIDGE_WAY_IDS = new Set([621846895]);
+const REMOVED_OVERLAPPING_FOOTBRIDGE_WAY_IDS = new Set(PATCHES.REMOVED_OVERLAPPING_FOOTBRIDGE_WAY_IDS);
 function sidewalkRows(points, width, yAt) {
   return points.map((point, index) => {
     const previous = points[Math.max(0, index - 1)];
@@ -1246,8 +1244,8 @@ function buildRoadOverlays(graph, bridgeRanges = []) {
       const dx = pb[0] - pa[0], dz = pb[1] - pa[1];
       const distance = Math.hypot(dx, dz);
       if (distance < 5 || distance > 24) continue;
-      const wa = numberTag(a.tags.width, Math.max(1, numberTag(a.tags.lanes, 2)) * 3.2) / 2;
-      const wb = numberTag(b.tags.width, Math.max(1, numberTag(b.tags.lanes, 2)) * 3.2) / 2;
+      const wa = numberTag(a.tags.width, Math.max(1, numberTag(a.tags.lanes, 2)) * LANE_WIDTH) / 2;
+      const wb = numberTag(b.tags.width, Math.max(1, numberTag(b.tags.lanes, 2)) * LANE_WIDTH) / 2;
       if (distance <= wa + wb + 0.7) continue;
       rows.push([
         [pa[0] + (dx / distance) * wa, surfaceYAt(pa[0], pa[1]), pa[1] + (dz / distance) * wa],
@@ -1451,8 +1449,8 @@ function buildRoadOverlays(graph, bridgeRanges = []) {
       // compiled PLATEAU road surface directly instead of floating them above
       // it with an independent pedestrian-bridge clearance.
       const isKogaSidewalk = kogaBridgeRawRange
-        && ["621846879", "621846882"].includes(String(way.id));
-      const deckY = isKogaSidewalk ? null : Math.max(...points.map(([x, z]) => surfaceYAt(x, z))) + 5.2;
+        && PATCHES.KOGA_SIDEWALK_WAY_IDS.includes(String(way.id));
+      const deckY = isKogaSidewalk ? null : Math.max(...points.map(([x, z]) => surfaceYAt(x, z))) + PATCHES.PEDESTRIAN_BRIDGE_CLEARANCE_M;
       const steps = way.tags?.highway === "steps";
       const aHigh = deckEnds.has(graphPointKey(points[0]));
       const bHigh = deckEnds.has(graphPointKey(points.at(-1)));
@@ -1527,7 +1525,7 @@ const stops = (route.stops ?? []).map((stop) => {
 
 const trafficGraph = buildTrafficGraph();
 const crosswalkExclusions = (route.elevations ?? [])
-  .filter((structure) => structure.name === "大宮跨線橋")
+  .filter((structure) => structure.name === PATCHES.OMIYA_OVERPASS_NAME)
   .map((structure) => ({ from: compiledS(structure.from), to: compiledS(structure.to) }));
 const roadOverlays = buildRoadOverlays(trafficGraph, crosswalkExclusions);
 
