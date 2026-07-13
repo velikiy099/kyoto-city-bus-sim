@@ -119,3 +119,5 @@ npm run build
 ```
 
 `world:validate` は生成ファイル、連続地形、実行時地形コピー、driving network、OSM歩道オーバーレイを検証します。`validate:world-alignment`、`validate:structural-road`、`validate:driving-network`、`validate:bridge-water-alignment` は標高、構造道路、交通グラフ、橋梁・河川の整合性を検証します。
+
+OSM/PLATEAUデータへの手動補正の定義ファイル一覧は [`definitions.md`](definitions.md) を参照してください。

@@ -31,6 +31,8 @@ npm run world:build
 
 注意: `git clean -fdx` 等は、git管理外の生成データやOSMキャッシュ（`tools/cache/`）を削除するため、実行前に注意してください。
 
+OSM/PLATEAUデータへの手動補正(way ID指定の経路修正・停留所座標・橋や交差点の個別調整など)は、git管理のJSON定義ファイル(`data/definitions/`、`src/data/definitions/`)に集約しています。一覧と編集方法は [`docs/definitions.md`](docs/definitions.md) を参照してください。
+
 ## 操作
 
 | キー | 操作 |
