@@ -13,7 +13,7 @@ import {
   distToPolyline,
   riverDipDepthAt,
 } from "../src/world/riverGeometry.js";
-import { archedDeckElevation, flatDeckElevation, RIVER_BRIDGE_ARCH_HEIGHT } from "../src/route/structureProfiles.js";
+import { archedDeckElevation, RIVER_BRIDGE_ARCH_HEIGHT } from "../src/route/structureProfiles.js";
 
 const read = (file) => JSON.parse(fs.readFileSync(file, "utf8"));
 const assert = (condition, message) => {
@@ -24,6 +24,7 @@ const route = read("src/data/route18.json");
 const routeProfile = read("src/world/declarative/generated/route-elevation.json");
 const terrainGrid = read("src/world/declarative/generated/terrain-grid.json");
 const transportation = read("public/world/generated/plateau-transportation.json");
+const drivingNetworkPatches = read("data/definitions/driving-network-patches.json");
 const path = new RoutePath(route.path);
 
 function profileValue(profile, s, fallback = 0) {
@@ -54,15 +55,16 @@ const verticalProfiles = (route.elevations ?? []).map((item) => {
   if (item.profile === "flat-deck") {
     const a1 = Number(item.from);
     const b0 = Number(item.to);
-    if (item.name === "天神橋(西高瀬川)(flat deck)") {
-      return { kind: "flat-deck", item, a1, b0, deckY: flatDeckElevation(terrainAtS, a1, b0) };
-    }
+    // 天神橋は両端の地形差を傾斜デッキ(アーチ高0)で吸収する
+    const archHeight = item.name === drivingNetworkPatches.TENJIN_FLAT_DECK_STRUCTURE_NAME
+      ? Number(drivingNetworkPatches.TENJIN_ARCH_HEIGHT ?? 0)
+      : RIVER_BRIDGE_ARCH_HEIGHT;
     return {
       kind: "arched-deck",
       item,
       a1,
       b0,
-      archHeight: RIVER_BRIDGE_ARCH_HEIGHT,
+      archHeight,
     };
   }
   if (item.profile === "single-crest") {
@@ -154,7 +156,9 @@ for (const profile of verticalProfiles.filter((item) => ["arched-deck", "flat-de
   const centerY = archedDeckElevation(terrainAtS, profile.a1, profile.b0, (profile.a1 + profile.b0) / 2, profile.archHeight);
   assert(Math.abs(startY - terrainAtS(profile.a1)) < 1e-8, `${profile.item.name}: bridge start does not meet PLATEAU ground`);
   assert(Math.abs(endY - terrainAtS(profile.b0)) < 1e-8, `${profile.item.name}: bridge end does not meet PLATEAU ground`);
-  assert(centerY > ((startY + endY) / 2) + 0.2, `${profile.item.name}: bridge arch is missing`);
+  // 設定アーチ高にキャップを適用した盛り上がりと一致すること(傾斜デッキの天神橋は0)
+  const expectedCrest = Math.min(Number(profile.archHeight), Math.max(0.2, (profile.b0 - profile.a1) * 0.015));
+  assert(centerY > ((startY + endY) / 2) + expectedCrest - 0.02, `${profile.item.name}: bridge arch is missing`);
   archReports.push({
     name: profile.item.name,
     from: profile.a1,
@@ -166,7 +170,7 @@ for (const profile of verticalProfiles.filter((item) => ["arched-deck", "flat-de
     deckVariationMeters: +(maximum - minimum).toFixed(3),
   });
 }
-assert(archReports.length === 3 && flatReports.length === 1, "Expected three arched and one flat river bridge");
+assert(archReports.length === 4 && flatReports.length === 0, "Expected four arched river bridges");
 
 const [gridOriginX, gridOriginZ] = terrainGrid.origin;
 const [gridStepX, gridStepZ] = terrainGrid.spacing;

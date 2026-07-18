@@ -371,7 +371,20 @@ const tenjinBridge = network.structures?.find((item) => item.name === "天神橋
 assert(tenjinBridge, "Tenjin Bridge deck is missing");
 const tenjinDeckNodes = network.nodes.filter((node) => node.s >= tenjinBridge.from && node.s <= tenjinBridge.to);
 assert(tenjinDeckNodes.length > 2, "Tenjin Bridge deck nodes are missing");
-assert(Math.max(...tenjinDeckNodes.map((node) => node.y)) - Math.min(...tenjinDeckNodes.map((node) => node.y)) < 1e-6, "Tenjin Bridge should remain flat");
+// 天神橋は両端の地形差(約0.7m)を傾斜デッキで吸収する。平坦でなくてよいが、
+// デッキ内・両端ともに段差があってはならない
+const tenjinRise = tenjinDeckNodes.at(-1).y - tenjinDeckNodes[0].y;
+assert(tenjinRise > 0.4 && tenjinRise < 1.2, "Tenjin Bridge deck should slope up from the north end to the south end");
+for (let i = 1; i < tenjinDeckNodes.length; i++) {
+  const ds = tenjinDeckNodes[i].s - tenjinDeckNodes[i - 1].s;
+  assert(Math.abs(tenjinDeckNodes[i].y - tenjinDeckNodes[i - 1].y) / Math.max(1e-6, ds) < 0.08, "Tenjin Bridge deck has a step");
+}
+const tenjinStartIndex = network.nodes.indexOf(tenjinDeckNodes[0]);
+const tenjinEndIndex = network.nodes.indexOf(tenjinDeckNodes.at(-1));
+const tenjinBefore = network.nodes[tenjinStartIndex - 1];
+const tenjinAfter = network.nodes[tenjinEndIndex + 1];
+assert(tenjinBefore && Math.abs(tenjinBefore.y - tenjinDeckNodes[0].y) < 0.15, "Tenjin Bridge north end has a step");
+assert(tenjinAfter && Math.abs(tenjinAfter.y - tenjinDeckNodes.at(-1).y) < 0.15, "Tenjin Bridge south end has a step");
 const kogaSidewalks = bridgeSidewalks.filter((item) => ["621846879", "621846882"].includes(String(item.wayId)));
 assert(kogaSidewalks.length === 2, "Both Koga Bridge attached sidewalks are missing");
 const kogaSidewalkY = kogaSidewalks.flatMap((item) => item.rows.flatMap((row) => row.map((point) => point[1])));

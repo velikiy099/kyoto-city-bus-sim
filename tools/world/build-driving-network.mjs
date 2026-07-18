@@ -7,7 +7,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { config, resolveRoot, valueAfter, writeJson } from "./lib.mjs";
-import { archedDeckElevation, flatDeckElevation } from "../../src/route/structureProfiles.js";
+import { archedDeckElevation } from "../../src/route/structureProfiles.js";
 
 const cfg = config();
 const PATCHES = JSON.parse(fs.readFileSync(resolveRoot("data/definitions/driving-network-patches.json"), "utf8"));
@@ -536,7 +536,9 @@ for (const structure of route.elevations ?? []) {
     const isTenjinFlatDeck = resolved.name === PATCHES.TENJIN_FLAT_DECK_STRUCTURE_NAME;
     // Keep the roadway on PLATEAU at both bridge ends. The elevation change
     // is absorbed inside the bridge by a shallow parabolic arch; no approach
-    // terrain is modified before or after the bridge.
+    // terrain is modified before or after the bridge. 天神橋は両端の地形差が
+    // 0.7mありアーチの盛り上がりが不自然なため、高さ0(=両端を結ぶ直線の
+    // 傾斜デッキ)で繋ぐ(PATCHES.TENJIN_ARCH_HEIGHT)。
     const startIndex = Math.max(0, nodes.findIndex((node) => node.rawS >= from));
     const firstAfter = nodes.findIndex((node) => node.rawS > to);
     const endIndex = firstAfter < 0 ? nodes.length - 1 : firstAfter - 1;
@@ -548,7 +550,7 @@ for (const structure of route.elevations ?? []) {
     for (let nodeIndex = startIndex; nodeIndex <= endIndex; nodeIndex++) {
       const node = nodes[nodeIndex];
       const deckY = isTenjinFlatDeck
-        ? flatDeckElevation(baseTerrainAtRaw, from, to)
+        ? archedDeckElevation(baseTerrainAtRaw, from, to, node.rawS, Number(PATCHES.TENJIN_ARCH_HEIGHT ?? 0))
         : archedDeckElevation(baseTerrainAtRaw, from, to, node.rawS);
       node.y = +deckY.toFixed(3);
       node.structure = structure.name;

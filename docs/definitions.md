@@ -52,7 +52,7 @@ OSM/PLATEAUデータへの手動補正と、ハードコードから切り出し
 
 ### driving-network-patches.json
 
-`tools/world/build-driving-network.mjs` がOSM路面をPLATEAU路面へコンパイルする際の補正。久我橋のway ID/名称、フラットデッキ橋の構造名、大宮跨線橋の側道8way除外と回廊しきい値(18m/整列0.82)、橋一体の歩道way、重複歩道橋の除去、歩道橋クリアランス5.2m、車線幅・セル寸法。
+`tools/world/build-driving-network.mjs` がOSM路面をPLATEAU路面へコンパイルする際の補正。久我橋のway ID/名称、フラットデッキ橋の構造名、天神橋のアーチ高(`TENJIN_ARCH_HEIGHT`、0=両端の地形を結ぶ傾斜デッキ)、大宮跨線橋の側道8way除外と回廊しきい値(18m/整列0.82)、橋一体の歩道way、重複歩道橋の除去、歩道橋クリアランス5.2m、車線幅・セル寸法。
 
 ### rivers.json
 
