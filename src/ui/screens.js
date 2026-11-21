@@ -15,8 +15,10 @@ export function showTitle(onStart) {
         <div><b>S / ↓</b> ブレーキ(停止中は長押しで後退)</div>
         <div><b>A・D / ←・→</b> ハンドル</div>
         <div><b>E</b> ドア開閉(停留所で停車中)</div>
-        <div><b>C</b> カメラ切替(追従 / 運転席) <b>M</b> ミニマップ</div>
-        <div><b>R</b> 路上に復帰(コース外では -500点) <b>Shift+R</b> タイトルに戻る</div>
+        <div><b>C</b> カメラ切替(追従 / 運転席)</div>
+        <div><b>M</b> ミニマップ表示切替</div>
+        <div><b>R</b> 路上に復帰(コース外では -500点)</div>
+        <div><b>Shift+R</b> タイトルに戻る</div>
         <div><b>P</b> ポーズ / 再開</div>
         <div><b>.(ピリオド) 長押し</b> 停留所停車中のみ 4倍速</div>
       </div>

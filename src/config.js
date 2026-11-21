@@ -62,11 +62,18 @@ export const CFG = {
       },
     },
     spawn: {
-      minDist: 90, // 自車からこれ未満の端点では発生しない [m]
-      maxDist: 1400, // 自車からこれ超の端点では発生しない [m]
-      despawnRadius: 1600, // 自車からこれ以遠に離れた車は消滅 [m]
+      initialMinDist: 90, // 起動時の初期配置最小距離 [m]
+      initialMaxDist: 950, // 起動時の初期配置最大距離 [m]
+      minDist: 420, // 走行中の端点流入最小距離 [m]
+      maxDist: 1050, // 走行中の端点流入最大距離 [m]
+      refillMinDist: 480, // 走行中の途中補充最小距離 [m]
+      refillMaxDist: 950, // 走行中の途中補充最大距離 [m]
+      despawnRadius: 1150, // 自車からこれ以遠に離れた非表示車は消滅 [m]
+      recycleMinDist: 850, // 可視台数不足時に非表示車をリサイクルできる最小距離 [m]
+      minVisibleFraction: 0.45, // 可視範囲内に維持する目安台数割合
       initialFraction: 0.8, // 起動時に maxVehicles×この割合まで初期配置
-      refillRatePerSecond: 3, // 経路終端で減った初期交通量を中距離帯へ補充 [台/s]
+      refillRatePerSecond: 3, // 経路終端等で減った交通量を中遠距離帯へ補充 [台/s]
+      truckBlockedHighways: ["service", "residential", "unclassified"], // トラックを発生させない狭路
       // 端点1レーンあたりの流入量 [台/分]
       baseRatePerMinute: {
         motorway: 6,
@@ -77,7 +84,7 @@ export const CFG = {
         tertiary: 3,
         unclassified: 1.6,
         residential: 1.0,
-        service: 0.3,
+        service: 0.15,
       },
     },
     // 地域ポリゴン(world x-z 座標)。エッジ中点で判定し、

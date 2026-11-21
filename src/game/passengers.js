@@ -15,41 +15,51 @@ function mulberry32(seed) {
  * 乗客需要モデル。開始時に全停留所の乗車人数と各客の降車先を確定する。
  * 後乗り(中扉)・前降り(前扉)・後払い230円均一。
  */
-export function createPassengers(nStops, seed = (Math.random() * 1e9) | 0) {
-  const rand = mulberry32(seed);
+export function createPassengers(nStops, initialSeed = (Math.random() * 1e9) | 0) {
   const P = CFG.passengers;
-
-  const poisson = (lambda) => {
-    const L = Math.exp(-lambda);
-    let k = 0,
-      p = 1;
-    do {
-      k++;
-      p *= rand();
-    } while (p > L);
-    return k - 1;
-  };
-
-  // 降車先: 乗車停 i から幾何分布で先へ(終点クランプ)
-  const pickDest = (i) => {
-    let k = 1;
-    while (rand() > P.alightGeomP && i + k < nStops - 1) k++;
-    return Math.min(nStops - 1, i + k);
-  };
-
+  let currentSeed = initialSeed;
   const board = new Array(nStops).fill(0); // 各停の乗車人数
   const alight = new Array(nStops).fill(0); // 各停の降車人数
-  board[0] = P.initialBoard;
-  for (let i = 1; i < nStops - 1; i++) board[i] = poisson(P.waitLambda);
-  for (let i = 0; i < nStops - 1; i++) {
-    for (let k = 0; k < board[i]; k++) alight[pickDest(i)]++;
-  }
-
   let onboard = 0;
   let totalCarried = 0;
 
+  function populate(seed) {
+    currentSeed = seed >>> 0;
+    const rand = mulberry32(currentSeed);
+    const poisson = (lambda) => {
+      const L = Math.exp(-lambda);
+      let k = 0,
+        p = 1;
+      do {
+        k++;
+        p *= rand();
+      } while (p > L);
+      return k - 1;
+    };
+    // 降車先: 乗車停 i から幾何分布で先へ(終点クランプ)
+    const pickDest = (i) => {
+      let k = 1;
+      while (rand() > P.alightGeomP && i + k < nStops - 1) k++;
+      return Math.min(nStops - 1, i + k);
+    };
+
+    board.fill(0);
+    alight.fill(0);
+    board[0] = P.initialBoard;
+    for (let i = 1; i < nStops - 1; i++) board[i] = poisson(P.waitLambda);
+    for (let i = 0; i < nStops - 1; i++) {
+      for (let k = 0; k < board[i]; k++) alight[pickDest(i)]++;
+    }
+    onboard = 0;
+    totalCarried = 0;
+  }
+
+  populate(initialSeed);
+
   return {
-    seed,
+    get seed() {
+      return currentSeed;
+    },
     board,
     alight,
     get onboard() {
@@ -68,6 +78,9 @@ export function createPassengers(nStops, seed = (Math.random() * 1e9) | 0) {
     },
     alightOne() {
       onboard = Math.max(0, onboard - 1);
+    },
+    reset(newSeed = (Math.random() * 1e9) | 0) {
+      populate(newSeed);
     },
   };
 }

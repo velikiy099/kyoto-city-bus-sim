@@ -133,8 +133,24 @@ export function createOps(ctx) {
       boarding = null;
       buzzerAnnounced = false;
       doorT = 0;
+      recentMinAccel = 0;
       bus.throttleLocked = false;
       setDoorStatus(null);
+    },
+    /** 再乗務用: 全停留所の待ち客表示を含めて初期状態へ戻す */
+    resetForNewRun() {
+      state.nextStopIndex = 0;
+      state.doorState = DOOR.CLOSED;
+      state.buzzer = false;
+      waitingDepart = false;
+      boarding = null;
+      buzzerAnnounced = false;
+      doorT = 0;
+      recentMinAccel = 0;
+      bus.throttleLocked = false;
+      setDoorStatus(null);
+      setPrompt(null, false);
+      route.stops.forEach((_, i) => stopsView.setWaiting(i, pax.board[i]));
     },
     update(dt, ePressed) {
       const i = state.nextStopIndex;

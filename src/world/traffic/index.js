@@ -35,6 +35,7 @@ export function buildTraffic(scene, path, events = {}) {
       update(dt, busS, _busPos, busV) {
         signalsApi.update(dt, busS, busV, events.onRedLight);
       },
+      reset() {},
       leadGapAhead: () => null,
       nextSignal: signalsApi.nextSignal,
       redStopTarget: signalsApi.redStopTarget,
@@ -48,6 +49,7 @@ export function buildTraffic(scene, path, events = {}) {
     signals: signalsApi.signals,
     agents: agentsApi.agents,
     stats: agentsApi.stats,
+    reset: agentsApi.reset,
     update(dt, busS, busPos, busV, busHeading = 0, busLat) {
       signalsApi.update(dt, busS, busV, events.onRedLight);
       agentsApi.update(dt, busS, busPos, busV, busHeading, busLat);

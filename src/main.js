@@ -12,6 +12,8 @@ import {
   roadAttachmentHalfWidthAt,
   gradeAt,
   driveBoundsAt,
+  hasCenterlineAt,
+  centerlineLateralAt,
   turnExclusions,
 } from "./route/routeData.js";
 import { input } from "./input.js";
@@ -24,7 +26,7 @@ import {
   roadHeightAtWorld,
 } from "./world/declarative/continuousTerrain.js";
 import { setupDebug, dbg, autoDriveInput, recordFrame } from "./debug.js";
-import { initHud, updateHud } from "./ui/hud.js";
+import { initHud, updateHud, clearHudMessages } from "./ui/hud.js";
 import { createMinimap } from "./ui/minimap.js";
 import { showTitle, showResult } from "./ui/screens.js";
 import { buildStops } from "./game/stops.js";
@@ -131,6 +133,7 @@ const traffic = buildTraffic(scene, path, {
     scoring.add(CFG.score.redLight, "信号無視!");
   },
 });
+let completeTimer = null;
 const ops = createOps({
   bus,
   route,
@@ -152,19 +155,32 @@ const ops = createOps({
     },
     onComplete() {
       state.completed = true;
+      bus.v = 0;
+      bus.throttleState = 0;
+      bus.accel = 0;
+      bus.latAccel = 0;
+      bus.throttleLocked = true;
+      dbg.autoDrive = false;
+      const summary = scoring.resultSummary();
+      const arrivalClock = state.clock;
+      const carried = pax.totalCarried;
+      const fare = state.fareTotal;
+      const d = delayInfo(arrivalClock, path.length - 1);
       announceTerminal();
-      setTimeout(() => {
+      if (completeTimer) clearTimeout(completeTimer);
+      completeTimer = setTimeout(() => {
+        completeTimer = null;
+        if (!state.completed) return;
         state.phase = "RESULT";
-        const d = delayInfo(state.clock, path.length - 1);
         showResult({
-          score: state.score,
-          rank: scoring.rank(),
-          carried: pax.totalCarried,
-          fare: state.fareTotal,
-          clock: state.clock,
+          score: summary.score,
+          rank: summary.rank,
+          carried,
+          fare,
+          clock: arrivalClock,
           schedArrival: schedule[schedule.length - 1].time,
           delayText: d.text,
-          breakdown: [...scoring.breakdown.entries()],
+          breakdown: summary.breakdown,
         });
       }, 1200);
     },
@@ -335,9 +351,22 @@ function tick(dt, ePressed) {
 
   state.clock += dt;
   ops.update(dt, ePressed);
-  scoring.tick(dt, bus, speedLimitAt(state.s));
-  // 衝突判定は後軸でなく車体中心基準
+  if (state.completed) return;
+  // 衝突判定・中央線判定は後軸でなく車体中心基準
   const [bfx, bfz] = bus.forward;
+  const centerOffset = CFG.bus.length / 2 - CFG.bus.rearOverhang;
+  const hasCenterline = hasCenterlineAt(state.s);
+  const centerLateral = hasCenterline
+    ? centerlineLateralAt(
+        bus.x + bfx * centerOffset,
+        bus.z + bfz * centerOffset,
+        state.s,
+      )
+    : -Infinity;
+  scoring.tick(dt, bus, speedLimitAt(state.s), {
+    hasCenterline,
+    centerLateral,
+  });
   traffic.update(
     dt,
     state.s,
@@ -371,28 +400,48 @@ function setPaused(on) {
 
 // ---------------------------------------------------------------- return to title
 function returnToTitle() {
-  // ゲーム状態をリセットしてタイトル画面を再表示する
+  // ゲーム状態を完全にリセットしてタイトル画面を再表示する
+  if (completeTimer) {
+    clearTimeout(completeTimer);
+    completeTimer = null;
+  }
   state.phase = "TITLE";
   state.paused = false;
   state.demoMode = false;
+  dbg.autoDrive = false;
   setPaused(false);
   // 音声を停止
   sfx.stopEngine();
-  // 既存のタイトル画面以外のスクリーンを消す(リザルト等)
+  // 既存のタイトル画面以外のスクリーンとHUDメッセージを消す
   document.querySelectorAll(".screen").forEach((el) => el.remove());
-  // バスを始発位置に戻す
+  clearHudMessages();
+  // バスを始発位置・完全停止状態に戻す
   placeBusAtS(Math.max(0.5, route.stops[0].s - DOOR_OFFSET));
+  bus.throttleState = 0;
+  bus.accel = 0;
+  bus.latAccel = 0;
+  bus.throttleLocked = false;
+  bus.reverseArmed = false;
+  bus.reverseHold = 0;
+  bus.brakeWasDown = false;
   camInit = false;
-  // 乗客・スコア・時計をリセット
-  state.score = 0;
+  // 乗客・スコア・停留所・NPC交通・時計を全て初期化
+  pax.reset();
+  scoring.reset();
+  stopsView.clearWalkers();
+  traffic.reset();
+  state.lateral = 0;
+  state.offRoute = false;
   state.fareTotal = 0;
   state.nextStopIndex = 0;
   state.doorState = "CLOSED";
   state.buzzer = false;
   state.promptText = null;
+  state.waitingDepart = false;
   state.completed = false;
+  state.collisionLog = [];
   state.clock = firstDepartTime - 45;
-  ops.resetTo(0);
+  ops.resetForNewRun();
   // タイトル再表示
   showTitle((demoMode) => {
     sfx.initAudio();
@@ -424,10 +473,10 @@ function frame(now) {
   const dt = dtMs / 1000;
 
   if (state.phase === "RUNNING") {
-    // P キーでポーズトグル
-    if (input.pressed("KeyP")) setPaused(!state.paused);
+    // P キーでポーズトグル(完走後は無効)
+    if (!state.completed && input.pressed("KeyP")) setPaused(!state.paused);
 
-    if (!state.paused) {
+    if (!state.paused && !state.completed) {
       if (input.pressed("KeyC"))
         state.camMode = state.camMode === "chase" ? "cockpit" : "chase";
       if (input.pressed("KeyM")) {
@@ -469,7 +518,7 @@ function frame(now) {
     kujoOmiyaS,
   );
   updateCamera(dt);
-  if (state.phase === "RUNNING") {
+  if (state.phase === "RUNNING" && !state.paused && !state.completed) {
     sfx.updateEngine(bus.speedKmh, bus.throttleState);
   } else {
     sfx.stopEngine();
@@ -486,9 +535,9 @@ function frame(now) {
     else if (state.doorState !== "CLOSED") sub = "乗降中";
     else if (state.buzzer)
       sub = `🔔 つぎ とまります ・ あと${distTo.toFixed(0)}m`;
-    else if (mustStopAt(i)) sub = `停車 ・ あと${distTo.toFixed(0)}m`;
+    else if (mustStopAt(i)) sub = `要停車 ・ あと${distTo.toFixed(0)}m`;
     else sub = `通過可 ・ あと${distTo.toFixed(0)}m`;
-    const started = state.nextStopIndex > 0 || state.doorState !== "CLOSED";
+    const started = state.nextStopIndex > 0 || state.clock > firstDepartTime;
     const d = started ? delayInfo(state.clock, state.s) : null;
     updateHud({
       speedKmh: bus.speedKmh,
@@ -497,6 +546,7 @@ function frame(now) {
       score: Math.round(state.score),
       passengers: pax.onboard,
       fareTotal: state.fareTotal,
+      demoMode: state.demoMode,
       nextStopName: state.completed ? "── 終点 ──" : nextStop.name,
       nextStopSchedule: state.completed ? null : fmtTime(schedule[i].time),
       nextStopSub: sub,
@@ -556,6 +606,7 @@ setupDebug({
     state.s = s;
     camInit = false;
     ops.resetTo(stopIndex ?? 0);
+    traffic.reset();
     state.clock = scheduledClockAt(s); // ダイヤも位置に同期
   },
 });

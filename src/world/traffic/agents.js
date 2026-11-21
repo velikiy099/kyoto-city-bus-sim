@@ -48,9 +48,14 @@ export function createTrafficAgents(scene, path, runtime, events = {}, signalsAp
   let simulationTime = 0;
   let collisionCooldown = 0;
   let initialSeeded = false;
+  let lastBusPoint = null;
   const junctionBusy = new Map();
 
   const countActive = () => agents.reduce((count, agent) => count + (agent.active ? 1 : 0), 0);
+  const effectiveCullRadius = () => {
+    const configured = Number(CFG.traffic.lod?.cullRadius);
+    return Number.isFinite(configured) ? Math.max(0, configured) : Infinity;
+  };
 
   const makeAgent = (index) => {
     const def = defs[index % defs.length];
@@ -94,19 +99,63 @@ export function createTrafficAgents(scene, path, runtime, events = {}, signalsAp
     return true;
   };
 
-  /** 同じ経路の生成位置から20m以内に車がいる場合は流入させない。 */
+  /** 空間距離・高さ層・道路種別(車種制限)・信号状態を考慮して流入させる。 */
   const tryActivate = (startPath, startDistance = 3, initialSpeed = 5) => {
     if (!startPath?.id || !runtime.paths.has(startPath.id)) return false;
-    const entryOccupied = agents.some((agent) => agent.active
-      && agent.cursor?.current?.id === startPath.id
-      && Math.abs(agent.cursor.distance - startDistance) < 20);
-    if (entryOccupied) return false;
+    const pose = runtime.sample(startPath, startDistance);
+    if (!pose) return false;
 
-    const agent = agents.find((candidate) => !candidate.active);
+    // 防御チェック: 自車バスの至近距離には発生させない
+    if (lastBusPoint && Math.hypot(pose.x - lastBusPoint[0], pose.z - lastBusPoint[1]) < 50) {
+      return false;
+    }
+
+    // 空間距離(2D + 高さ層)で他車との重なり・近接を防止する
+    const spawnFwdX = Math.sin(pose.heading);
+    const spawnFwdZ = Math.cos(pose.heading);
+    const spawnY = pose.y + 0.04;
+    const occupied = agents.some((other) => {
+      if (!other.active) return false;
+      if (Math.abs(other.outer.position.y - spawnY) >= 3.0) return false;
+      const dist = Math.hypot(other.outer.position.x - pose.x, other.outer.position.z - pose.z);
+      const sameEdge = other.cursor?.current?.id === startPath.id;
+      const otherHeading = other.outer.rotation.y;
+      const align = spawnFwdX * Math.sin(otherHeading) + spawnFwdZ * Math.cos(otherHeading);
+      const minClearance = (sameEdge || align > 0.7) ? 22 : 12;
+      return dist < minClearance;
+    });
+    if (occupied) return false;
+
+    // 狭路(service/residential/unclassified等)にはトラックを割り当てない
+    const truckBlocked = CFG.traffic.spawn.truckBlockedHighways ?? [];
+    const disallowTruck = truckBlocked.includes(startPath.edge?.highway);
+    const agent = agents.find(
+      (candidate) => !candidate.active && (!disallowTruck || candidate.physics !== "truck"),
+    );
     if (!agent) return false;
+
     const cursor = new RouteCursor(runtime, startPath, startDistance);
+    const roadSpeed = Math.min(agent.vMax, startPath.edge?.speed ?? 8.5);
+    let speed = Number.isFinite(initialSpeed)
+      ? Math.min(roadSpeed * 0.85, Math.max(2, initialSpeed))
+      : roadSpeed * 0.75;
+    const toNode = startPath.edge ? runtime.nodeById.get(startPath.edge.to) : null;
+    const remaining = Math.max(0, startPath.length - startDistance);
+    const approachHeading = runtime.edgeEndHeading.get(startPath.edge?.id) ?? pose.heading;
+    if (
+      toNode?.signal
+      && signalsApi.shouldNpcStop(toNode.id, approachHeading, simulationTime)
+      && remaining < 30
+    ) {
+      const stopDist = Math.max(
+        0,
+        remaining - agent.length * 0.5 - SIGNAL_STOP_LINE_OFFSET - SIGNAL_STOP_GAP,
+      );
+      speed = Math.min(speed, Math.sqrt(2 * 1.5 * stopDist));
+    }
+
     agent.cursor = cursor;
-    agent.v = Number.isFinite(initialSpeed) ? Math.max(0, initialSpeed) : 5;
+    agent.v = Math.max(0, speed);
     agent.stuckTime = 0;
     agent.terminalHolding = false;
     agent.lod = "simple";
@@ -117,7 +166,10 @@ export function createTrafficAgents(scene, path, runtime, events = {}, signalsAp
       return false;
     }
     agent.active = true;
-    agent.outer.visible = true;
+    const cullRadius = effectiveCullRadius();
+    agent.outer.visible = lastBusPoint
+      ? horizontalDistanceToBus(agent, lastBusPoint) <= cullRadius
+      : true;
     stats.spawned++;
     stats.active++;
     return true;
@@ -305,20 +357,78 @@ export function createTrafficAgents(scene, path, runtime, events = {}, signalsAp
 
   const endReason = (agent) => runtime.sinkNodeIds.has(terminalNodeId(agent)) ? "sink" : "blocked";
 
+  /** 可視台数が不足した際、指定距離以遠の非表示車両のうち最遠方の1台を解放する。 */
+  const recycleFarthest = (minDist = CFG.traffic.spawn.recycleMinDist ?? 850) => {
+    if (!lastBusPoint) return false;
+    let farthest = null;
+    let farthestDist = minDist;
+    for (const agent of agents) {
+      if (!agent.active || agent.outer.visible) continue;
+      const dist = horizontalDistanceToBus(agent, lastBusPoint);
+      if (dist > farthestDist) {
+        farthestDist = dist;
+        farthest = agent;
+      }
+    }
+    if (!farthest) return false;
+    deactivate(farthest, "radius");
+    return true;
+  };
+
+  const reset = () => {
+    for (const agent of agents) {
+      agent.active = false;
+      agent.cursor = null;
+      agent.v = 0;
+      agent.stuckTime = 0;
+      agent.terminalHolding = false;
+      agent.lod = "simple";
+      agent.phys = null;
+      agent.outer.visible = false;
+    }
+    junctionBusy.clear();
+    collisionCooldown = 0;
+    initialSeeded = false;
+    lastBusPoint = null;
+    stats.active = 0;
+    stats.spawned = 0;
+    stats.blockedTails = 0;
+    stats.physicsCount = 0;
+    stats.visibleCount = 0;
+    stats.snapBacks = 0;
+    stats.visibleTerminalHolds = 0;
+    for (const key of Object.keys(stats.despawned)) stats.despawned[key] = 0;
+    for (const key of Object.keys(stats.visibleDespawned)) stats.visibleDespawned[key] = 0;
+    trafficSpawner.reset?.();
+  };
+
   return {
     agents,
     stats,
+    reset,
     update(dt, busS, busPos, busV, busHeading = 0, busLat = laneCenterAt(busS)) {
       simulationTime += dt;
       const bus = busPose(busS, busPos, busV, busHeading, busLat);
       const busPoint = [bus.x, bus.z];
+      lastBusPoint = busPoint;
 
-      // 初回だけ、現在の自車位置を基準に全エッジへ初期配置する。
+      // 初回だけ、現在の自車位置を基準に周辺エッジへ初期配置する。
       if (!initialSeeded) {
         trafficSpawner.seedInitial(busPoint, tryActivate);
         initialSeeded = true;
       }
-      trafficSpawner.update(dt, busPoint, countActive(), tryActivate);
+      const cullRadiusNow = effectiveCullRadius();
+      let visibleBeforeSpawn = 0;
+      for (const agent of agents) {
+        if (!agent.active) continue;
+        const vis = horizontalDistanceToBus(agent, busPoint) <= cullRadiusNow;
+        agent.outer.visible = vis;
+        if (vis) visibleBeforeSpawn++;
+      }
+      trafficSpawner.update(dt, busPoint, countActive(), tryActivate, {
+        visibleCount: visibleBeforeSpawn,
+        recycleFarthest,
+      });
       updateLod(busPoint);
       const buckets = buildPathBuckets();
       let blockedTails = 0;

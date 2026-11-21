@@ -70,14 +70,20 @@ export function createMinimap(path, stops) {
       ctx.strokeStyle = "#fff";
       ctx.lineWidth = 1.4;
       ctx.stroke();
-      // 端点ラベル
+      // 端点ラベル(キャンバス内に収まるようX座標をクランプ)
       ctx.fillStyle = "#dce6ee";
       ctx.font = "bold 10px sans-serif";
       ctx.textAlign = "center";
+      const drawClampedLabel = (text, x, y) => {
+        const halfW = ctx.measureText(text).width / 2;
+        const pad = 4;
+        const clampedX = Math.max(halfW + pad, Math.min(W - halfW - pad, x));
+        ctx.fillText(text, clampedX, y);
+      };
       const [tx, ty] = stopPts[0];
-      ctx.fillText(ROUTE_SEMANTICS.origin, tx, ty - 7);
+      drawClampedLabel(ROUTE_SEMANTICS.origin, tx, ty - 7);
       const [gx, gy] = stopPts[stopPts.length - 1];
-      ctx.fillText(ROUTE_SEMANTICS.terminal, gx, gy + 14);
+      drawClampedLabel(ROUTE_SEMANTICS.terminal, gx, gy + 14);
     },
   };
 }

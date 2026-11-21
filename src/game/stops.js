@@ -238,5 +238,12 @@ export function buildStops(scene, path, stops) {
         }
       }
     },
+    /** 再乗務時に残存する降車歩行者メッシュを全て除去する */
+    clearWalkers() {
+      while (walkers.length > 0) {
+        const w = walkers.pop();
+        group.remove(w.mesh);
+      }
+    },
   };
 }

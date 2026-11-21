@@ -18,12 +18,13 @@ export function initHud() {
       <div class="fare">運賃箱 ¥0</div>
     </div>
     <div id="score-panel" class="hud-panel">
+      <div class="demo-badge" style="display:none">DEMO 自動運転</div>
       <div class="score">0</div>
       <div style="font-size:11px;color:#aab">SCORE</div>
       <div class="cam" style="font-size:12px;color:#9db4d8;margin-top:4px">C: カメラ切替</div>
     </div>
     <div id="speedo" class="hud-panel">
-      <div><span class="kmh">0</span> <span class="unit">km/h</span></div>
+      <div><span class="gear-r" style="display:none">R</span><span class="kmh">0</span> <span class="unit">km/h</span></div>
       <div class="limit">40</div>
     </div>
     <div id="prompt" class="hud-panel"></div>
@@ -39,7 +40,9 @@ export function initHud() {
     delay: hud.querySelector("#ops .delay"),
     pax: hud.querySelector("#ops .pax"),
     fare: hud.querySelector("#ops .fare"),
+    demoBadge: hud.querySelector("#score-panel .demo-badge"),
     score: hud.querySelector("#score-panel .score"),
+    gearR: hud.querySelector("#speedo .gear-r"),
     kmh: hud.querySelector("#speedo .kmh"),
     limit: hud.querySelector("#speedo .limit"),
     prompt: hud.querySelector("#prompt"),
@@ -56,8 +59,15 @@ export function fmtClock(sec) {
 }
 
 export function updateHud(st) {
+  if (!els.kmh) return;
   els.kmh.textContent = Math.round(Math.abs(st.speedKmh));
   els.kmh.classList.toggle("over", st.speedKmh > st.limitKmh + 5);
+  if (els.gearR) {
+    els.gearR.style.display = st.speedKmh < -0.1 ? "inline-block" : "none";
+  }
+  if (els.demoBadge) {
+    els.demoBadge.style.display = st.demoMode ? "inline-block" : "none";
+  }
   els.limit.textContent = st.limitKmh;
   els.clock.textContent = fmtClock(st.clock);
   els.score.textContent = st.score;
@@ -77,6 +87,7 @@ export function updateHud(st) {
 }
 
 export function setPrompt(text, warn = false) {
+  if (!els.prompt) return;
   if (!text) {
     els.prompt.style.display = "none";
     return;
@@ -87,15 +98,23 @@ export function setPrompt(text, warn = false) {
 }
 
 export function setDoorStatus(text) {
+  if (!els.doorStatus) return;
   els.doorStatus.style.display = text ? "block" : "none";
   if (text) els.doorStatus.innerHTML = text;
 }
 
 export function showToast(text, kind = "") {
+  if (!els.toasts) return null;
   const div = document.createElement("div");
   div.className = `toast ${kind}`;
   div.textContent = text;
   els.toasts.appendChild(div);
   setTimeout(() => div.remove(), 2700);
   return div;
+}
+
+export function clearHudMessages() {
+  setPrompt(null, false);
+  setDoorStatus(null);
+  if (els.toasts) els.toasts.innerHTML = "";
 }

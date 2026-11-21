@@ -83,6 +83,17 @@ export function leftWidthAt(s) { return sectionAt(s).wL; }
 export function rightWidthAt(s) { return sectionAt(s).wR; }
 export function halfWidthAt(s) { const sec = sectionAt(s); return Math.max(sec.wL, sec.wR); }
 
+/** 描画と同一条件で、対向車線と中央線が存在する区間かどうかを返す。 */
+export function hasCenterlineAt(s) {
+  const sec = sectionAt(s);
+  return !sec.oneWay && sec.lanesB > 0 && sec.center !== "none";
+}
+
+/** 描画中央線(surfacePath)に対する横位置(左が負・右が正)を返す。 */
+export function centerlineLateralAt(x, z, s) {
+  return surfacePath.closestS([x, z], s, 150).lateral;
+}
+
 function driveBoundAt(s, side) {
   const bounds = drivingNetwork.driveBounds;
   if (!bounds?.length) return halfWidthAt(s);
