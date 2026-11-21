@@ -39,6 +39,21 @@ export const nodePhase = (id) =>
 export const isNpcStopPhase = (nodeId, simulationTime) =>
   ((simulationTime + nodePhase(nodeId)) % SIGNAL_TIMING.cycleS) >= SIGNAL_TIMING.greenS;
 
+const mainStateAtPhase = (ph) =>
+  ph < SIGNAL_TIMING.greenS
+    ? "green"
+    : ph < SIGNAL_TIMING.greenS + SIGNAL_TIMING.yellowS
+      ? "yellow"
+      : "red";
+
+const crossStateAtPhase = (ph) =>
+  ph >= SIGNAL_TIMING.greenS + SIGNAL_TIMING.yellowS + SIGNAL_TIMING.crossAllRedLeadS
+    && ph < SIGNAL_TIMING.cycleS - SIGNAL_TIMING.crossYellowS
+    ? "green"
+    : ph >= SIGNAL_TIMING.cycleS - SIGNAL_TIMING.crossYellowS
+      ? "yellow"
+      : "red";
+
 function fallbackSignalPositions(path) {
   return SIGNAL_DEFS.FALLBACK.stops.map((name) => {
     const s0 = stopS(name);
@@ -52,14 +67,8 @@ export function buildSignals(group, path) {
   const CYCLE = SIGNAL_TIMING.cycleS,
     GREEN = SIGNAL_TIMING.greenS,
     YELLOW = SIGNAL_TIMING.yellowS;
-  const mainStateOf = (ph) =>
-    ph < GREEN ? "green" : ph < GREEN + YELLOW ? "yellow" : "red";
-  const crossStateOf = (ph) =>
-    ph >= GREEN + YELLOW + SIGNAL_TIMING.crossAllRedLeadS && ph < CYCLE - SIGNAL_TIMING.crossYellowS
-      ? "green"
-      : ph >= CYCLE - SIGNAL_TIMING.crossYellowS
-        ? "yellow"
-        : "red";
+  const mainStateOf = mainStateAtPhase;
+  const crossStateOf = crossStateAtPhase;
 
   const OFF = { green: 0x1c3a24, yellow: 0x4a3d14, red: 0x451818 };
   const ON = { green: 0x2ee86a, yellow: 0xffd23c, red: 0xff4433 };
@@ -220,7 +229,11 @@ export function buildSignals(group, path) {
 
   const shouldNpcStop = (nodeId, approachHeading, simulationTime) => {
     const mapping = nodeSignalMap.get(nodeId);
-    if (!mapping) return isNpcStopPhase(nodeId, simulationTime);
+    if (!mapping) {
+      const ph = (simulationTime + nodePhase(nodeId)) % CYCLE;
+      const isMainAxis = Math.abs(Math.cos(approachHeading ?? 0)) > 0.7;
+      return (isMainAxis ? mainStateOf(ph) : crossStateOf(ph)) !== "green";
+    }
     const forward = [Math.sin(approachHeading), Math.cos(approachHeading)];
     const [tx, tz] = mapping.mainTangent;
     const mainDot = forward[0] * tx + forward[1] * tz;
@@ -234,14 +247,12 @@ export function buildSignals(group, path) {
   const update = (dt, busS = 0, busV = 0, onRedLight) => {
     for (const sig of signals) {
       sig.phase = (sig.phase + dt) % CYCLE;
-      const state = sig.phase < GREEN ? "green" : sig.phase < GREEN + YELLOW ? "yellow" : "red";
+      const state = mainStateOf(sig.phase);
       if (state !== sig.state) {
         sig.state = state;
         for (const head of sig.mainHeads) paintHead(head, state);
       }
-      const crossState = sig.phase >= 26 && sig.phase < 40
-        ? (sig.phase < 38 ? "green" : "yellow")
-        : "red";
+      const crossState = crossStateOf(sig.phase);
       if (crossState !== sig.crossState) {
         sig.crossState = crossState;
         for (const head of sig.crossHeads) paintHead(head, crossState);

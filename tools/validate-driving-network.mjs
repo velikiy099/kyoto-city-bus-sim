@@ -281,9 +281,16 @@ for (const name of ["御池通", "四条通", "五条通", "七条通"]) {
     && [item.from, item.to].some((edgeId) => String(network.trafficGraph.edges.find((edge) => edge.id === edgeId)?.name) === name));
   assert(connector, `${name} has no OSM shared-node traffic connector`);
 }
+const kujoWestboundEdgeIds = new Set(kujoWestboundEdges.map((edge) => edge.id));
+const kujoWestboundPaths = [
+  ...kujoWestboundEdges.map((edge) => edge.points),
+  ...network.trafficGraph.connectors
+    .filter((item) => !item.zeroLength && kujoWestboundEdgeIds.has(item.from) && kujoWestboundEdgeIds.has(item.to))
+    .map((item) => tessellateConnector(item.points)),
+];
 const kujoRouteSamples = network.nodes.filter((node) => node.s > kujoStart + 120 && node.s < kujoEnd - 50);
 const kujoWestboundDistances = kujoRouteSamples.map((node) => Math.min(
-  ...kujoWestboundEdges.map((edge) => polylineDistance(node.x, node.z, edge.points)),
+  ...kujoWestboundPaths.map((points) => polylineDistance(node.x, node.z, points)),
 ));
 assert(kujoWestboundEdges.length >= 4 && new Set(kujoWestboundEdges.map((edge) => edge.lane)).has(0) && new Set(kujoWestboundEdges.map((edge) => edge.lane)).has(1), "Kujo westbound OSM carriageway lane edges are missing");
 assert(kujoRouteSamples.length > 100 && Math.max(...kujoWestboundDistances) < 3.5, "Bus route is not on the Kujo westbound carriageway");

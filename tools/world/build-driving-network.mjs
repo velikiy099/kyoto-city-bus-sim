@@ -987,6 +987,41 @@ function nearestLineDistance(point, points) {
   for (let i = 1; i < points.length; i++) best = Math.min(best, nearestOnSegment(point[0], point[1], points[i - 1], points[i]).distance);
   return best;
 }
+function wrapGraphAngle(angle) {
+  let result = angle;
+  while (result > Math.PI) result -= Math.PI * 2;
+  while (result < -Math.PI) result += Math.PI * 2;
+  return result;
+}
+function trimPolyline2d(points, startTrim, endTrim) {
+  if (!Array.isArray(points) || points.length < 2) return points;
+  if (!(startTrim > 0) && !(endTrim > 0)) return points;
+  const cum = graphCum(points);
+  const total = cum.at(-1);
+  if (!(total > 2.2)) return points;
+  let s0 = Math.max(0, startTrim);
+  let s1 = Math.max(0, endTrim);
+  const maxTrimTotal = Math.max(0, total - Math.max(2.2, total * 0.45));
+  if (s0 + s1 > maxTrimTotal) {
+    if (maxTrimTotal <= 1e-6) return points;
+    const scale = maxTrimTotal / (s0 + s1);
+    s0 *= scale;
+    s1 *= scale;
+  }
+  const endDist = total - s1;
+  const out = [graphPointAt(points, cum, s0)];
+  for (let i = 1; i < points.length - 1; i++) {
+    if (cum[i] > s0 + 0.05 && cum[i] < endDist - 0.05) {
+      out.push(points[i]);
+    }
+  }
+  out.push(graphPointAt(points, cum, endDist));
+  const deduped = [out[0]];
+  for (let i = 1; i < out.length; i++) {
+    if (graphDistance(deduped.at(-1), out[i]) > 1e-4) deduped.push(out[i]);
+  }
+  return deduped.length >= 2 ? deduped : points;
+}
 function tessellateGraphConnector(points, divisions = 24) {
   if (!Array.isArray(points) || points.length !== 4) return points ?? [];
   const [a, ctrlA, ctrlB, b] = points;
@@ -1006,21 +1041,46 @@ function tessellateGraphConnector(points, divisions = 24) {
   }
   return result;
 }
-function graphConnectorGeometryValid(points, inVector, outVector) {
+function graphConnectorGeometryValid(points, inVector, outVector, isTurn = false) {
   const segments = [];
+  const segLengths = [];
   const samples = tessellateGraphConnector(points);
   for (let index = 1; index < samples.length; index++) {
     const dx = samples[index][0] - samples[index - 1][0];
     const dz = samples[index][2] - samples[index - 1][2];
     const length = Math.hypot(dx, dz);
-    if (length > 1e-6) segments.push([dx / length, dz / length]);
+    if (length > 1e-6) {
+      segments.push([dx / length, dz / length]);
+      segLengths.push(length);
+    }
   }
   if (!segments.length) return false;
   if (segments[0][0] * inVector[0] + segments[0][1] * inVector[1] <= 0) return false;
   if (segments.at(-1)[0] * outVector[0] + segments.at(-1)[1] * outVector[1] <= 0) return false;
+  let totalAbsTurn = 0;
+  let maxSegBend = 0;
+  let minRadius = Infinity;
+  let prevH = Math.atan2(segments[0][0], segments[0][1]);
   for (let index = 1; index < segments.length; index++) {
     if (segments[index - 1][0] * segments[index][0] + segments[index - 1][1] * segments[index][1] <= 0) return false;
+    const h = Math.atan2(segments[index][0], segments[index][1]);
+    const dh = Math.abs(wrapGraphAngle(h - prevH));
+    totalAbsTurn += dh;
+    if (dh > maxSegBend) maxSegBend = dh;
+    if (dh > 0.02) {
+      const avgSeg = (segLengths[index - 1] + segLengths[index]) * 0.5;
+      const r = avgSeg / dh;
+      if (r < minRadius) minRadius = r;
+    }
+    prevH = h;
   }
+  const inHeading = Math.atan2(inVector[0], inVector[1]);
+  const outHeading = Math.atan2(outVector[0], outVector[1]);
+  const netTurn = Math.abs(wrapGraphAngle(outHeading - inHeading));
+  if (totalAbsTurn - netTurn > (30 * Math.PI) / 180) return false;
+  if (totalAbsTurn > (155 * Math.PI) / 180) return false;
+  if (maxSegBend > (30 * Math.PI) / 180) return false;
+  if (minRadius < (isTurn ? 2.2 : 1.5)) return false;
   return true;
 }
 function buildTrafficGraph() {
@@ -1048,6 +1108,18 @@ function buildTrafficGraph() {
     });
     return id;
   };
+  const nodeTopology = new Map();
+  const recordNodeTouch = (nodeKey, wayId, dirVec, totalLanes) => {
+    let entry = nodeTopology.get(nodeKey);
+    if (!entry) {
+      entry = { wayIds: new Set(), dirs: [], maxLanes: 1 };
+      nodeTopology.set(nodeKey, entry);
+    }
+    entry.wayIds.add(wayId);
+    entry.dirs.push(dirVec);
+    if (totalLanes > entry.maxLanes) entry.maxLanes = totalLanes;
+  };
+  const splitSegments = [];
   for (const road of sourceRoads) {
     const tags = road.tags ?? {};
     const sourcePoints = road.points.map(([x, z]) => [Number(x), Number(z)]);
@@ -1061,6 +1133,9 @@ function buildTrafficGraph() {
     }
     splitIndices.push(sourcePoints.length - 1);
     const directions = tags.oneway === "-1" ? [-1] : ["yes", "1", "true"].includes(String(tags.oneway)) ? [1] : [1, -1];
+    const totalLanes = directions.length === 1
+      ? graphLaneCounts(tags, directions[0])
+      : graphLaneCounts(tags, 1) + graphLaneCounts(tags, -1);
     for (let segmentIndex = 0; segmentIndex < splitIndices.length - 1; segmentIndex++) {
       const start = splitIndices[segmentIndex];
       const end = splitIndices[segmentIndex + 1];
@@ -1074,44 +1149,73 @@ function buildTrafficGraph() {
       const toKey = endNodeId != null
         ? `osm:${endNodeId}`
         : `point:${graphPointKey(segmentPoints.at(-1))}`;
-      const from = addNode(segmentPoints[0], fromKey, startNodeId);
-      const to = addNode(segmentPoints.at(-1), toKey, endNodeId);
-      for (const direction of directions) {
-        const laneCount = graphLaneCounts(tags, direction);
-        const oriented = direction > 0 ? segmentPoints : [...segmentPoints].reverse();
-        for (let lane = 0; lane < laneCount; lane++) {
-          let samples;
-          try {
-            samples = graphLanePoints(oriented, graphLaneOffset(tags, direction, lane, laneCount));
-          } catch {
-            continue;
-          }
-          const length = graphCum(samples.map(([x, , z]) => [x, z])).at(-1);
-          if (!(length > 2)) continue;
-          const id = `way-${road.id}-${segmentIndex}-${direction > 0 ? "f" : "r"}-lane-${lane}`;
-          const edge = {
-            id,
-            wayId: road.id,
-            name: tags.name ?? "",
-            highway: tags.highway,
-            direction,
-            lane,
-            laneCount,
-            oneway: directions.length === 1,
-            from: direction > 0 ? from : to,
-            to: direction > 0 ? to : from,
-            sourceFromNode: direction > 0 ? startNodeId : endNodeId,
-            sourceToNode: direction > 0 ? endNodeId : startNodeId,
-            segmentIndex,
-            points: samples,
-            length: +length.toFixed(3),
-            physicsSafe: graphMaxHeadingJump(samples) < Math.PI / 4,
-            speed: Math.max(15, numberTag(tags.maxspeed, tags.highway === "service" ? 20 : 40)) / 3.6,
-          };
-          edges.push(edge);
-          nodesByKey.get(edge.from).outgoing.push(id);
-          nodesByKey.get(edge.to).incoming.push(id);
+      const startLen = Math.hypot(segmentPoints[1][0] - segmentPoints[0][0], segmentPoints[1][1] - segmentPoints[0][1]) || 1;
+      const endLen = Math.hypot(segmentPoints.at(-2)[0] - segmentPoints.at(-1)[0], segmentPoints.at(-2)[1] - segmentPoints.at(-1)[1]) || 1;
+      recordNodeTouch(fromKey, road.id, [(segmentPoints[1][0] - segmentPoints[0][0]) / startLen, (segmentPoints[1][1] - segmentPoints[0][1]) / startLen], totalLanes);
+      recordNodeTouch(toKey, road.id, [(segmentPoints.at(-2)[0] - segmentPoints.at(-1)[0]) / endLen, (segmentPoints.at(-2)[1] - segmentPoints.at(-1)[1]) / endLen], totalLanes);
+      splitSegments.push({ road, tags, segmentIndex, segmentPoints, startNodeId, endNodeId, fromKey, toKey, directions });
+    }
+  }
+  const nodeTrimAmount = (nodeKey, point) => {
+    const info = nodeTopology.get(nodeKey);
+    if (!info) return 0;
+    if (info.dirs.length >= 3) {
+      if (graphNodeOnOmiyaBridge(point) && info.wayIds.size === 1) return 0;
+      return clamp(info.maxLanes * 2.2, 4.0, 7.5);
+    }
+    if (info.dirs.length === 2) {
+      const dot = clamp(-(info.dirs[0][0] * info.dirs[1][0] + info.dirs[0][1] * info.dirs[1][1]), -1, 1);
+      const bendAngle = Math.acos(dot);
+      if (bendAngle > Math.PI / 15) return clamp(info.maxLanes * 1.5, 2.5, 4.5);
+    }
+    return 0;
+  };
+  for (const seg of splitSegments) {
+    const { road, tags, segmentIndex, segmentPoints, startNodeId, endNodeId, fromKey, toKey, directions } = seg;
+    const from = addNode(segmentPoints[0], fromKey, startNodeId);
+    const to = addNode(segmentPoints.at(-1), toKey, endNodeId);
+    const trimmedSegmentPoints = trimPolyline2d(
+      segmentPoints,
+      nodeTrimAmount(fromKey, segmentPoints[0]),
+      nodeTrimAmount(toKey, segmentPoints.at(-1)),
+    );
+    for (const direction of directions) {
+      const laneCount = graphLaneCounts(tags, direction);
+      const oriented = direction > 0 ? trimmedSegmentPoints : [...trimmedSegmentPoints].reverse();
+      for (let lane = 0; lane < laneCount; lane++) {
+        let samples;
+        try {
+          samples = graphLanePoints(oriented, graphLaneOffset(tags, direction, lane, laneCount));
+        } catch {
+          continue;
         }
+        const length = graphCum(samples.map(([x, , z]) => [x, z])).at(-1);
+        if (!(length > 2)) continue;
+        const maxJump = graphMaxHeadingJump(samples);
+        const id = `way-${road.id}-${segmentIndex}-${direction > 0 ? "f" : "r"}-lane-${lane}`;
+        const edge = {
+          id,
+          wayId: road.id,
+          name: tags.name ?? "",
+          highway: tags.highway,
+          direction,
+          lane,
+          laneCount,
+          oneway: directions.length === 1,
+          from: direction > 0 ? from : to,
+          to: direction > 0 ? to : from,
+          sourceFromNode: direction > 0 ? startNodeId : endNodeId,
+          sourceToNode: direction > 0 ? endNodeId : startNodeId,
+          segmentIndex,
+          points: samples,
+          length: +length.toFixed(3),
+          physicsSafe: maxJump < Math.PI / 4,
+          extremeFold: maxJump >= (135 * Math.PI) / 180,
+          speed: Math.max(15, numberTag(tags.maxspeed, tags.highway === "service" ? 20 : 40)) / 3.6,
+        };
+        edges.push(edge);
+        nodesByKey.get(edge.from).outgoing.push(id);
+        nodesByKey.get(edge.to).incoming.push(id);
       }
     }
   }
@@ -1124,6 +1228,10 @@ function buildTrafficGraph() {
     edge,
   ]));
   const unsafeTwoWaySegments = new Set();
+  for (const edge of edges) {
+    if (edge.extremeFold) unsafeTwoWaySegments.add(`${edge.wayId}:${edge.segmentIndex}`);
+    delete edge.extremeFold;
+  }
   for (const forward of edges) {
     if (forward.oneway || forward.direction !== 1 || forward.lane !== 0) continue;
     const reverse = edgeByLaneKey.get(`${forward.wayId}:${forward.segmentIndex}:-1:0`);
@@ -1195,15 +1303,44 @@ function buildTrafficGraph() {
       const chord = Math.hypot(b[0] - a[0], b[2] - a[2]);
       if (isTurn && chord < 0.5) continue;
       const zeroLength = !isTurn && chord < 1e-3;
-      const handle = Math.min(3.5, chord / 3);
+      const dx = b[0] - a[0], dz = b[2] - a[2];
+      if (!zeroLength && !isTurn) {
+        if (dx * inVector[0] + dz * inVector[1] <= 0 || dx * outVector[0] + dz * outVector[1] <= 0) {
+          continue;
+        }
+      }
+      let handleA = 0;
+      let handleB = 0;
+      if (!zeroLength) {
+        if (isTurn) {
+          const det = inVector[0] * outVector[1] - inVector[1] * outVector[0];
+          if (Math.abs(det) > 1e-4) {
+            const tA = (dx * outVector[1] - dz * outVector[0]) / det;
+            const tB = (inVector[0] * dz - inVector[1] * dx) / det;
+            if (tA > 0.3 && tB > 0.3 && tA < chord * 1.6 && tB < chord * 1.6) {
+              handleA = clamp(tA * 0.5523, 0.5, chord * 0.75);
+              handleB = clamp(tB * 0.5523, 0.5, chord * 0.75);
+            }
+          }
+          if (!(handleA > 0 && handleB > 0)) {
+            const fallback = clamp(chord * 0.4, 0.5, 4.5);
+            handleA = fallback;
+            handleB = fallback;
+          }
+        } else {
+          const straightHandle = clamp(chord * 0.35, 0.2, 4.0);
+          handleA = straightHandle;
+          handleB = straightHandle;
+        }
+      }
       const ctrlA = zeroLength
         ? [...a]
-        : [a[0] + inVector[0] * handle, surfaceYAt(a[0], a[2]), a[2] + inVector[1] * handle];
+        : [a[0] + inVector[0] * handleA, surfaceYAt(a[0], a[2]), a[2] + inVector[1] * handleA];
       const ctrlB = zeroLength
         ? [...b]
-        : [b[0] - outVector[0] * handle, surfaceYAt(b[0], b[2]), b[2] - outVector[1] * handle];
+        : [b[0] - outVector[0] * handleB, surfaceYAt(b[0], b[2]), b[2] - outVector[1] * handleB];
       const points = [a, ctrlA, ctrlB, b];
-      if (!zeroLength && !graphConnectorGeometryValid(points, inVector, outVector)) continue;
+      if (!zeroLength && !graphConnectorGeometryValid(points, inVector, outVector, isTurn)) continue;
       connectors.push({
         id: `turn-${incoming.id}-${outgoing.id}`,
         node: node.id,

@@ -33,22 +33,22 @@ export function pedalsForAccel(phys, accel) {
   };
 }
 
-/** 前方カーブによる速度上限。cursorの先読み経路の曲率から算出。 */
+/** 前方カーブによる速度上限。cursorの先読み経路を2m刻みで走査し、減速距離も考慮して算出。 */
 export function curveSpeedLimit(cursor, v) {
   const D = CFG.traffic.driver;
   let limit = Infinity;
-  for (let ahead = 4; ahead <= 40; ahead += 6) {
-    const a = cursor.poseAt(Math.max(0, ahead - 2));
+  for (let ahead = 0; ahead <= 38; ahead += 2) {
+    const a = cursor.poseAt(ahead);
     const b = cursor.poseAt(ahead + 2);
     if (!a || !b) break;
     let dh = b.heading - a.heading;
     while (dh > Math.PI) dh -= 2 * Math.PI;
     while (dh < -Math.PI) dh += 2 * Math.PI;
-    const k = Math.abs(dh) / 4;
+    const k = Math.abs(dh) / 2;
     if (k > 1e-4) {
-      // 遠いカーブほど今は速くてよい(減速余地がある)。
-      const vCurve = Math.sqrt(D.maxLatAccel / k) + Math.max(0, ahead - 10) * 0.15;
-      limit = Math.min(limit, Math.max(2.0, vCurve));
+      const vCurve = Math.max(2.2, Math.sqrt(D.maxLatAccel / k));
+      const vAllowed = Math.sqrt(vCurve * vCurve + 2 * 2.2 * ahead);
+      limit = Math.min(limit, vAllowed);
     }
   }
   return limit;

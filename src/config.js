@@ -106,7 +106,7 @@ export const CFG = {
     driver: {
       turnWeightFactor: 0.35, // 旋回コネクタの重み係数(直進=1.0)
       minStraightAfterTurn: 100, // 旋回後に再旋回しない距離 [m]
-      maxLatAccel: 2.5, // カーブ減速の横加速度上限 [m/s²]
+      maxLatAccel: 2.0, // カーブ減速の横加速度上限 [m/s²]
       lookAheadMin: 5, // pure pursuit先読み距離の下限 [m]
       lookAheadMax: 22, // pure pursuit先読み距離の上限 [m]
       headway: 1.35, // IDMの希望車間時間 [s]
