@@ -27,7 +27,7 @@ from terrain_grid import build_connected_terrain_grid
 
 from pyproj import CRS, Transformer
 from shapely.geometry import GeometryCollection, LineString, MultiPolygon, Polygon
-from shapely.ops import unary_union
+from shapely.ops import split as split_geometry, unary_union
 from tqdm import tqdm
 
 GML_ID = "{http://www.opengis.net/gml}id"
@@ -516,10 +516,41 @@ def geometry_polygons(geometry):
     return []
 
 
+def split_polygon_holes(geometry, depth: int = 0) -> list[Polygon]:
+    polygons = []
+    for poly in geometry_polygons(geometry):
+        if poly.is_empty or poly.area < 0.5:
+            continue
+        if not poly.interiors or depth >= 8:
+            polygons.append(Polygon(poly.exterior.coords))
+            continue
+        hole = poly.interiors[0]
+        cx, cz = Polygon(hole.coords).centroid.coords[0]
+        minx, minz, maxx, maxz = poly.bounds
+        cut_lines = [
+            LineString([(cx, minz - 1.0), (cx, maxz + 1.0)]),
+            LineString([(minx - 1.0, cz), (maxx + 1.0, cz)]),
+        ]
+        did_split = False
+        for line in cut_lines:
+            try:
+                parts = geometry_polygons(split_geometry(poly, line))
+            except Exception:
+                parts = []
+            if len(parts) > 1:
+                for part in parts:
+                    polygons.extend(split_polygon_holes(part, depth + 1))
+                did_split = True
+                break
+        if not did_split:
+            polygons.append(Polygon(poly.exterior.coords))
+    return polygons
+
+
 def overlay_feature(kind: str, geometry, source: dict, tags: dict | None = None):
     features = []
-    for index, polygon in enumerate(geometry_polygons(geometry), start=1):
-        if polygon.area < 0.005:
+    for index, polygon in enumerate(split_polygon_holes(geometry), start=1):
+        if polygon.area < 0.5:
             continue
         ring = [[round(x, 5), 0.0, round(z, 5)] for x, z in list(polygon.exterior.coords)[:-1]]
         if len(ring) < 3:
@@ -534,7 +565,140 @@ def overlay_feature(kind: str, geometry, source: dict, tags: dict | None = None)
     return features
 
 
-def build_osm_overlays(source: dict, transportation: list[dict]) -> tuple[list[dict], dict]:
+def _seg_dist_2d(px: float, pz: float, ax: float, az: float, bx: float, bz: float) -> float:
+    vx, vz = bx - ax, bz - az
+    l2 = vx * vx + vz * vz
+    if l2 <= 1e-12:
+        return math.hypot(px - ax, pz - az)
+    t = max(0.0, min(1.0, ((px - ax) * vx + (pz - az) * vz) / l2))
+    return math.hypot(px - (ax + vx * t), pz - (az + vz * t))
+
+
+def _segs_intersect_2d(a, b, c, d) -> bool:
+    def ccw(p1, p2, p3):
+        return (p3[1] - p1[1]) * (p2[0] - p1[0]) > (p2[1] - p1[1]) * (p3[0] - p1[0])
+    return ccw(a, c, d) != ccw(b, c, d) and ccw(a, b, c) != ccw(a, b, d)
+
+
+def _is_crossing_sidewalk_segment(a, b, non_service_segments) -> bool:
+    dx, dz = b[0] - a[0], b[1] - a[1]
+    length = math.hypot(dx, dz)
+    if length < 2.5 or length > 25.0:
+        return False
+    ux, uz = dx / length, dz / length
+    mx, mz = (a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0
+    min_x, max_x = min(a[0], b[0]) - 2.0, max(a[0], b[0]) + 2.0
+    min_z, max_z = min(a[1], b[1]) - 2.0, max(a[1], b[1]) + 2.0
+    for c, d, rux, ruz, rminx, rmaxx, rminz, rmaxz in non_service_segments:
+        if rmaxx < min_x or rminx > max_x or rmaxz < min_z or rminz > max_z:
+            continue
+        if abs(ux * rux + uz * ruz) >= 0.55:
+            continue
+        if _segs_intersect_2d(a, b, c, d) or _seg_dist_2d(mx, mz, c[0], c[1], d[0], d[1]) <= 1.5:
+            return True
+    return False
+
+
+def build_carriageway_union(driving_network: dict | None):
+    if not driving_network:
+        return GeometryCollection()
+    pieces = []
+
+    path = driving_network.get("path") or []
+    drive_bounds = driving_network.get("driveBounds") or []
+    if len(path) >= 2 and len(drive_bounds) == len(path):
+        margin = 0.15
+        quads = []
+        left_pts = []
+        right_pts = []
+        for idx, pt in enumerate(path):
+            prev_pt = path[max(0, idx - 1)]
+            next_pt = path[min(len(path) - 1, idx + 1)]
+            dx, dz = next_pt[0] - prev_pt[0], next_pt[1] - prev_pt[1]
+            length = math.hypot(dx, dz) or 1.0
+            nx, nz = -dz / length, dx / length
+            b = drive_bounds[idx]
+            l_off = float(b.get("left", 1.5)) + margin
+            r_off = float(b.get("right", 1.5)) + margin
+            left_pts.append((pt[0] - nx * l_off, pt[1] - nz * l_off))
+            right_pts.append((pt[0] + nx * r_off, pt[1] + nz * r_off))
+        for idx in range(1, len(path)):
+            poly = Polygon([left_pts[idx - 1], left_pts[idx], right_pts[idx], right_pts[idx - 1]])
+            if not poly.is_valid:
+                poly = poly.buffer(0)
+            if not poly.is_empty:
+                quads.append(poly)
+        if quads:
+            pieces.append(unary_union(quads))
+
+    for tp in driving_network.get("trafficPaths") or []:
+        pts = tp.get("points") or []
+        active = tp.get("active")
+        if len(pts) < 2:
+            continue
+        run = []
+        for idx, pt in enumerate(pts):
+            is_act = True if active is None else bool(active[idx])
+            if is_act:
+                run.append((pt[0], pt[1]))
+            else:
+                if len(run) >= 2:
+                    pieces.append(LineString(run).buffer(1.65, cap_style=2, join_style=2))
+                run = []
+        if len(run) >= 2:
+            pieces.append(LineString(run).buffer(1.65, cap_style=2, join_style=2))
+
+    edge_polys = []
+    for edge in (driving_network.get("trafficGraph") or {}).get("edges") or []:
+        pts = [(pt[0], pt[2]) for pt in (edge.get("points") or [])]
+        if len(pts) >= 2:
+            line = LineString(pts)
+            if line.length > 0.2:
+                edge_polys.append(line.buffer(1.55, cap_style=2, join_style=2))
+    if edge_polys:
+        pieces.append(unary_union(edge_polys))
+
+    crosswalks = ((driving_network.get("overlays") or {}).get("roads") or {}).get("crosswalks") or []
+    cw_polys = []
+    for cw in crosswalks:
+        stripes = []
+        for stripe in cw.get("stripes") or []:
+            if len(stripe) >= 3:
+                sp = Polygon([(p[0], p[2]) for p in stripe])
+                if not sp.is_valid:
+                    sp = sp.buffer(0)
+                if not sp.is_empty:
+                    stripes.append(sp)
+        if stripes:
+            hull = unary_union(stripes).convex_hull.buffer(0.3, join_style=2)
+            if not hull.is_empty:
+                cw_polys.append(hull)
+    if cw_polys:
+        pieces.append(unary_union(cw_polys))
+
+    rotary_rows = (((driving_network.get("overlays") or {}).get("nijoRotary") or {}).get("road") or {}).get("rows") or []
+    if len(rotary_rows) >= 2:
+        rquads = []
+        for idx in range(1, len(rotary_rows)):
+            a0, a1 = rotary_rows[idx - 1]
+            b0, b1 = rotary_rows[idx]
+            poly = Polygon([(a0[0], a0[2]), (b0[0], b0[2]), (b1[0], b1[2]), (a1[0], a1[2])])
+            if not poly.is_valid:
+                poly = poly.buffer(0)
+            if not poly.is_empty:
+                rquads.append(poly)
+        if rquads:
+            pieces.append(unary_union(rquads))
+
+    valid_pieces = [p for p in pieces if p is not None and not p.is_empty]
+    return unary_union(valid_pieces) if valid_pieces else GeometryCollection()
+
+
+def build_osm_overlays(
+    source: dict,
+    transportation: list[dict],
+    driving_network: dict | None = None,
+) -> tuple[list[dict], dict]:
     road_polygons = []
     for feature in transportation:
         points = [(point[0], point[2]) for point in feature.get("polygon", [])]
@@ -546,18 +710,32 @@ def build_osm_overlays(source: dict, transportation: list[dict]) -> tuple[list[d
         if not polygon.is_empty:
             road_polygons.append(polygon)
     road_union = unary_union(road_polygons) if road_polygons else GeometryCollection()
+    carriageway_union = build_carriageway_union(driving_network)
     roads = source.get("roads", [])
     sidewalks = source.get("sidewalks", [])
     road_lines = []
+    non_service_segments = []
     overlays = []
     for road in roads:
-        line = LineString([(point[0], point[1]) for point in road.get("points", [])])
+        pts = road.get("points", [])
+        line = LineString([(point[0], point[1]) for point in pts])
         if line.is_empty or line.length < 1:
             continue
         tags = road.get("tags") or {}
         lanes_forward, lanes_backward = visual_lane_counts(tags)
         full_width = visual_road_width(tags, lanes_forward, lanes_backward)
         road_lines.append((line, tags, full_width, max(lanes_forward, lanes_backward)))
+        if tags.get("highway") != "service":
+            for j in range(1, len(pts)):
+                c, d = (pts[j - 1][0], pts[j - 1][1]), (pts[j][0], pts[j][1])
+                rlen = math.hypot(d[0] - c[0], d[1] - c[1])
+                if rlen >= 0.5:
+                    non_service_segments.append((
+                        c, d,
+                        (d[0] - c[0]) / rlen, (d[1] - c[1]) / rlen,
+                        min(c[0], d[0]) - 2.0, max(c[0], d[0]) + 2.0,
+                        min(c[1], d[1]) - 2.0, max(c[1], d[1]) + 2.0,
+                    ))
         # Centre markings are generated from the compiled driving network.
         # Do not emit an OSM copy here: rendering both produced doubled,
         # slightly offset centre lines on the PLATEAU surface.
@@ -566,29 +744,50 @@ def build_osm_overlays(source: dict, transportation: list[dict]) -> tuple[list[d
 
     sidewalk_geometries = []
     for sidewalk in sidewalks:
-        line = LineString([(point[0], point[1]) for point in sidewalk.get("points", [])])
-        if line.is_empty or line.length < 1:
+        raw_pts = [(point[0], point[1]) for point in sidewalk.get("points", [])]
+        if len(raw_pts) < 2:
+            continue
+        full_line = LineString(raw_pts)
+        if full_line.is_empty or full_line.length < 1:
             continue
         nearest = min(
-            ((line.distance(road_line), width, lane_count) for road_line, _, width, lane_count in road_lines),
+            ((full_line.distance(road_line), width, lane_count) for road_line, _, width, lane_count in road_lines),
             default=(float("inf"), None, None),
             key=lambda item: item[0],
         )
         width = sidewalk_width(sidewalk.get("tags") or {}, nearest[1], nearest[2]) if nearest[0] <= 15 else 2.0
-        sidewalk_geometries.append(line.buffer(width / 2, cap_style=2, join_style=2))
+        kept_runs = []
+        current_run = []
+        for idx in range(1, len(raw_pts)):
+            a, b = raw_pts[idx - 1], raw_pts[idx]
+            if _is_crossing_sidewalk_segment(a, b, non_service_segments):
+                if len(current_run) >= 2:
+                    kept_runs.append(current_run)
+                current_run = []
+                continue
+            if not current_run:
+                current_run = [a, b]
+            else:
+                current_run.append(b)
+        if len(current_run) >= 2:
+            kept_runs.append(current_run)
+        for run in kept_runs:
+            subline = LineString(run)
+            if not subline.is_empty and subline.length >= 1:
+                sidewalk_geometries.append(subline.buffer(width / 2, cap_style=2, join_style=2))
 
     for line, tags, full_width, lane_count in road_lines:
         values = []
         base = tags.get("sidewalk")
-        if base in {"both", "left", "right"}:
-            values.extend([base] if base == "both" else [base])
+        if base == "both":
+            values.extend(["left", "right"])
+        elif base in {"left", "right"}:
+            values.append(base)
         if tags.get("sidewalk:left") not in {None, "no", "none", "separate"}:
             values.append("left")
         if tags.get("sidewalk:right") not in {None, "no", "none", "separate"}:
             values.append("right")
         if tags.get("sidewalk:both") not in {None, "no", "none", "separate"}:
-            values.extend(["left", "right"])
-        if base == "both":
             values.extend(["left", "right"])
         for side in set(values):
             width = sidewalk_width(tags, full_width, lane_count)
@@ -602,11 +801,16 @@ def build_osm_overlays(source: dict, transportation: list[dict]) -> tuple[list[d
         # create a polygon with roadway-shaped holes; overlay_feature stores
         # only exterior rings, so those holes would be filled back in and a
         # sidewalk could visually cover the entire carriageway (notably around
-        # Mibu garage).  Clipping each source geometry to PLATEAU roads keeps
-        # the OSM sidewalk footprint while preserving gaps and holes.
+        # Mibu garage).  Clipping each source geometry to PLATEAU roads and
+        # subtracting the compiled carriageway + crosswalk union keeps the
+        # OSM sidewalk footprint free of carriageway/crosswalk intrusions.
+        has_carriageway = carriageway_union is not None and not carriageway_union.is_empty
         for index, sidewalk_geometry in enumerate(sidewalk_geometries, start=1):
             clipped_sidewalk = sidewalk_geometry.intersection(road_union)
-            overlays.extend(overlay_feature("sidewalk", clipped_sidewalk, {"wayId": f"sidewalk-{index}"}))
+            if has_carriageway and not clipped_sidewalk.is_empty:
+                clipped_sidewalk = clipped_sidewalk.difference(carriageway_union)
+            if not clipped_sidewalk.is_empty:
+                overlays.extend(overlay_feature("sidewalk", clipped_sidewalk, {"wayId": f"sidewalk-{index}"}))
     overlay_union = unary_union([
         Polygon([(point[0], point[2]) for point in feature["polygon"]])
         for feature in overlays
@@ -933,7 +1137,8 @@ def convert(args) -> dict:
 
     transportation = convert_surface_layer("tran", {"Road"}, True)
     osm_visual_source = read_json(args.osm_visual_source)
-    osm_overlays, osm_overlay_stats = build_osm_overlays(osm_visual_source, transportation)
+    driving_network = read_json(args.driving_network) if args.driving_network and args.driving_network.exists() else None
+    osm_overlays, osm_overlay_stats = build_osm_overlays(osm_visual_source, transportation, driving_network)
     bridges = convert_surface_layer("brid", {"Bridge", "BridgePart"})
     water = convert_surface_layer("wtr", {"WaterBody"})
     vegetation = convert_surface_layer("veg", {"PlantCover", "SolitaryVegetationObject"})
@@ -1045,26 +1250,68 @@ def convert(args) -> dict:
     return report
 
 
+def convert_overlays_only(args) -> dict:
+    transportation_doc = read_json(args.transportation)
+    transportation = transportation_doc.get("features", [])
+    osm_visual_source = read_json(args.osm_visual_source)
+    driving_network = read_json(args.driving_network) if args.driving_network and args.driving_network.exists() else None
+    osm_overlays, osm_overlay_stats = build_osm_overlays(osm_visual_source, transportation, driving_network)
+    generated_at = datetime.now(timezone.utc).isoformat()
+    osm_overlay_document = {
+        "version": 1,
+        "generatedAt": generated_at,
+        "source": osm_visual_source.get("source", {"provider": "OpenStreetMap", "license": "ODbL"}),
+        "clip": {"provider": "Project PLATEAU", "layer": "tran:Road"},
+        "features": osm_overlays,
+        "stats": osm_overlay_stats,
+    }
+    write_json(args.osm_overlays, osm_overlay_document)
+    if args.manifest and args.manifest.exists():
+        manifest = read_json(args.manifest)
+        for layer in manifest.get("layers", []):
+            if layer.get("id") == "osm-road-overlays":
+                layer["featureCount"] = osm_overlay_stats["overlayFeatures"]
+        write_json(args.manifest, manifest)
+    if args.report and args.report.exists():
+        report = read_json(args.report)
+        report["osmOverlays"] = osm_overlay_stats
+        write_json(args.report, report)
+    return {"osmOverlays": osm_overlay_stats}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input-dir", type=Path, required=True)
-    parser.add_argument("--route", type=Path, required=True)
-    parser.add_argument("--config", type=Path, required=True)
-    parser.add_argument("--buildings", type=Path, required=True)
+    parser.add_argument("--overlays-only", action="store_true")
+    parser.add_argument("--driving-network", type=Path, default=None)
+    parser.add_argument("--input-dir", type=Path, default=None)
+    parser.add_argument("--route", type=Path, default=None)
+    parser.add_argument("--config", type=Path, default=None)
+    parser.add_argument("--buildings", type=Path, default=None)
     parser.add_argument("--transportation", type=Path, required=True)
-    parser.add_argument("--terrain", type=Path, required=True)
-    parser.add_argument("--bridges", type=Path, required=True)
-    parser.add_argument("--furniture", type=Path, required=True)
-    parser.add_argument("--water", type=Path, required=True)
-    parser.add_argument("--vegetation", type=Path, required=True)
+    parser.add_argument("--terrain", type=Path, default=None)
+    parser.add_argument("--bridges", type=Path, default=None)
+    parser.add_argument("--furniture", type=Path, default=None)
+    parser.add_argument("--water", type=Path, default=None)
+    parser.add_argument("--vegetation", type=Path, default=None)
     parser.add_argument("--osm-visual-source", type=Path, required=True)
     parser.add_argument("--osm-overlays", type=Path, required=True)
-    parser.add_argument("--route-elevation", type=Path, required=True)
-    parser.add_argument("--manifest", type=Path, required=True)
-    parser.add_argument("--report", type=Path, required=True)
+    parser.add_argument("--route-elevation", type=Path, default=None)
+    parser.add_argument("--manifest", type=Path, default=None)
+    parser.add_argument("--report", type=Path, default=None)
     args = parser.parse_args()
     try:
-        report = convert(args)
+        if args.overlays_only:
+            report = convert_overlays_only(args)
+        else:
+            required_full = [
+                "input_dir", "route", "config", "buildings", "terrain",
+                "bridges", "furniture", "water", "vegetation",
+                "route_elevation", "manifest", "report",
+            ]
+            missing = [f"--{name.replace('_', '-')}" for name in required_full if getattr(args, name) is None]
+            if missing:
+                parser.error(f"Missing required arguments for full convert: {', '.join(missing)}")
+            report = convert(args)
     except Exception as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1

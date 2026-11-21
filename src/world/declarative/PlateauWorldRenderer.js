@@ -622,7 +622,13 @@ function compiledRoadDetailMeshes(network, terrainHeightAtWorld) {
     group.name = `osm-median-shrubs:${median.id}`;
     result.push(group);
   }
-  const white = new THREE.MeshBasicMaterial({ color: 0xf7f7f2, side: THREE.DoubleSide });
+  const white = new THREE.MeshBasicMaterial({
+    color: 0xf7f7f2,
+    side: THREE.DoubleSide,
+    polygonOffset: true,
+    polygonOffsetFactor: -3,
+    polygonOffsetUnits: -3,
+  });
   for (const crossing of details.crosswalks ?? []) {
     for (const stripe of crossing.stripes ?? []) {
       if (stripe.length < 3) continue;

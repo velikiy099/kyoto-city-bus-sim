@@ -15,5 +15,38 @@
   "BRIDGE_SIDEWALK_WAY_IDS": [621846876, 621846878, 621846879, 621846882, 621846892, 621846894],
   "REMOVED_OVERLAPPING_FOOTBRIDGE_WAY_IDS": [621846895],
   "KOGA_SIDEWALK_WAY_IDS": ["621846879", "621846882"],
-  "PEDESTRIAN_BRIDGE_CLEARANCE_M": 5.2
+  "PEDESTRIAN_BRIDGE_CLEARANCE_M": 5.2,
+  "OIKE_EASTBOUND_PATCH": {
+    "connectorWayId": 157229578,
+    "eastboundWayId": 968042876,
+    "replacedWestboundWayId": 968070115
+  },
+  "WAY_LANE_OVERRIDES": {
+    "157229578": { "lanesF": 2, "lanesB": 0, "oneWay": true, "center": "none", "wL": 3.6, "wR": 3.6 },
+    "968042876": { "lanesF": 2, "lanesB": 0, "oneWay": true, "center": "none", "wL": 3.6, "wR": 3.6 },
+    "273254459": { "lanesF": 2, "lanesB": 2, "oneWay": false, "center": "line", "wL": 7.2, "wR": 7.2 },
+    "26950287": { "lanesF": 1, "lanesB": 1, "oneWay": false, "center": "line", "wL": 4.8, "wR": 4.8 },
+    "462459519": { "lanesF": 1, "lanesB": 1, "oneWay": false, "center": "line", "wL": 4.8, "wR": 4.8 },
+    "296684661": { "lanesF": 1, "lanesB": 1, "oneWay": false, "center": "line", "wL": 4.8, "wR": 4.8 },
+    "1219710802": { "lanesF": 1, "lanesB": 1, "oneWay": false, "center": "line", "wL": 4.6, "wR": 4.6 },
+    "1219710803": { "lanesF": 1, "lanesB": 1, "oneWay": false, "center": "line", "wL": 4.6, "wR": 4.6 },
+    "531155907": { "lanesF": 1, "lanesB": 1, "oneWay": false, "center": "line", "wL": 4.6, "wR": 4.6 },
+    "296206310": { "lanesF": 1, "lanesB": 1, "oneWay": false, "center": "line", "wL": 4.6, "wR": 4.6 }
+  },
+  "EXTRA_CROSSWALKS": [
+    {
+      "id": "crosswalk-nakayama-inari-north",
+      "label": "中山稲荷線",
+      "a": [13.5, 1102.0],
+      "b": [19.5, 1102.0],
+      "width": 3.6
+    },
+    {
+      "id": "crosswalk-nakayama-inari-south",
+      "label": "中山稲荷線",
+      "a": [13.0, 1112.0],
+      "b": [19.5, 1112.0],
+      "width": 3.6
+    }
+  ]
 }

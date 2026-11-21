@@ -59,6 +59,16 @@ run("node", [
   "--osm-source", osmVisualSource,
   "--output", resolveRoot(out.drivingNetwork),
 ]);
+run(python, [
+  resolveRoot("tools/world/convert_citygml.py"),
+  "--overlays-only",
+  "--transportation", resolveRoot(out.plateauTransportation),
+  "--osm-visual-source", osmVisualSource,
+  "--driving-network", resolveRoot(out.drivingNetwork),
+  "--osm-overlays", resolveRoot(out.osmOverlays),
+  "--manifest", resolveRoot(out.worldManifest),
+  "--report", resolveRoot(out.report),
+]);
 run("node", [resolveRoot("tools/world/validate-world-data.mjs")]);
 console.log("OSM + PLATEAU declarative world data is ready.");
 console.log("Run npm run build, then open the simulator with ?world=hybrid.");

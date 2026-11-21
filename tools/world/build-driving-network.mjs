@@ -185,6 +185,28 @@ function resample(points, spacing = 2) {
   return sampled;
 }
 
+function effectiveLaneOverride(wayId) {
+  return PATCHES.WAY_LANE_OVERRIDES?.[String(wayId)] ?? null;
+}
+function filletCorner(prev, corner, next, radius = 6, steps = 4) {
+  const dx1 = prev[0] - corner[0], dz1 = prev[1] - corner[1];
+  const dx2 = next[0] - corner[0], dz2 = next[1] - corner[1];
+  const len1 = Math.hypot(dx1, dz1), len2 = Math.hypot(dx2, dz2);
+  if (len1 < 1 || len2 < 1) return [corner];
+  const trim = Math.min(radius, len1 * 0.4, len2 * 0.4);
+  const p0 = [corner[0] + (dx1 / len1) * trim, corner[1] + (dz1 / len1) * trim];
+  const p2 = [corner[0] + (dx2 / len2) * trim, corner[1] + (dz2 / len2) * trim];
+  const pts = [];
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps, u = 1 - t;
+    pts.push([
+      u * u * p0[0] + 2 * u * t * corner[0] + t * t * p2[0],
+      u * u * p0[1] + 2 * u * t * corner[1] + t * t * p2[1],
+    ]);
+  }
+  return pts;
+}
+
 // The route relation omits the one-way station loop.  Recover it from the two
 // OSM oneway service ways connected to the first platform: the inbound branch
 // ends at the berth, and the outbound branch leaves it and rejoins the route.
@@ -211,10 +233,59 @@ function nijoRotarySource() {
     rawS: rejoinRawS * (index / Math.max(1, centerline.length - 1)),
     overlay: "nijo-rotary",
   }));
-  const source = [
-    ...prefix,
-    ...rawRoute.slice(rejoin.index + 1).map((point, index) => ({ point, rawS: (rejoin.index + 1 + index) * 2 })),
-  ];
+
+  let afterRotary = rawRoute.slice(rejoin.index + 1).map((point, index) => ({
+    point,
+    rawS: (rejoin.index + 1 + index) * 2,
+  }));
+  const oikePatch = PATCHES.OIKE_EASTBOUND_PATCH;
+  if (oikePatch) {
+    const eastbound = (osmSource.roads ?? []).find((road) => Number(road.id) === Number(oikePatch.eastboundWayId));
+    if (eastbound?.points?.length >= 2) {
+      const ebPts = eastbound.points;
+      const junctionEnd = ebPts.at(-1);
+      const nearestToJunction = nearestPointIndex(rawRoute, junctionEnd);
+      // Join Senbon-dori cleanly past the corner rounding (~20 m south of junction)
+      const senbonJoinIndex = Math.min(rawRoute.length - 2, nearestToJunction.index + 10);
+      const senbonTarget = rawRoute[senbonJoinIndex];
+      const entryCorner = ebPts[0];
+      const entryNext = ebPts[1];
+      const exitPrev = ebPts.at(-2);
+      const exitCorner = ebPts.at(-1);
+      const oikeRawPoly = [
+        outbound.points.at(-1),
+        ...filletCorner(outbound.points.at(-1), entryCorner, entryNext, 5, 4),
+        ...ebPts.slice(1, -1),
+        ...filletCorner(exitPrev, exitCorner, senbonTarget, 7, 5),
+      ];
+      const oikeSamples = resample(oikeRawPoly, 2);
+      const joinRawS = senbonJoinIndex * 2;
+      const oikeOverride = effectiveLaneOverride(oikePatch.eastboundWayId);
+      const senbonSection = sectionAt(joinRawS);
+      const oikeCum = [0];
+      for (let k = 1; k < oikeSamples.length; k++) {
+        oikeCum.push(oikeCum[k - 1] + distance(oikeSamples[k - 1], oikeSamples[k]));
+      }
+      const oikeTotal = oikeCum.at(-1) || 1;
+      const oikeTail = oikeSamples.slice(1).map((pt, idx) => {
+        const frac = oikeCum[idx + 1] / oikeTotal;
+        const rawS = rejoinRawS + (joinRawS - rejoinRawS) * frac;
+        // Once south of exitCorner heading into Senbon-dori, hand off to Senbon section
+        const pastCorner = distance(pt, exitCorner) < distance(senbonTarget, exitCorner) && Math.abs(pt[0] - exitCorner[0]) < 3 && pt[1] > exitCorner[1] + 5;
+        return {
+          point: pt,
+          rawS,
+          ...(oikeOverride && !pastCorner ? { sectionOverride: oikeOverride, sourceWayId: Number(oikePatch.eastboundWayId) } : { sectionOverride: senbonSection }),
+        };
+      });
+      afterRotary = [
+        ...oikeTail,
+        ...rawRoute.slice(senbonJoinIndex).map((point, index) => ({ point, rawS: (senbonJoinIndex + index) * 2 })),
+      ];
+    }
+  }
+
+  const source = [...prefix, ...afterRotary];
   const tail = inbound.points.at(-2);
   const end = inbound.points.at(-1);
   const tx = end[0] - tail[0], tz = end[1] - tail[1];
@@ -261,8 +332,98 @@ for (let index = 0; index < center.length; index++) {
   center[index].x = raw[index].point[0] + median(nearby.map((item) => item.x));
   center[index].z = raw[index].point[1] + median(nearby.map((item) => item.z));
 }
-const maxForwardLaneCount = Math.max(...(route.roadSections ?? []).map((section) => Number(section.lanesF) || 1));
-const maxBackwardLaneCount = Math.max(...(route.roadSections ?? []).map((section) => Number(section.lanesB) || 0));
+
+// Precompute matched OSM way + section per sample, applying WAY_LANE_OVERRIDES cleanly
+const osmWayIndex = (osmSource.roads ?? [])
+  .filter((road) => road.points?.length >= 2 && PATCHES.WAY_LANE_OVERRIDES?.[String(road.id)])
+  .map((road) => {
+    const xs = road.points.map((p) => p[0]);
+    const zs = road.points.map((p) => p[1]);
+    return {
+      road,
+      override: PATCHES.WAY_LANE_OVERRIDES[String(road.id)],
+      minX: Math.min(...xs) - 20,
+      maxX: Math.max(...xs) + 20,
+      minZ: Math.min(...zs) - 20,
+      maxZ: Math.max(...zs) + 20,
+    };
+  });
+function matchedOverrideAt(x, z, tx, tz) {
+  let best = null;
+  let bestScore = Infinity;
+  for (const item of osmWayIndex) {
+    if (x < item.minX || x > item.maxX || z < item.minZ || z > item.maxZ) continue;
+    const pts = item.road.points;
+    for (let i = 1; i < pts.length; i++) {
+      const a = pts[i - 1], b = pts[i];
+      const hit = nearestOnSegment(x, z, a, b);
+      if (hit.distance > 16) continue;
+      const rdx = b[0] - a[0], rdz = b[1] - a[1];
+      const rlen = Math.hypot(rdx, rdz) || 1;
+      const dot = Math.abs((rdx / rlen) * tx + (rdz / rlen) * tz);
+      if (dot < 0.78) continue;
+      const score = hit.distance + (1 - dot) * 10;
+      if (score < bestScore) {
+        bestScore = score;
+        best = { wayId: Number(item.road.id), override: item.override };
+      }
+    }
+  }
+  return best;
+}
+const sampleSections = center.map((point, index) => {
+  const sample = raw[index];
+  if (sample.overlay === "nijo-rotary") {
+    return {
+      lanes: 2,
+      lanesF: 2,
+      lanesB: 0,
+      wL: 7.2,
+      wR: 0,
+      center: "none",
+      oneWay: true,
+      source: "OSM Nijo Station West Exit rotary",
+    };
+  }
+  const base = sectionAt(point.rawS);
+  const onGradeSeparatedDeck = (route.elevations ?? []).some((structure) =>
+    Number(structure.height) > 0
+    && structure.profile === "single-crest"
+    && point.rawS >= Number(structure.from)
+    && point.rawS <= Number(structure.to),
+  );
+  if (sample.sectionOverride) {
+    const ov = sample.sectionOverride;
+    return {
+      ...base,
+      ...ov,
+      lanes: (Number(ov.lanesF) || 1) + (Number(ov.lanesB) || 0),
+    };
+  }
+  if (!onGradeSeparatedDeck) {
+    const previous = center[Math.max(0, index - 1)], next = center[Math.min(center.length - 1, index + 1)];
+    const dx = next.x - previous.x, dz = next.z - previous.z;
+    const length = Math.hypot(dx, dz) || 1;
+    const match = matchedOverrideAt(point.x, point.z, dx / length, dz / length);
+    if (match) {
+      const ov = match.override;
+      return {
+        ...base,
+        ...ov,
+        lanes: (Number(ov.lanesF) || 1) + (Number(ov.lanesB) || 0),
+      };
+    }
+  }
+  return base;
+});
+const maxForwardLaneCount = Math.max(
+  ...(route.roadSections ?? []).map((section) => Number(section.lanesF) || 1),
+  ...Object.values(PATCHES.WAY_LANE_OVERRIDES ?? {}).map((ov) => Number(ov.lanesF) || 1),
+);
+const maxBackwardLaneCount = Math.max(
+  ...(route.roadSections ?? []).map((section) => Number(section.lanesB) || 0),
+  ...Object.values(PATCHES.WAY_LANE_OVERRIDES ?? {}).map((ov) => Number(ov.lanesB) || 0),
+);
 const CROSS_SECTION_STEP = 0.1;
 const CROSS_SECTION_LIMIT = 24;
 function corridorSurfaceExtent(point, nx, nz, side) {
@@ -290,7 +451,7 @@ const physicalLaneRows = center.map((point, index) => {
   const dx = next.x - previous.x, dz = next.z - previous.z;
   const length = Math.hypot(dx, dz) || 1;
   const nx = -dz / length, nz = dx / length;
-  const section = sectionAt(point.rawS);
+  const section = sampleSections[index];
   const forwardCount = Math.max(1, Number(section?.lanesF) || 1);
   const backwardCount = Math.max(0, Number(section?.lanesB) || 0);
   const offsets = {
@@ -309,7 +470,7 @@ const physicalLaneRows = center.map((point, index) => {
     }
     const outer = nijoRotary.busLateral + outerSide * 1.6;
     const inner = nijoRotary.busLateral - outerSide * 4.8;
-    return { rawS: point.rawS, nx, nz, min: Math.min(outer, inner), max: Math.max(outer, inner), centerShift: 0, offsets, active, overlay: true, forwardCount, backwardCount };
+    return { rawS: point.rawS, nx, nz, min: Math.min(outer, inner), max: Math.max(outer, inner), centerShift: 0, isFlare: false, offsets, active, overlay: true, forwardCount, backwardCount };
   }
   // A two-way road may be split into adjacent PLATEAU polygons, so its full
   // contiguous section is measured. A one-way OSM way is already a distinct
@@ -343,11 +504,16 @@ const physicalLaneRows = center.map((point, index) => {
   // physical section. A one-way OSM way already describes one carriageway,
   // so its own axis stays fixed and cannot drift toward a crossing polygon.
   const centerShift = backwardCount > 0 ? measuredCenter + (negativeWidth - positiveWidth) / 2 : 0;
+  const isFlare = backwardCount > 0 && (
+    (measuredMax - measuredMin) > (nominalNegative + nominalPositive + 10)
+    || measuredNegative > nominalNegative + 8
+    || measuredPositive > nominalPositive + 8
+  );
   for (let lane = 0; lane < forwardCount; lane++) active.forward[lane] = true;
   for (let lane = 0; lane < backwardCount; lane++) active.reverse[lane] = true;
   return {
     rawS: point.rawS, nx, nz, measuredMin, measuredMax,
-    negativeWidth, positiveWidth, centerShift,
+    negativeWidth, positiveWidth, centerShift, isFlare,
     min: centerShift - negativeWidth, max: centerShift + positiveWidth,
     offsets, active, overlay: false, forwardCount, backwardCount,
   };
@@ -369,7 +535,9 @@ for (let index = 0; index < physicalLaneRows.length; index++) {
       && sample.forwardCount === row.forwardCount
       && sample.backwardCount === row.backwardCount) nearbyIndices.push(index + offset);
   }
-  row.centerShift = median(nearbyIndices.map((sampleIndex) => rawCentreShifts[sampleIndex]));
+  const nonFlareIndices = nearbyIndices.filter((sampleIndex) => !physicalLaneRows[sampleIndex].isFlare);
+  const centerIndices = nonFlareIndices.length ? nonFlareIndices : nearbyIndices;
+  row.centerShift = clamp(median(centerIndices.map((sampleIndex) => rawCentreShifts[sampleIndex])), -3.5, 3.5);
   row.negativeWidth = Math.max(BUS_HALF_WIDTH + 0.25, median(nearbyIndices.map((sampleIndex) => rawNegativeWidths[sampleIndex])));
   row.positiveWidth = row.backwardCount > 0
     ? Math.max(BUS_HALF_WIDTH + 0.25, median(nearbyIndices.map((sampleIndex) => rawPositiveWidths[sampleIndex])))
@@ -739,26 +907,62 @@ function compiledTrafficPaths() {
       })),
   ];
 }
+function sectionKey(sec) {
+  return [
+    Number(sec.lanesF) || 1,
+    Number(sec.lanesB) || 0,
+    sec.center ?? "line",
+    sec.sidewalk ?? "",
+    sec.bridge ?? 0,
+    Boolean(sec.oneWay),
+    sec.source ?? "",
+    Number(sec.wL) || 4,
+    Number(sec.wR) || 4,
+  ].join("|");
+}
 function compiledSections() {
-  if (!nijoRotary) return (route.roadSections ?? []).map(compiledRouteObject);
-  const rejoinRawS = nijoRotary.rejoin.index * 2;
-  const stationSection = {
-    from: 0,
-    to: rejoinRawS,
-    lanes: 2,
-    lanesF: 2,
-    lanesB: 0,
-    wL: 7.2,
-    wR: 0,
-    center: "none",
-    oneWay: true,
-    source: "OSM Nijo Station West Exit rotary",
-  };
-  const remainder = (route.roadSections ?? []).flatMap((section) => {
-    if (section.to <= rejoinRawS) return [];
-    return [{ ...section, from: Math.max(section.from, rejoinRawS) }];
+  if (!nodes.length) return [];
+  const merged = [];
+  let startIndex = 0;
+  let current = sampleSections[0];
+  let currentKey = sectionKey(current);
+  for (let i = 1; i < nodes.length; i++) {
+    const next = sampleSections[i];
+    const nextKey = sectionKey(next);
+    if (nextKey === currentKey) continue;
+    merged.push({
+      from: nodes[startIndex].s,
+      to: nodes[i].s,
+      lanes: (Number(current.lanesF) || 1) + (Number(current.lanesB) || 0),
+      lanesF: Number(current.lanesF) || 1,
+      lanesB: Number(current.lanesB) || 0,
+      wL: Number(current.wL) || 4,
+      wR: Number(current.wR) || 4,
+      center: current.center ?? "line",
+      ...(current.oneWay ? { oneWay: true } : {}),
+      ...(current.sidewalk === "none" ? { sidewalk: "none" } : {}),
+      ...(current.bridge ? { bridge: 1 } : {}),
+      ...(current.source ? { source: current.source } : {}),
+    });
+    startIndex = i;
+    current = next;
+    currentKey = nextKey;
+  }
+  merged.push({
+    from: nodes[startIndex].s,
+    to: nodes.at(-1).s,
+    lanes: (Number(current.lanesF) || 1) + (Number(current.lanesB) || 0),
+    lanesF: Number(current.lanesF) || 1,
+    lanesB: Number(current.lanesB) || 0,
+    wL: Number(current.wL) || 4,
+    wR: Number(current.wR) || 4,
+    center: current.center ?? "line",
+    ...(current.oneWay ? { oneWay: true } : {}),
+    ...(current.sidewalk === "none" ? { sidewalk: "none" } : {}),
+    ...(current.bridge ? { bridge: 1 } : {}),
+    ...(current.source ? { source: current.source } : {}),
   });
-  return [stationSection, ...remainder].map(compiledRouteObject);
+  return merged;
 }
 
 function nijoVegetation() {
@@ -914,7 +1118,12 @@ function graphRoadAllowed(road) {
   if (["driveway", "parking_aisle", "drive-through", "alley"].includes(tags.service)) return false;
   return (road.points?.length ?? 0) >= 2;
 }
-function graphLaneCounts(tags, direction) {
+function graphLaneCounts(tags, direction, wayId = null) {
+  const override = wayId != null ? effectiveLaneOverride(wayId) : null;
+  if (override) {
+    if (override.oneWay) return Math.max(1, Number(override.lanesF) || 1);
+    return Math.max(1, Number(direction > 0 ? override.lanesF : override.lanesB) || 1);
+  }
   const oneway = ["yes", "1", "true", "-1"].includes(String(tags.oneway));
   if (oneway) return Math.max(1, Math.round(numberTag(tags.lanes, 1)));
   const forward = numberTag(tags["lanes:forward"]);
@@ -1134,8 +1343,8 @@ function buildTrafficGraph() {
     splitIndices.push(sourcePoints.length - 1);
     const directions = tags.oneway === "-1" ? [-1] : ["yes", "1", "true"].includes(String(tags.oneway)) ? [1] : [1, -1];
     const totalLanes = directions.length === 1
-      ? graphLaneCounts(tags, directions[0])
-      : graphLaneCounts(tags, 1) + graphLaneCounts(tags, -1);
+      ? graphLaneCounts(tags, directions[0], road.id)
+      : graphLaneCounts(tags, 1, road.id) + graphLaneCounts(tags, -1, road.id);
     for (let segmentIndex = 0; segmentIndex < splitIndices.length - 1; segmentIndex++) {
       const start = splitIndices[segmentIndex];
       const end = splitIndices[segmentIndex + 1];
@@ -1180,7 +1389,7 @@ function buildTrafficGraph() {
       nodeTrimAmount(toKey, segmentPoints.at(-1)),
     );
     for (const direction of directions) {
-      const laneCount = graphLaneCounts(tags, direction);
+      const laneCount = graphLaneCounts(tags, direction, road.id);
       const oriented = direction > 0 ? trimmedSegmentPoints : [...trimmedSegmentPoints].reverse();
       for (let lane = 0; lane < laneCount; lane++) {
         let samples;
@@ -1411,6 +1620,7 @@ function buildRoadOverlays(graph, bridgeRanges = []) {
     commit();
   }
   const crosswalks = [];
+  const crosswalkCenters = [];
   const nearestRoutePoint = (x, z) => {
     let best = { s: 0, distance: Infinity };
     for (let segment = 1; segment < nodes.length; segment++) {
@@ -1481,6 +1691,7 @@ function buildRoadOverlays(graph, bridgeRanges = []) {
       routeDistance: +routeHit.distance.toFixed(3),
       stripes: strips,
     });
+    crosswalkCenters.push(midpoint);
     return true;
   };
   for (const crossing of osmSource.crossings ?? []) {
@@ -1562,6 +1773,59 @@ function buildRoadOverlays(graph, bridgeRanges = []) {
         false,
       );
     }
+  }
+  const segmentsIntersect2d = (a, b, c, d) => {
+    const ccw = (p1, p2, p3) => (p3[1] - p1[1]) * (p2[0] - p1[0]) > (p2[1] - p1[1]) * (p3[0] - p1[0]);
+    return ccw(a, c, d) !== ccw(b, c, d) && ccw(a, b, c) !== ccw(a, b, d);
+  };
+  const nonServiceRoads = roads.filter((road) => road.tags?.highway !== "service");
+  for (const sidewalk of osmSource.sidewalks ?? []) {
+    const points = sidewalk.points ?? [];
+    for (let i = 1; i < points.length; i++) {
+      const a = points[i - 1], b = points[i];
+      const dx = b[0] - a[0], dz = b[1] - a[1];
+      const length = Math.hypot(dx, dz);
+      if (length < 2.5 || length > 25) continue;
+      const ux = dx / length, uz = dz / length;
+      const midpoint = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+      let crossesRoad = false;
+      for (const road of nonServiceRoads) {
+        const rpts = road.points ?? [];
+        for (let j = 1; j < rpts.length; j++) {
+          const c = rpts[j - 1], d = rpts[j];
+          const rdx = d[0] - c[0], rdz = d[1] - c[1];
+          const rlen = Math.hypot(rdx, rdz);
+          if (rlen < 0.5) continue;
+          const dot = Math.abs(ux * (rdx / rlen) + uz * (rdz / rlen));
+          if (dot >= 0.55) continue;
+          if (segmentsIntersect2d(a, b, c, d) || nearestOnSegment(midpoint[0], midpoint[1], c, d).distance <= 1.5) {
+            crossesRoad = true;
+            break;
+          }
+        }
+        if (crossesRoad) break;
+      }
+      if (!crossesRoad) continue;
+      if (crosswalkCenters.some((centerPt) => Math.hypot(centerPt[0] - midpoint[0], centerPt[1] - midpoint[1]) < 5.0)) continue;
+      addCrosswalk(
+        `crosswalk-sidewalk-${sidewalk.id}-${i}`,
+        a,
+        b,
+        Math.max(3.0, numberTag(sidewalk.tags?.width, 4.0)),
+        { source: "osm-sidewalk-crossing", sourceId: sidewalk.id },
+        true,
+      );
+    }
+  }
+  for (const patch of PATCHES.EXTRA_CROSSWALKS ?? []) {
+    addCrosswalk(
+      patch.id,
+      patch.a,
+      patch.b,
+      Number(patch.width) || 4.0,
+      { source: "patch", intersection: patch.label },
+      false,
+    );
   }
   const pedestrianWays = osmSource.pedestrianWays ?? [];
   const bridgeSidewalks = pedestrianWays
