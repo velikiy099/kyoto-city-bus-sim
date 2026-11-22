@@ -8,6 +8,7 @@ route topology, traffic direction, names, stops, signals and the existing traffi
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -26,6 +27,7 @@ from typing import Iterator, Sequence
 from terrain_grid import build_connected_terrain_grid
 
 from pyproj import CRS, Transformer
+from shapely import make_valid, union_all
 from shapely.geometry import GeometryCollection, LineString, MultiPolygon, Polygon
 from shapely.ops import split as split_geometry, unary_union
 from tqdm import tqdm
@@ -594,18 +596,34 @@ def _is_crossing_sidewalk_segment(a, b, non_service_segments) -> bool:
             continue
         if abs(ux * rux + uz * ruz) >= 0.55:
             continue
-        if _segs_intersect_2d(a, b, c, d) or _seg_dist_2d(mx, mz, c[0], c[1], d[0], d[1]) <= 1.5:
+        if (
+            _segs_intersect_2d(a, b, c, d)
+            or _seg_dist_2d(mx, mz, c[0], c[1], d[0], d[1]) <= 1.5
+            or min(
+                _seg_dist_2d(a[0], a[1], c[0], c[1], d[0], d[1]),
+                _seg_dist_2d(b[0], b[1], c[0], c[1], d[0], d[1]),
+            ) <= 0.35
+        ):
             return True
     return False
 
 
-def build_carriageway_union(driving_network: dict | None):
+def build_carriageway_union(driving_network: dict | None, osm_roads: list[dict] | None = None):
     if not driving_network:
         return GeometryCollection()
     pieces = []
 
     path = driving_network.get("path") or []
     drive_bounds = driving_network.get("driveBounds") or []
+    route_line = LineString([(pt[0], pt[1]) for pt in path]) if len(path) >= 2 else None
+    route_segments = []
+    for idx in range(1, len(path)):
+        ax, az = path[idx - 1][0], path[idx - 1][1]
+        bx, bz = path[idx][0], path[idx][1]
+        slen = math.hypot(bx - ax, bz - az)
+        if slen >= 0.2:
+            route_segments.append((ax, az, bx, bz, (bx - ax) / slen, (bz - az) / slen))
+
     if len(path) >= 2 and len(drive_bounds) == len(path):
         margin = 0.15
         quads = []
@@ -643,20 +661,60 @@ def build_carriageway_union(driving_network: dict | None):
                 run.append((pt[0], pt[1]))
             else:
                 if len(run) >= 2:
-                    pieces.append(LineString(run).buffer(1.65, cap_style=2, join_style=2))
+                    pieces.append(LineString(run).buffer(1.65, cap_style=2, join_style=1))
                 run = []
         if len(run) >= 2:
-            pieces.append(LineString(run).buffer(1.65, cap_style=2, join_style=2))
+            pieces.append(LineString(run).buffer(1.65, cap_style=2, join_style=1))
 
+    graph = driving_network.get("trafficGraph") or {}
     edge_polys = []
-    for edge in (driving_network.get("trafficGraph") or {}).get("edges") or []:
-        pts = [(pt[0], pt[2]) for pt in (edge.get("points") or [])]
+    for item in [*(graph.get("edges") or []), *(graph.get("connectors") or [])]:
+        pts = [(pt[0], pt[2]) for pt in (item.get("points") or [])]
         if len(pts) >= 2:
             line = LineString(pts)
             if line.length > 0.2:
-                edge_polys.append(line.buffer(1.55, cap_style=2, join_style=2))
+                edge_polys.append(line.buffer(1.65, cap_style=2, join_style=1))
     if edge_polys:
-        pieces.append(unary_union(edge_polys))
+        pieces.append(union_all(edge_polys, grid_size=1e-4))
+
+    if osm_roads:
+        cross_polys = []
+        wide_highways = {"motorway", "motorway_link", "trunk", "trunk_link", "primary", "primary_link", "secondary", "secondary_link", "tertiary", "tertiary_link"}
+        for road in osm_roads:
+            tags = road.get("tags") or {}
+            hwy = tags.get("highway")
+            if not hwy or hwy == "service" or tags.get("area") == "yes":
+                continue
+            pts = road.get("points") or []
+            buf_w = 2.6 if hwy in wide_highways else 2.2
+            for j in range(1, len(pts)):
+                c = (pts[j - 1][0], pts[j - 1][1])
+                d = (pts[j][0], pts[j][1])
+                rlen = math.hypot(d[0] - c[0], d[1] - c[1])
+                if rlen < 0.3:
+                    continue
+                rux, ruz = (d[0] - c[0]) / rlen, (d[1] - c[1]) / rlen
+                seg = LineString([c, d])
+                parallel_mainline = False
+                if route_line is not None and route_segments:
+                    mx, mz = (c[0] + d[0]) / 2.0, (c[1] + d[1]) / 2.0
+                    best_dist = float("inf")
+                    best_dot = 0.0
+                    for ax, az, bx, bz, tux, tuz in route_segments:
+                        if max(ax, bx) < mx - 12.0 or min(ax, bx) > mx + 12.0:
+                            continue
+                        if max(az, bz) < mz - 12.0 or min(az, bz) > mz + 12.0:
+                            continue
+                        dist = _seg_dist_2d(mx, mz, ax, az, bx, bz)
+                        if dist < best_dist:
+                            best_dist = dist
+                            best_dot = abs(rux * tux + ruz * tuz)
+                    if best_dist <= 10.0 and best_dot >= 0.65:
+                        parallel_mainline = True
+                if not parallel_mainline:
+                    cross_polys.append(seg.buffer(buf_w, cap_style=2, join_style=1))
+        if cross_polys:
+            pieces.append(union_all(cross_polys, grid_size=1e-4))
 
     crosswalks = ((driving_network.get("overlays") or {}).get("roads") or {}).get("crosswalks") or []
     cw_polys = []
@@ -670,7 +728,7 @@ def build_carriageway_union(driving_network: dict | None):
                 if not sp.is_empty:
                     stripes.append(sp)
         if stripes:
-            hull = unary_union(stripes).convex_hull.buffer(0.3, join_style=2)
+            hull = unary_union(stripes).convex_hull.buffer(0.5, join_style=2)
             if not hull.is_empty:
                 cw_polys.append(hull)
     if cw_polys:
@@ -690,8 +748,18 @@ def build_carriageway_union(driving_network: dict | None):
         if rquads:
             pieces.append(unary_union(rquads))
 
-    valid_pieces = [p for p in pieces if p is not None and not p.is_empty]
-    return unary_union(valid_pieces) if valid_pieces else GeometryCollection()
+    valid_pieces = []
+    for p in pieces:
+        if p is None or p.is_empty:
+            continue
+        if not p.is_valid:
+            p = make_valid(p)
+        if not p.is_empty:
+            valid_pieces.append(p)
+    result = union_all(valid_pieces, grid_size=1e-4) if valid_pieces else GeometryCollection()
+    if not result.is_empty and not result.is_valid:
+        result = make_valid(result)
+    return result
 
 
 def build_osm_overlays(
@@ -710,8 +778,8 @@ def build_osm_overlays(
         if not polygon.is_empty:
             road_polygons.append(polygon)
     road_union = unary_union(road_polygons) if road_polygons else GeometryCollection()
-    carriageway_union = build_carriageway_union(driving_network)
     roads = source.get("roads", [])
+    carriageway_union = build_carriageway_union(driving_network, osm_roads=roads)
     sidewalks = source.get("sidewalks", [])
     road_lines = []
     non_service_segments = []
@@ -744,6 +812,8 @@ def build_osm_overlays(
 
     sidewalk_geometries = []
     for sidewalk in sidewalks:
+        if (sidewalk.get("tags") or {}).get("bridge") == "yes":
+            continue
         raw_pts = [(point[0], point[1]) for point in sidewalk.get("points", [])]
         if len(raw_pts) < 2:
             continue
@@ -806,8 +876,12 @@ def build_osm_overlays(
         # OSM sidewalk footprint free of carriageway/crosswalk intrusions.
         has_carriageway = carriageway_union is not None and not carriageway_union.is_empty
         for index, sidewalk_geometry in enumerate(sidewalk_geometries, start=1):
+            if not sidewalk_geometry.is_valid:
+                sidewalk_geometry = make_valid(sidewalk_geometry)
             clipped_sidewalk = sidewalk_geometry.intersection(road_union)
             if has_carriageway and not clipped_sidewalk.is_empty:
+                if not clipped_sidewalk.is_valid:
+                    clipped_sidewalk = make_valid(clipped_sidewalk)
                 clipped_sidewalk = clipped_sidewalk.difference(carriageway_union)
             if not clipped_sidewalk.is_empty:
                 overlays.extend(overlay_feature("sidewalk", clipped_sidewalk, {"wayId": f"sidewalk-{index}"}))
@@ -1268,9 +1342,22 @@ def convert_overlays_only(args) -> dict:
     write_json(args.osm_overlays, osm_overlay_document)
     if args.manifest and args.manifest.exists():
         manifest = read_json(args.manifest)
+        public_root = args.manifest.resolve().parent.parent
         for layer in manifest.get("layers", []):
             if layer.get("id") == "osm-road-overlays":
                 layer["featureCount"] = osm_overlay_stats["overlayFeatures"]
+                layer_url = layer.get("url") or ""
+                if layer_url.startswith("/"):
+                    layer_target = public_root / layer_url.lstrip("/")
+                    if layer_target.resolve() != args.osm_overlays.resolve() and layer_target.parent.exists():
+                        write_json(layer_target, osm_overlay_document)
+                    if layer_target.exists():
+                        raw_bytes = layer_target.read_bytes()
+                        digest = hashlib.sha256(raw_bytes).hexdigest()
+                        for asset in manifest.get("assets", []):
+                            if asset.get("url") == layer_url:
+                                asset["bytes"] = len(raw_bytes)
+                                asset["sha256"] = digest
         write_json(args.manifest, manifest)
     if args.report and args.report.exists():
         report = read_json(args.report)

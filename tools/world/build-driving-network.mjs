@@ -1646,6 +1646,17 @@ function buildRoadOverlays(graph, bridgeRanges = []) {
   }
   const crosswalks = [];
   const crosswalkCenters = [];
+  const crosswalkSegments = [];
+  const segmentToSegmentDistance2d = (a, b, c, d) => {
+    const ccw = (p1, p2, p3) => (p3[1] - p1[1]) * (p2[0] - p1[0]) > (p2[1] - p1[1]) * (p3[0] - p1[0]);
+    if (ccw(a, c, d) !== ccw(b, c, d) && ccw(a, b, c) !== ccw(a, b, d)) return 0;
+    return Math.min(
+      nearestOnSegment(a[0], a[1], c, d).distance,
+      nearestOnSegment(b[0], b[1], c, d).distance,
+      nearestOnSegment(c[0], c[1], a, b).distance,
+      nearestOnSegment(d[0], d[1], a, b).distance,
+    );
+  };
   const nearestRoutePoint = (x, z) => {
     let best = { s: 0, distance: Infinity };
     for (let segment = 1; segment < nodes.length; segment++) {
@@ -1672,10 +1683,13 @@ function buildRoadOverlays(graph, bridgeRanges = []) {
     if (isBridgeCrosswalk(routeHit)) return false;
     if (checkRoadDirection) {
       let nearestRoad = null;
+      let nearestNonServiceDist = Infinity;
       for (const road of roads) {
+        const isService = road.tags?.highway === "service";
         for (let segment = 1; segment < road.points.length; segment++) {
           const ra = road.points[segment - 1], rb = road.points[segment];
           const hit = nearestOnSegment(midpoint[0], midpoint[1], ra, rb);
+          if (!isService && hit.distance < nearestNonServiceDist) nearestNonServiceDist = hit.distance;
           if (!nearestRoad || hit.distance < nearestRoad.distance) {
             const rdx = rb[0] - ra[0], rdz = rb[1] - ra[1], rlength = Math.hypot(rdx, rdz) || 1;
             nearestRoad = { distance: hit.distance, tangent: [rdx / rlength, rdz / rlength] };
@@ -1684,8 +1698,10 @@ function buildRoadOverlays(graph, bridgeRanges = []) {
       }
       // Some OSM footways are tagged as crossings for their entire
       // longitudinal sidewalk run.  A zebra must cross the carriageway, so
-      // discard segments that are effectively parallel to their nearest road.
+      // discard segments that are effectively parallel to their nearest road,
+      // or short sidewalk stubs far from any non-service road centerline.
       if (nearestRoad && Math.abs(ux * nearestRoad.tangent[0] + uz * nearestRoad.tangent[1]) > 0.85) return false;
+      if (length < 5.0 && nearestNonServiceDist > 2.5) return false;
     }
     // The crossing line is the repeat axis. Each white bar is perpendicular
     // to it, with a 45 cm stripe and a 50 cm gap.
@@ -1717,6 +1733,7 @@ function buildRoadOverlays(graph, bridgeRanges = []) {
       stripes: strips,
     });
     crosswalkCenters.push(midpoint);
+    crosswalkSegments.push({ a, b, midpoint, ux, uz, halfWidth: halfLong, source: metadata.source });
     return true;
   };
   for (const crossing of osmSource.crossings ?? []) {
@@ -1732,6 +1749,11 @@ function buildRoadOverlays(graph, bridgeRanges = []) {
       );
     }
   }
+  const segmentsIntersect2d = (a, b, c, d) => {
+    const ccw = (p1, p2, p3) => (p3[1] - p1[1]) * (p2[0] - p1[0]) > (p2[1] - p1[1]) * (p3[0] - p1[0]);
+    return ccw(a, c, d) !== ccw(b, c, d) && ccw(a, b, c) !== ccw(a, b, d);
+  };
+  const nonServiceRoads = roads.filter((road) => road.tags?.highway !== "service");
   const routePointAt = (s) => {
     let index = 0;
     while (index < nodes.length - 2 && nodes[index + 1].s < s) index++;
@@ -1758,14 +1780,46 @@ function buildRoadOverlays(graph, bridgeRanges = []) {
   for (const target of namedIntersections) {
     const intersection = (route.intersections ?? []).find((item) => item.name === target.name);
     if (!intersection) continue;
-    const s = compiledS(intersection.s);
-    const frame = routePointAt(s);
+    const baseS = compiledS(intersection.s);
+    let frame = routePointAt(baseS);
     const section = sectionAt(intersection.s);
     const leftWidth = Number(section?.wL) || 7.2;
     const rightWidth = Number(section?.wR) || 7.2;
     const routeWidth = leftWidth + rightWidth;
-    const crossroadWidth = Math.max(8, Number(intersection.width) || 8);
-    const crossroadHalf = crossroadWidth / 2;
+    let crossroadWidth = Math.max(8, Number(intersection.width) || 8);
+    let crossroadHalf = crossroadWidth / 2;
+    // Detect divided (dual-carriageway) cross streets and span the full box across all carriageways.
+    const carriageways = [];
+    for (const road of nonServiceRoads) {
+      if (road.tags?.name !== intersection.name) continue;
+      const rpts = road.points ?? [];
+      const halfW = Math.max(4, Math.min(14, numberTag(road.tags?.lanes, 2) * 1.75));
+      for (let j = 1; j < rpts.length; j++) {
+        const ra = rpts[j - 1], rb = rpts[j];
+        const rdx = rb[0] - ra[0], rdz = rb[1] - ra[1];
+        const rlen = Math.hypot(rdx, rdz);
+        if (rlen < 0.5) continue;
+        const dot = Math.abs(frame.tx * (rdx / rlen) + frame.tz * (rdz / rlen));
+        if (dot >= 0.5) continue;
+        const mx = (ra[0] + rb[0]) / 2 - frame.x;
+        const mz = (ra[1] + rb[1]) / 2 - frame.z;
+        const along = mx * frame.tx + mz * frame.tz;
+        const lateral = mx * frame.nx + mz * frame.nz;
+        if (Math.abs(along) <= 40 && Math.abs(lateral) <= 25) {
+          carriageways.push({ along, halfW });
+        }
+      }
+    }
+    if (carriageways.length > 0) {
+      const centerMin = Math.min(...carriageways.map((c) => c.along));
+      const centerMax = Math.max(...carriageways.map((c) => c.along));
+      if (centerMax - centerMin >= 8) {
+        const minOff = Math.min(...carriageways.map((c) => c.along - c.halfW));
+        const maxOff = Math.max(...carriageways.map((c) => c.along + c.halfW));
+        frame = routePointAt(baseS + (minOff + maxOff) / 2);
+        crossroadHalf = Math.max(crossroadHalf, (maxOff - minOff) / 2);
+      }
+    }
     const crossTx = Math.sin(intersection.heading ?? 0);
     const crossTz = Math.cos(intersection.heading ?? 0);
     let index = 0;
@@ -1799,11 +1853,6 @@ function buildRoadOverlays(graph, bridgeRanges = []) {
       );
     }
   }
-  const segmentsIntersect2d = (a, b, c, d) => {
-    const ccw = (p1, p2, p3) => (p3[1] - p1[1]) * (p2[0] - p1[0]) > (p2[1] - p1[1]) * (p3[0] - p1[0]);
-    return ccw(a, c, d) !== ccw(b, c, d) && ccw(a, b, c) !== ccw(a, b, d);
-  };
-  const nonServiceRoads = roads.filter((road) => road.tags?.highway !== "service");
   for (const sidewalk of osmSource.sidewalks ?? []) {
     const points = sidewalk.points ?? [];
     for (let i = 1; i < points.length; i++) {
@@ -1832,6 +1881,13 @@ function buildRoadOverlays(graph, bridgeRanges = []) {
       }
       if (!crossesRoad) continue;
       if (crosswalkCenters.some((centerPt) => Math.hypot(centerPt[0] - midpoint[0], centerPt[1] - midpoint[1]) < 5.0)) continue;
+      if (crosswalkSegments.some((seg) => segmentToSegmentDistance2d(a, b, seg.a, seg.b) <= seg.halfWidth + 0.8)) continue;
+      if (crosswalkSegments.some((seg) => {
+        if (seg.source !== "intersection") return false;
+        const dist = Math.hypot(seg.midpoint[0] - midpoint[0], seg.midpoint[1] - midpoint[1]);
+        const dot = Math.abs(ux * seg.ux + uz * seg.uz);
+        return dist <= 14.0 && dot >= 0.8;
+      })) continue;
       addCrosswalk(
         `crosswalk-sidewalk-${sidewalk.id}-${i}`,
         a,
@@ -1853,15 +1909,55 @@ function buildRoadOverlays(graph, bridgeRanges = []) {
     );
   }
   const pedestrianWays = osmSource.pedestrianWays ?? [];
+  const nearCrosswalkMargin = (x, z, margin = 0.4) => {
+    for (const cw of crosswalks) {
+      for (const stripe of cw.stripes ?? []) {
+        const poly = stripe.map((pt) => [pt[0], pt[2]]);
+        if (poly.length >= 3 && contains(poly, x, z)) return true;
+        for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+          if (nearestOnSegment(x, z, poly[j], poly[i]).distance <= margin) return true;
+        }
+      }
+    }
+    return false;
+  };
+  const trimRowsAtCrosswalks = (rows) => {
+    let start = 0, end = rows.length - 1;
+    const rowTouches = (row) => {
+      const mx = (row[0][0] + row[1][0]) / 2, mz = (row[0][2] + row[1][2]) / 2;
+      return nearCrosswalkMargin(mx, mz, 0.35)
+        || nearCrosswalkMargin(row[0][0], row[0][2], 0.2)
+        || nearCrosswalkMargin(row[1][0], row[1][2], 0.2);
+    };
+    while (start < end - 1 && rowTouches(rows[start])) start++;
+    while (end > start + 1 && rowTouches(rows[end])) end--;
+    return rows.slice(start, end + 1);
+  };
+  const resamplePoints2d = (points, maxStep = 3.0) => {
+    if (!Array.isArray(points) || points.length < 2) return points ?? [];
+    const out = [points[0]];
+    for (let i = 1; i < points.length; i++) {
+      const a = points[i - 1], b = points[i];
+      const dist = Math.hypot(b[0] - a[0], b[1] - a[1]);
+      const steps = Math.max(1, Math.ceil(dist / maxStep));
+      for (let k = 1; k <= steps; k++) {
+        const t = k / steps;
+        out.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
+      }
+    }
+    return out;
+  };
   const bridgeSidewalks = pedestrianWays
     .filter((way) => BRIDGE_SIDEWALK_WAY_IDS.has(Number(way.id)))
     .map((way) => {
-      const points = way.points ?? [];
+      const points = resamplePoints2d(way.points ?? [], 3.0);
+      const rawRows = sidewalkRows(points, numberTag(way.tags?.width, 2.0), surfaceYAt);
+      const rows = trimRowsAtCrosswalks(rawRows);
       return {
         id: `sidewalk-${way.id}`,
         wayId: Number(way.id),
         width: numberTag(way.tags?.width, 2.0),
-        rows: sidewalkRows(points, numberTag(way.tags?.width, 2.0), surfaceYAt),
+        rows,
       };
     })
     .filter((item) => item.rows.length >= 2);

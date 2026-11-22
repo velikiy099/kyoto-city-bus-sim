@@ -82,12 +82,6 @@ function laneCenterPoint(path, s, lat = 0) {
 
 export function setupDebug(ctx) {
   const { bus, path, route } = ctx;
-  if (typeof location !== "undefined") {
-    const rawTimeScale = Number(new URLSearchParams(location.search).get("timeScale"));
-    if (Number.isFinite(rawTimeScale) && rawTimeScale > 0) {
-      dbg.timeScale = Math.max(0.1, Math.min(16, rawTimeScale));
-    }
-  }
   window.game = {
     _ctx: ctx,
     traffic: ctx.traffic,
