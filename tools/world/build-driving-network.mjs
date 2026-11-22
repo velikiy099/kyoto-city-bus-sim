@@ -562,6 +562,32 @@ for (let index = 0; index < physicalLaneRows.length; index++) {
   }
 }
 
+// Smooth any station-overlay exit offset jump into the continuing road lane
+// over a ~24 m taper so no sharp lateral kink occurs at the rotary exit.
+const overlayEnd = physicalLaneRows.findIndex((row, index) => index > 0 && physicalLaneRows[index - 1].overlay && !row.overlay);
+if (overlayEnd > 0) {
+  const taperCount = Math.min(12, overlayEnd);
+  const targetRow = physicalLaneRows[overlayEnd];
+  const smoothstep01 = (t) => t * t * (3 - 2 * t);
+  for (let k = 0; k < taperCount; k++) {
+    const idx = overlayEnd - taperCount + k;
+    const row = physicalLaneRows[idx];
+    if (!row.overlay) continue;
+    const w = smoothstep01((k + 1) / (taperCount + 1));
+    for (let lane = 0; lane < row.forwardCount; lane++) {
+      if (!row.active.forward[lane]) continue;
+      const targetOff = targetRow.active.forward[lane]
+        ? targetRow.offsets.forward[lane]
+        : targetRow.offsets.forward[0];
+      row.offsets.forward[lane] = row.offsets.forward[lane] * (1 - w) + targetOff * w;
+    }
+    const minOff = Math.min(...row.offsets.forward.filter((_, l) => row.active.forward[l]));
+    const maxOff = Math.max(...row.offsets.forward.filter((_, l) => row.active.forward[l]));
+    row.min = Math.min(row.min * (1 - w) + targetRow.min * w, minOff - (BUS_HALF_WIDTH + 0.35));
+    row.max = Math.max(row.max * (1 - w) + targetRow.max * w, maxOff + (BUS_HALF_WIDTH + 0.35));
+  }
+}
+
 // Lane-count and carriageway-width changes must be merges, not lateral steps.
 // Filter each lane's scalar offset along the route before converting it to XZ.
 // This also carries the bus lane smoothly through 90-degree intersections
@@ -595,8 +621,6 @@ function smoothPointPairs(points, active = null, passes = 4) {
     const next = current.map((point) => [...point]);
     for (let index = 1; index < current.length - 1; index++) {
       if (active && (!active[index - 1] || !active[index] || !active[index + 1])) continue;
-      if (physicalLaneRows[index]?.overlay !== physicalLaneRows[index - 1]?.overlay
-        || physicalLaneRows[index]?.overlay !== physicalLaneRows[index + 1]?.overlay) continue;
       next[index][0] = current[index - 1][0] * 0.25 + current[index][0] * 0.5 + current[index + 1][0] * 0.25;
       next[index][1] = current[index - 1][1] * 0.25 + current[index][1] * 0.5 + current[index + 1][1] * 0.25;
     }
@@ -989,11 +1013,12 @@ function nijoRoadOverlay() {
     const b = [point[0] + nx * to, point[1] + nz * to];
     return [[+a[0].toFixed(3), +gridHeight(...a).toFixed(3), +a[1].toFixed(3)], [+b[0].toFixed(3), +gridHeight(...b).toFixed(3), +b[1].toFixed(3)]];
   });
+  const dividerEnd = Math.max(2, nijoRotary.centerline.length - 7);
   return {
     lanes: 2,
     oneWay: true,
     rows: rowsAt(outer, inner),
-    laneDividerRows: rowsAt(divider - 0.06, divider + 0.06),
+    laneDividerRows: rowsAt(divider - 0.06, divider + 0.06).slice(0, dividerEnd),
   };
 }
 
@@ -1990,13 +2015,341 @@ const compiledIntersections = (route.intersections ?? [])
 const compiledTurnIntersections = (route.turnIntersections ?? [])
   .map(compiledRouteObject)
   .filter((item) => !crossesOmiyaBridge(item));
-const compiledSignals = (route.signals ?? [])
-  .map(compiledRouteObject)
-  .filter((item) => !withinOmiyaBridge(item.s));
-
+const sectionsList = compiledSections();
 const trafficPaths = compiledTrafficPaths();
+
+function routeStateAt(s) {
+  const maxS = nodes.at(-1)?.s ?? 0;
+  const clamped = clamp(s, 0, maxS);
+  let i = 0;
+  while (i < nodes.length - 2 && nodes[i + 1].s < clamped) i++;
+  const a = nodes[i], b = nodes[i + 1] ?? a;
+  const seg = Math.max(1e-6, b.s - a.s);
+  const t = clamp((clamped - a.s) / seg, 0, 1);
+  let dh = b.heading - a.heading;
+  while (dh > Math.PI) dh -= 2 * Math.PI;
+  while (dh < -Math.PI) dh += 2 * Math.PI;
+  const heading = a.heading + dh * t;
+  const tx = Math.sin(heading), tz = Math.cos(heading);
+  const rx = -tz, rz = tx;
+  const ba = driveBounds[i] ?? { left: 2, right: 4 };
+  const bb = driveBounds[i + 1] ?? ba;
+  const sec = sectionsList.find((item) => clamped >= item.from && clamped <= item.to) ?? sectionsList.at(-1);
+  return {
+    index: i,
+    s: clamped,
+    x: a.x + (b.x - a.x) * t,
+    z: a.z + (b.z - a.z) * t,
+    heading,
+    tx,
+    tz,
+    rx,
+    rz,
+    left: ba.left + (bb.left - ba.left) * t,
+    right: ba.right + (bb.right - ba.right) * t,
+    section: sec,
+  };
+}
+
+function isInsideCarriageway(x, z, centerS) {
+  const minS = centerS - 45, maxS = centerS + 45;
+  for (let i = 0; i < nodes.length; i++) {
+    const n = nodes[i];
+    if (n.s < minS || n.s > maxS) continue;
+    const tx = Math.sin(n.heading), tz = Math.cos(n.heading);
+    const rx = -tz, rz = tx;
+    const dx = x - n.x, dz = z - n.z;
+    const along = dx * tx + dz * tz;
+    if (Math.abs(along) > 2.6) continue;
+    const lat = dx * rx + dz * rz;
+    const bounds = driveBounds[i] ?? { left: 2, right: 4 };
+    if (lat >= -(bounds.left + 0.75) && lat <= bounds.right + 0.75) return true;
+  }
+  for (const tp of trafficPaths) {
+    if (tp.role !== "main" || !tp.points?.length) continue;
+    for (let i = 0; i < tp.points.length; i++) {
+      if (tp.active && !tp.active[i]) continue;
+      if (Math.abs((nodes[i]?.s ?? 0) - centerS) > 45) continue;
+      const pt = tp.points[i];
+      if (Math.hypot(x - pt[0], z - pt[1]) < 2.4) return true;
+    }
+  }
+  for (const edge of trafficGraph?.edges ?? []) {
+    const pts = edge.points ?? [];
+    for (let i = 1; i < pts.length; i++) {
+      const a = [pts[i - 1][0], pts[i - 1][2]], b = [pts[i][0], pts[i][2]];
+      if (Math.max(a[0], b[0]) < x - 4 || Math.min(a[0], b[0]) > x + 4) continue;
+      if (Math.max(a[1], b[1]) < z - 4 || Math.min(a[1], b[1]) > z + 4) continue;
+      if (nearestOnSegment(x, z, a, b).distance < 2.8) return true;
+    }
+  }
+  for (const cw of roadOverlays?.crosswalks ?? []) {
+    if (Math.abs((cw.routeS ?? 0) - centerS) > 55) continue;
+    for (const stripe of cw.stripes ?? []) {
+      const poly = stripe.map((pt) => [pt[0], pt[2]]);
+      if (poly.length >= 3 && contains(poly, x, z)) return true;
+      for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+        if (nearestOnSegment(x, z, poly[j], poly[i]).distance < 0.9) return true;
+      }
+    }
+  }
+  return false;
+}
+
+const longitudinalSidewalkIndex = (() => {
+  const nonServiceRoads = (osmSource.roads ?? []).filter((r) => r.points?.length >= 2 && r.tags?.highway !== "service");
+  const segmentsIntersect2d = (a, b, c, d) => {
+    const ccw = (p1, p2, p3) => (p3[1] - p1[1]) * (p2[0] - p1[0]) > (p2[1] - p1[1]) * (p3[0] - p1[0]);
+    return ccw(a, c, d) !== ccw(b, c, d) && ccw(a, b, c) !== ccw(a, b, d);
+  };
+  const items = [];
+  for (const sw of osmSource.sidewalks ?? []) {
+    const pts = sw.points ?? [];
+    for (let i = 1; i < pts.length; i++) {
+      const a = pts[i - 1], b = pts[i];
+      const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+      if (len < 0.5) continue;
+      if (len >= 2.5 && len <= 25) {
+        const ux = (b[0] - a[0]) / len, uz = (b[1] - a[1]) / len;
+        const mid = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+        const crosses = nonServiceRoads.some((rd) => {
+          for (let j = 1; j < rd.points.length; j++) {
+            const c = rd.points[j - 1], d = rd.points[j];
+            const rlen = Math.hypot(d[0] - c[0], d[1] - c[1]);
+            if (rlen < 0.5) continue;
+            if (Math.abs(ux * ((d[0] - c[0]) / rlen) + uz * ((d[1] - c[1]) / rlen)) >= 0.55) continue;
+            if (segmentsIntersect2d(a, b, c, d) || nearestOnSegment(mid[0], mid[1], c, d).distance <= 1.5) return true;
+          }
+          return false;
+        });
+        if (crosses) continue;
+      }
+      const halfW = Math.max(1.0, numberTag(sw.tags?.width, 2.5) / 2);
+      items.push({
+        a, b, halfW,
+        minX: Math.min(a[0], b[0]) - halfW - 1,
+        maxX: Math.max(a[0], b[0]) + halfW + 1,
+        minZ: Math.min(a[1], b[1]) - halfW - 1,
+        maxZ: Math.max(a[1], b[1]) + halfW + 1,
+      });
+    }
+  }
+  return items;
+})();
+
 const onPlateauRoad = (x, z) => candidates(x, z)
   .some((feature) => feature.kind !== "sidewalk" && contains(feature.points, x, z));
+
+function isRoadsideVergeOrSidewalk(x, z) {
+  if (!onPlateauRoad(x, z)) return true;
+  for (const seg of longitudinalSidewalkIndex) {
+    if (x < seg.minX || x > seg.maxX || z < seg.minZ || z > seg.maxZ) continue;
+    if (nearestOnSegment(x, z, seg.a, seg.b).distance <= seg.halfW) return true;
+  }
+  return false;
+}
+
+function clearPolePosition(px, pz, outDx, outDz, centerS, options = {}) {
+  const { maxAngle = Math.PI * 0.55, maxRadius = 22, requireSidewalk = false } = options;
+  const len = Math.hypot(outDx, outDz) || 1;
+  const ux = outDx / len, uz = outDz / len;
+  // Pass 1: step straight outward looking for a non-carriageway sidewalk / off-road spot
+  for (let step = 0; step <= 18; step += 0.5) {
+    const cx = px + ux * step;
+    const cz = pz + uz * step;
+    if (!isInsideCarriageway(cx, cz, centerS) && isRoadsideVergeOrSidewalk(cx, cz)) {
+      return [+cx.toFixed(2), +cz.toFixed(2)];
+    }
+  }
+  // Pass 2: local outward sector search within angle limit
+  let best = null;
+  for (let r = 1; r <= maxRadius; r += 1.5) {
+    for (let angle = -maxAngle; angle <= maxAngle + 1e-6; angle += Math.PI / 12) {
+      const cos = Math.cos(angle), sin = Math.sin(angle);
+      const vx = ux * cos - uz * sin, vz = ux * sin + uz * cos;
+      const cx = px + vx * r, cz = pz + vz * r;
+      if (!isInsideCarriageway(cx, cz, centerS) && isRoadsideVergeOrSidewalk(cx, cz)) {
+        const d2 = (cx - px) ** 2 + (cz - pz) ** 2;
+        if (!best || d2 < best.d2) best = { d2, pt: [+cx.toFixed(2), +cz.toFixed(2)] };
+      }
+    }
+    if (best) return best.pt;
+  }
+  if (requireSidewalk) return null;
+  // Pass 3: fallback to non-carriageway clearance only
+  for (let step = 0; step <= 24; step += 0.5) {
+    const cx = px + ux * step;
+    const cz = pz + uz * step;
+    if (!isInsideCarriageway(cx, cz, centerS)) {
+      return [+cx.toFixed(2), +cz.toFixed(2)];
+    }
+  }
+  return null;
+}
+
+function opposingLaneOffsetAt(s, fallbackRight) {
+  const rev = trafficPaths.find((item) => item.id === "main-reverse-lane-0");
+  if (!rev?.points?.length) return Math.max(2.2, fallbackRight * 0.5);
+  let i = 0;
+  while (i < nodes.length - 2 && nodes[i + 1].s < s) i++;
+  if (rev.active && !rev.active[i]) return Math.max(2.2, fallbackRight * 0.5);
+  const n = nodes[i];
+  const rx = -Math.cos(n.heading), rz = Math.sin(n.heading);
+  const pt = rev.points[i];
+  const lat = (pt[0] - n.x) * rx + (pt[1] - n.z) * rz;
+  return lat > 1.0 ? lat : Math.max(2.2, fallbackRight * 0.5);
+}
+
+function compileSignalHeads(sig) {
+  let s = sig.s;
+  const approxCenter = routeStateAt(s);
+  // If an OSM traffic_signals node lies within 28 m along the compiled route,
+  // refine s so the signal and stop line track the real intersection center.
+  let bestOsmSig = null;
+  for (const os of osmSource.trafficSignals ?? []) {
+    const pt = os.point ?? [os.x, os.z];
+    if (!Number.isFinite(pt?.[0]) || !Number.isFinite(pt?.[1])) continue;
+    const d = Math.hypot(pt[0] - approxCenter.x, pt[1] - approxCenter.z);
+    if (d <= 28 && (!bestOsmSig || d < bestOsmSig.d)) bestOsmSig = { pt, d };
+  }
+  if (bestOsmSig) {
+    let bestIdx = approxCenter.index;
+    let bestD2 = Infinity;
+    for (let i = Math.max(0, approxCenter.index - 22); i <= Math.min(nodes.length - 1, approxCenter.index + 22); i++) {
+      const d2 = (nodes[i].x - bestOsmSig.pt[0]) ** 2 + (nodes[i].z - bestOsmSig.pt[1]) ** 2;
+      if (d2 < bestD2) { bestD2 = d2; bestIdx = i; }
+    }
+    if (bestD2 < 12 * 12) s = nodes[bestIdx].s;
+  }
+
+  const matchedTurn = compiledTurnIntersections
+    .filter((item) => Math.abs(item.s - s) <= 22)
+    .sort((a, b) => Math.abs(a.s - s) - Math.abs(b.s - s))[0] ?? null;
+  const matchedInt = compiledIntersections
+    .filter((item) => Math.abs(item.s - s) <= 18)
+    .sort((a, b) => Math.abs(a.s - s) - Math.abs(b.s - s))[0] ?? null;
+  const halfCross = Math.max(4.0, Math.min(18.0, Number(matchedInt?.width ?? matchedTurn?.crossWidth ?? 8) / 2));
+
+  // Sample approach orientation strictly before any turn apex, while placing the
+  // signal gantry on the far side of the intersection so drivers waiting at the
+  // stop line (s - 9 m) see the lights directly ahead over their lane.
+  const entryS = matchedTurn
+    ? Math.min(s - 6.0, matchedTurn.sIn)
+    : s - Math.min(15.0, halfCross + 1.5);
+  const entry = routeStateAt(entryS);
+  const centerFrame = routeStateAt(s);
+  const farOffset = halfCross + 1.5;
+  const mainHead = [
+    +(centerFrame.x + entry.tx * farOffset).toFixed(2),
+    +(centerFrame.z + entry.tz * farOffset).toFixed(2),
+  ];
+
+  const exitS = matchedTurn
+    ? Math.max(s + 6.0, matchedTurn.sOut)
+    : s + Math.min(15.0, halfCross + 1.5);
+  const exit = routeStateAt(exitS);
+  const heads = [];
+  const mainPole = clearPolePosition(
+    mainHead[0] - entry.rx * (centerFrame.left + 1.4),
+    mainHead[1] - entry.rz * (centerFrame.left + 1.4),
+    -entry.rx,
+    -entry.rz,
+    s,
+    { maxAngle: Math.PI / 6, maxRadius: 15 },
+  ) ?? clearPolePosition(
+    mainHead[0] - entry.rx * (centerFrame.left + 1.4),
+    mainHead[1] - entry.rz * (centerFrame.left + 1.4),
+    entry.tx - entry.rx,
+    entry.tz - entry.rz,
+    s,
+    { maxAngle: Math.PI / 4, maxRadius: 18 },
+  ) ?? clearPolePosition(
+    mainHead[0] + entry.rx * (centerFrame.right + 1.4),
+    mainHead[1] + entry.rz * (centerFrame.right + 1.4),
+    entry.rx,
+    entry.rz,
+    s,
+    { maxAngle: Math.PI / 4, maxRadius: 15 },
+  ) ?? [+(mainHead[0] - entry.rx * (centerFrame.left + 1.4)).toFixed(2), +(mainHead[1] - entry.rz * (centerFrame.left + 1.4)).toFixed(2)];
+  heads.push({
+    kind: "main",
+    face: +entry.heading.toFixed(4),
+    pole: mainPole,
+    head: mainHead,
+    arm: 1,
+    hoods: 1,
+  });
+
+  // Opposing main head on two-way roads, also mounted on its far side
+  if ((exit.section?.lanesB ?? 0) > 0) {
+    const revLat = opposingLaneOffsetAt(exit.s, exit.right);
+    const oppHead = [
+      +(centerFrame.x - exit.tx * farOffset + exit.rx * revLat).toFixed(2),
+      +(centerFrame.z - exit.tz * farOffset + exit.rz * revLat).toFixed(2),
+    ];
+    const oppPole = clearPolePosition(
+      centerFrame.x - exit.tx * farOffset + exit.rx * (exit.right + 1.4),
+      centerFrame.z - exit.tz * farOffset + exit.rz * (exit.right + 1.4),
+      exit.rx,
+      exit.rz,
+      s,
+      { maxAngle: Math.PI / 6, maxRadius: 15 },
+    );
+    if (oppPole) {
+      let oppFace = exit.heading + Math.PI;
+      while (oppFace > Math.PI) oppFace -= 2 * Math.PI;
+      heads.push({
+        kind: "main",
+        face: +oppFace.toFixed(4),
+        pole: oppPole,
+        head: oppHead,
+        arm: 1,
+      });
+    }
+  }
+
+  // Cross-road corner signal heads cleared outside the carriageway
+  const crossHeading = Number.isFinite(Number(matchedInt?.heading))
+    ? Number(matchedInt.heading)
+    : entry.heading + Math.PI / 2;
+  const arms = matchedInt?.arms?.length
+    ? matchedInt.arms.filter((arm) => arm.exists).map((arm) => arm.side)
+    : [1, -1];
+  for (const side of arms) {
+    const baseLat = side < 0 ? -(centerFrame.left + 1.8) : centerFrame.right + 1.8;
+    const rawCornerX = centerFrame.x + centerFrame.rx * baseLat - side * entry.tx * (halfCross + 1.5);
+    const rawCornerZ = centerFrame.z + centerFrame.rz * baseLat - side * entry.tz * (halfCross + 1.5);
+    const outDx = rawCornerX - centerFrame.x;
+    const outDz = rawCornerZ - centerFrame.z;
+    const crossPole = clearPolePosition(rawCornerX, rawCornerZ, outDx, outDz, s, {
+      maxAngle: Math.PI * 0.65,
+      maxRadius: 24,
+      requireSidewalk: true,
+    });
+    if (!crossPole) continue;
+    let crossFace = crossHeading + (side > 0 ? Math.PI : 0);
+    while (crossFace > Math.PI) crossFace -= 2 * Math.PI;
+    while (crossFace < -Math.PI) crossFace += 2 * Math.PI;
+    const fx = Math.sin(crossFace), fz = Math.cos(crossFace);
+    heads.push({
+      kind: "cross",
+      face: +crossFace.toFixed(4),
+      pole: crossPole,
+      head: [+(crossPole[0] + fx * 0.6).toFixed(2), +(crossPole[1] + fz * 0.6).toFixed(2)],
+    });
+  }
+
+  return {
+    s,
+    name: sig.name,
+    heads,
+  };
+}
+
+const compiledSignals = (route.signals ?? [])
+  .map(compiledRouteObject)
+  .filter((item) => !withinOmiyaBridge(item.s))
+  .map(compileSignalHeads);
 // A PLATEAU seam may cut across a compiled NPC lane even when the adjacent
 // polygons describe one physical carriageway.  Emit the same narrow visible
 // asphalt patch used for the bus footprint; never collapse two lane centres
