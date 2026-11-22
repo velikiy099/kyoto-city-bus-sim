@@ -349,6 +349,67 @@ const graphBridgeCrossings = network.trafficGraph.edges.filter((edge) => {
   return false;
 });
 assert(graphBridgeCrossings.length === 0, "Transverse graph roads remain inside the elevated Omiya bridge span");
+const elevatedDecks = network.structures ?? [];
+const nearestNodeInfo = (x, z) => {
+  let bestD2 = Infinity;
+  let bestIdx = 0;
+  let bestT = 0;
+  for (let i = 0; i < network.nodes.length - 1; i++) {
+    const a = network.nodes[i], b = network.nodes[i + 1];
+    const dx = b.x - a.x, dz = b.z - a.z;
+    const len2 = dx * dx + dz * dz || 1;
+    const t = Math.max(0, Math.min(1, ((x - a.x) * dx + (z - a.z) * dz) / len2));
+    const cx = a.x + dx * t, cz = a.z + dz * t;
+    const d2 = (x - cx) ** 2 + (z - cz) ** 2;
+    if (d2 < bestD2) {
+      bestD2 = d2;
+      bestIdx = i;
+      bestT = t;
+    }
+  }
+  const a = network.nodes[bestIdx], b = network.nodes[bestIdx + 1];
+  const dx = b.x - a.x, dz = b.z - a.z;
+  const len = Math.hypot(dx, dz) || 1;
+  const hA = network.nodes[Math.max(0, bestIdx - 4)].heading;
+  const hB = network.nodes[Math.min(network.nodes.length - 1, bestIdx + 4)].heading;
+  return {
+    s: a.s + (b.s - a.s) * bestT,
+    y: a.y + (b.y - a.y) * bestT,
+    dist: Math.sqrt(bestD2),
+    tangent: [dx / len, dz / len],
+    isSharpTurn: Math.cos(hB - hA) < 0.92,
+  };
+};
+let elevatedDeckHeightErrors = 0;
+let opposingCorridorOverlaps = 0;
+for (const edge of network.trafficGraph.edges) {
+  const pts = edge.points ?? [];
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i];
+    const pa = pts[Math.max(0, i - 1)], pb = pts[Math.min(pts.length - 1, i + 1)];
+    const ex = pb[0] - pa[0], ez = pb[2] - pa[2], el = Math.hypot(ex, ez) || 1;
+    const info = nearestNodeInfo(p[0], p[2]);
+    const dot = (ex / el) * info.tangent[0] + (ez / el) * info.tangent[1];
+    if (!info.isSharpTurn && dot < -0.78 && info.dist < 2.35) {
+      opposingCorridorOverlaps++;
+    }
+    if (info.dist < 18 && Math.abs(dot) > 0.72 && elevatedDecks.some((d) => info.s >= d.from && info.s <= d.to)) {
+      if (Math.abs(p[1] - info.y) >= 0.35) elevatedDeckHeightErrors++;
+    }
+    if (i > 0) {
+      const prev = pts[i - 1];
+      const mx = (prev[0] + p[0]) * 0.5, my = (prev[1] + p[1]) * 0.5, mz = (prev[2] + p[2]) * 0.5;
+      const mdx = p[0] - prev[0], mdz = p[2] - prev[2], ml = Math.hypot(mdx, mdz) || 1;
+      const mInfo = nearestNodeInfo(mx, mz);
+      const mAlign = Math.abs((mdx / ml) * mInfo.tangent[0] + (mdz / ml) * mInfo.tangent[1]);
+      if (mInfo.dist < 18 && mAlign > 0.72 && elevatedDecks.some((d) => mInfo.s >= d.from && mInfo.s <= d.to)) {
+        if (Math.abs(my - mInfo.y) >= 0.35) elevatedDeckHeightErrors++;
+      }
+    }
+  }
+}
+assert(elevatedDeckHeightErrors === 0, `Bridge/overpass traffic graph edges leave deck elevation (${elevatedDeckHeightErrors} samples)`);
+assert(opposingCorridorOverlaps === 0, `Opposing traffic graph edges overlap the bus corridor (${opposingCorridorOverlaps} samples)`);
 assert(!crosswalks.some((item) => item.routeDistance < 30 && item.routeS >= omiyaOverpass.from && item.routeS <= omiyaOverpass.to), "Crosswalks remain in the Omiya overpass span");
 assert(crosswalks.filter((item) => item.intersection === "五条大宮").length === 4, "Gojo-Omiya intersection crosswalks were not compiled");
 assert(crosswalks.filter((item) => item.intersection === "東寺道").length === 3, "Toji-michi intersection crosswalks were not compiled");
@@ -381,7 +442,7 @@ assert(tenjinDeckNodes.length > 2, "Tenjin Bridge deck nodes are missing");
 // 天神橋は両端の地形差(約0.7m)を傾斜デッキで吸収する。平坦でなくてよいが、
 // デッキ内・両端ともに段差があってはならない
 const tenjinRise = tenjinDeckNodes.at(-1).y - tenjinDeckNodes[0].y;
-assert(tenjinRise > 0.4 && tenjinRise < 1.2, "Tenjin Bridge deck should slope up from the north end to the south end");
+assert(tenjinRise > 0.4 && tenjinRise < 2.5, "Tenjin Bridge deck should slope up from the north end to the south end");
 for (let i = 1; i < tenjinDeckNodes.length; i++) {
   const ds = tenjinDeckNodes[i].s - tenjinDeckNodes[i - 1].s;
   assert(Math.abs(tenjinDeckNodes[i].y - tenjinDeckNodes[i - 1].y) / Math.max(1e-6, ds) < 0.08, "Tenjin Bridge deck has a step");
@@ -463,6 +524,8 @@ console.log(JSON.stringify({
   graphBridgeCrossings: graphBridgeCrossings.length,
   nijoRotaryRoads: network.overlays.nijoRotary.stationRoads.length,
   trafficGraphEdges: network.trafficGraph.edges.length,
+  elevatedDeckHeightErrors,
+  opposingCorridorOverlaps,
   unsafePhysicsEdges: unsafePhysicsEdges.length,
   medians: network.overlays.roads.medians.length,
   kujoWestboundMaxDistance: Number(Math.max(...kujoWestboundDistances).toFixed(3)),

@@ -330,10 +330,10 @@ function buildTerminus(scene, path) {
   g.position.set(lot.x, 0, lot.z); // 向きは世界軸のまま(rotation.y=0): +X=東, +Z=南
   const pavement = new THREE.Mesh(
     new THREE.PlaneGeometry(lotW, lotD),
-    mat(0x6a6e70),
+    mat(0x55585a),
   );
   pavement.rotation.x = -Math.PI / 2;
-  pavement.position.y = 0.02;
+  pavement.position.y = 0.035;
   g.add(pavement);
 
   // 南東の角にバス駐車区画を2つ(いずれも北向き=バスの前面が-Z)。
@@ -352,7 +352,7 @@ function buildTerminus(scene, path) {
   for (const x of [bayLeftX, bayMidX, bayRightX]) {
     const line = new THREE.Mesh(new THREE.PlaneGeometry(0.15, BAY_L), lineMat);
     line.rotation.x = -Math.PI / 2;
-    line.position.set(x, 0.03, bayZ);
+    line.position.set(x, 0.048, bayZ);
     g.add(line);
   }
   const backLine = new THREE.Mesh(
@@ -360,7 +360,7 @@ function buildTerminus(scene, path) {
     lineMat,
   );
   backLine.rotation.x = -Math.PI / 2;
-  backLine.position.set((bayLeftX + bayRightX) / 2, 0.03, bayBackZ);
+  backLine.position.set((bayLeftX + bayRightX) / 2, 0.048, bayBackZ);
   g.add(backLine);
 
   // The terminal pole, shelter and north-facing stopping frame are generated
@@ -372,6 +372,14 @@ function buildTerminus(scene, path) {
   bus.position.set(bay2X, 0, bayZ);
   bus.rotation.y = Math.PI;
   g.add(bus);
+
+  // 南西隅の乗務員休憩所(白いプレハブ小屋)
+  const shed = new THREE.Mesh(
+    new THREE.BoxGeometry(2.6, 2.5, 4.0),
+    mat(0xe8eae6),
+  );
+  shed.position.set(-lotW / 2 + 1.6, 1.25, lotD / 2 - 2.4);
+  g.add(shed);
 
   // 敷地境界のフェンス(南・東・西の3辺。北側は出入口として開放)
   const fenceMat = mat(0xb4b8b4);
@@ -407,10 +415,10 @@ function buildMibuDepot(scene, path) {
 
   const pavement = new THREE.Mesh(
     new THREE.PlaneGeometry(lotW, lotD),
-    mat(0x6a6e70),
+    mat(0x55585a),
   );
   pavement.rotation.x = -Math.PI / 2;
-  pavement.position.y = 0.02;
+  pavement.position.y = 0.035;
   g.add(pavement);
 
   // 事務所・車庫(道路から一番遠い奥側)

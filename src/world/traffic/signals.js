@@ -6,7 +6,12 @@ import {
   halfWidthAt,
 } from "../../route/routeData.js";
 import SIGNAL_DEFS from "../../data/definitions/signals.json" with { type: "json" };
-import { signalStopLineS, busSignalStopTargetS } from "./dynamics.js";
+import {
+  BUS_FRONT_OFFSET,
+  SIGNAL_STOP_GAP,
+  signalStopLineS,
+  busSignalStopTargetS,
+} from "./dynamics.js";
 
 const SIGNAL_TIMING = SIGNAL_DEFS.TIMING;
 const mat = (color) => new THREE.MeshLambertMaterial({ color });
@@ -193,6 +198,7 @@ export function buildSignals(group, path) {
 
     signals.push({
       s,
+      stopLineS: Number.isFinite(Number(def.stopLineS)) ? Number(def.stopLineS) : null,
       phase: Math.random() * CYCLE,
       mainHeads,
       crossHeads,
@@ -257,7 +263,7 @@ export function buildSignals(group, path) {
         sig.crossState = crossState;
         for (const head of sig.crossHeads) paintHead(head, crossState);
       }
-      const lineS = signalStopLineS(sig.s);
+      const lineS = sig.stopLineS ?? signalStopLineS(sig.s);
       if (state === "red" && lastBusS < lineS && busS >= lineS && busV > 1.5) {
         onRedLight?.();
       }
@@ -276,7 +282,9 @@ export function buildSignals(group, path) {
 
   const redStopTarget = (busS, busV) => {
     for (const sig of signals) {
-      const target = busSignalStopTargetS(sig.s);
+      const target = sig.stopLineS != null
+        ? sig.stopLineS - (BUS_FRONT_OFFSET + SIGNAL_STOP_GAP)
+        : busSignalStopTargetS(sig.s);
       const d = target - busS;
       if (d >= 0 && d < 90 && sig.state !== "green") return busS + d;
     }

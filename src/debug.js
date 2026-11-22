@@ -22,8 +22,14 @@ export function autoDriveInput(
   vCap = Infinity,
 ) {
   const B = CFG.bus;
+  const maxSteerRad = (B.maxSteerDeg * Math.PI) / 180;
   // --- 操舵: 目標横位置を狙う pure pursuit ---
-  const Ld = Math.max(8, Math.min(30, 6 + bus.v * 1.8));
+  const kLocal = Math.max(
+    Math.abs(path.curvatureAt(s)),
+    Math.abs(path.curvatureAt(Math.min(s + 8, path.length - 0.1))),
+  );
+  const minLd = kLocal > 0.08 ? 4.2 : 6.0;
+  const Ld = Math.max(minLd, Math.min(30, 3.2 + bus.v * 1.8));
   const sAhead = Math.min(s + Ld, path.length - 0.1);
   const target = laneCenterPoint(
     path,
@@ -41,14 +47,24 @@ export function autoDriveInput(
   const deltaDesired = Math.atan(curvature * B.wheelbase);
   const steer = Math.max(-1, Math.min(1, -deltaDesired / bus.maxSteer));
 
-  // --- 速度: 制限速度・前方カーブ・停止目標から目標速度を決定 ---
+  // --- 速度: 制限速度・前方カーブ(横G + 舵角制限)・停止目標から目標速度を決定 ---
   let vTarget = speedLimitAt(s) * 0.92;
-  for (let ahead = 10; ahead <= 90; ahead += 10) {
-    const k = Math.abs(path.curvatureAt(Math.min(s + ahead, path.length - 1)));
+  for (let ahead = 0; ahead <= 90; ahead += 3) {
+    const sampleS = Math.min(s + ahead, path.length - 1);
+    const k = Math.max(
+      Math.abs(path.curvatureAt(sampleS, 6)),
+      Math.abs(path.curvatureAt(sampleS, 2)),
+    );
     if (k > 1e-4) {
-      // 横G 2.2m/s^2 上限。遠いカーブほど今は速くてよい(間に減速余地)
-      const vCurve = Math.sqrt(2.2 / k) + Math.max(0, ahead - 15) * 0.09;
-      vTarget = Math.min(vTarget, Math.max(2.5, vCurve));
+      // 横G 2.2m/s^2 上限と、車速に応じた最大舵角制限の両方を満たす安全速度
+      const deltaReq = Math.atan(k * B.wheelbase);
+      const steerCap = deltaReq >= maxSteerRad * 0.90
+        ? 0.72
+        : Math.max(0.72, B.steerSpeedFactor * (maxSteerRad / Math.max(1e-4, deltaReq) - 1) * 0.80);
+      const latGCat = Math.max(2.5, Math.sqrt(2.2 / k));
+      const apexV = Math.min(latGCat, steerCap);
+      const vReach = Math.sqrt(apexV * apexV + 2 * 0.75 * Math.max(0, ahead - 6));
+      vTarget = Math.min(vTarget, vReach);
     }
   }
   if (stopTargetS != null) {

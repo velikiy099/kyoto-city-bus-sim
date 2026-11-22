@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { buildRiverDips, riverDipDepthAt } from "../riverGeometry.js";
+import { RIVER_TERRAIN_DIP_DEPTH, buildRiverDips, riverDipDepthAt } from "../riverGeometry.js";
 
 const DEFAULT_MATERIALS = {
   lowrise: 0xcfc8ba,
@@ -314,7 +314,7 @@ function appendTerrainConformingXZSurface(polygon, positions, indices, heightAt,
     const center = [(a[0] + b[0] + c[0]) / 3, (a[1] + b[1] + c[1]) / 3];
     const planarY = (ya + yb + yc) / 3;
     const terrainY = heightAt(center[0], center[1]);
-    if (depth < 7 && Math.abs(terrainY - planarY) > 0.003) {
+    if (depth < 6 && Math.abs(terrainY - planarY) > 0.01) {
       const ab = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
       const bc = [(b[0] + c[0]) / 2, (b[1] + c[1]) / 2];
       const ca = [(c[0] + a[0]) / 2, (c[1] + a[1]) / 2];
@@ -378,15 +378,26 @@ function lanePathMarkingMeshes(routeData, routeHeightAtS) {
     points: network.surfacePath ?? network.path,
     active: distances.map(() => true),
   };
+  const busPath = {
+    points: network.path ?? network.nodes.map((n) => [n.x, n.z]),
+    active: distances.map(() => true),
+  };
+  const bounds = network.driveBounds ?? [];
   const markingGaps = [
     ...(routeData.intersections ?? []).map((item) => ({
-      from: item.s - Math.max(5, (Number(item.width) || 8) / 2 + 2),
-      to: item.s + Math.max(5, (Number(item.width) || 8) / 2 + 2),
+      from: item.s - Math.max(5.5, (Number(item.width) || 8) / 2 + 2.5),
+      to: item.s + Math.max(5.5, (Number(item.width) || 8) / 2 + 2.5),
     })),
     ...(routeData.turnIntersections ?? []).map((item) => ({
-      from: (item.sIn ?? item.s) - 3,
-      to: (item.sOut ?? item.s) + 3,
+      from: (item.sIn ?? item.s) - 3.5,
+      to: (item.sOut ?? item.s) + 3.5,
     })),
+    ...((network.overlays?.roads?.crosswalks ?? [])
+      .filter((cw) => (cw.routeDistance ?? Infinity) < 10)
+      .map((cw) => ({
+        from: cw.routeS - 3.4,
+        to: cw.routeS + 3.4,
+      }))),
   ];
   const insideMarkingGap = (s) => markingGaps.some((gap) => s >= gap.from && s <= gap.to);
   const sample = (item, s) => {
@@ -403,15 +414,43 @@ function lanePathMarkingMeshes(routeData, routeHeightAtS) {
     const a = item.points[lo], b = item.points[hi];
     return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
   };
+  const sampleBounds = (s) => {
+    if (!bounds.length) return { left: 2.0, right: 2.0 };
+    let lo = 0, hi = distances.length - 1;
+    const target = Math.max(0, Math.min(distances.at(-1), s));
+    while (lo + 1 < hi) {
+      const mid = (lo + hi) >> 1;
+      if (distances[mid] <= target) lo = mid;
+      else hi = mid;
+    }
+    const t = (target - distances[lo]) / Math.max(1e-6, distances[hi] - distances[lo]);
+    const a = bounds[lo] ?? { left: 2, right: 2 }, b = bounds[hi] ?? a;
+    return {
+      left: a.left + (b.left - a.left) * t,
+      right: a.right + (b.right - a.right) * t,
+    };
+  };
   const groups = new Map();
-  const addBoundary = (kind, from, to, first, second) => {
+  const pushStripSample = (target, rowActive, x, y, z, nx, nz, halfWidth) => {
+    const base = target.positions.length / 3;
+    target.positions.push(x - nx * halfWidth, y, z - nz * halfWidth);
+    target.positions.push(x + nx * halfWidth, y, z + nz * halfWidth);
+    if (rowActive) {
+      target.indices.push(base - 2, base - 1, base, base - 1, base + 1, base);
+    }
+  };
+  const addBoundary = (kind, from, to, first, second, options = {}) => {
     if (!first || !second || to - from < 1) return;
     if (!groups.has(kind)) groups.set(kind, { positions: [], indices: [] });
     const target = groups.get(kind);
+    const dashed = Boolean(options.dashed);
+    const halfWidth = options.halfWidth ?? 0.075;
+    const stepM = dashed ? 2.5 : 2.0;
     let row = 0;
-    for (let s = from; ; s += 4) {
+    for (let s = from; ; s += stepM) {
       const ss = Math.min(s, to);
-      if (insideMarkingGap(ss)) {
+      const dashOff = dashed && ((ss - from) % 10) > 5.0;
+      if (insideMarkingGap(ss) || dashOff) {
         row = 0;
         if (ss >= to) break;
         continue;
@@ -426,14 +465,42 @@ function lanePathMarkingMeshes(routeData, routeHeightAtS) {
         const tz = nextA[1] + nextB[1] - a[1] - b[1];
         const length = Math.hypot(tx, tz) || 1;
         const nx = -tz / length, nz = tx / length;
-        const halfWidth = 0.045;
-        const base = target.positions.length / 3;
-        const y = routeHeightAtS(ss) + 0.022;
-        target.positions.push(x - nx * halfWidth, y, z - nz * halfWidth);
-        target.positions.push(x + nx * halfWidth, y, z + nz * halfWidth);
-        if (row) {
-          target.indices.push(base - 2, base - 1, base, base - 1, base + 1, base);
-        }
+        const y = routeHeightAtS(ss) + 0.052;
+        pushStripSample(target, row > 0, x, y, z, nx, nz, halfWidth);
+        row++;
+      }
+      if (ss >= to) break;
+    }
+  };
+  const addEdgeLine = (from, to, side, maxOffsetAbs) => {
+    if (to - from < 2) return;
+    if (!groups.has("edge")) groups.set("edge", { positions: [], indices: [] });
+    const target = groups.get("edge");
+    const halfWidth = 0.06;
+    let row = 0;
+    for (let s = from; ; s += 2.0) {
+      const ss = Math.min(s, to);
+      if (insideMarkingGap(ss)) {
+        row = 0;
+        if (ss >= to) break;
+        continue;
+      }
+      const p = sample(busPath, ss);
+      const pNext = sample(busPath, Math.min(to, ss + 0.5)) ?? p;
+      const pPrev = sample(busPath, Math.max(from, ss - 0.5)) ?? p;
+      if (p) {
+        const tx = pNext[0] - pPrev[0], tz = pNext[1] - pPrev[1];
+        const length = Math.hypot(tx, tz) || 1;
+        const nx = -tz / length, nz = tx / length;
+        const bnd = sampleBounds(ss);
+        const edgeDist = Math.min(
+          maxOffsetAbs,
+          Math.max(1.25, (side < 0 ? bnd.left : bnd.right) - 0.22),
+        );
+        const x = p[0] + nx * side * edgeDist;
+        const z = p[1] + nz * side * edgeDist;
+        const y = routeHeightAtS(ss) + 0.05;
+        pushStripSample(target, row > 0, x, y, z, nx, nz, halfWidth);
         row++;
       }
       if (ss >= to) break;
@@ -441,6 +508,7 @@ function lanePathMarkingMeshes(routeData, routeHeightAtS) {
   };
   const meshes = [];
   for (const section of routeData.roadSections ?? []) {
+    if (section.overlay === "terminus-bay" || String(section.source ?? "").includes("terminus")) continue;
     const from = Math.max(0, Number(section.from) || 0);
     const to = Math.min(distances.at(-1), Number(section.to) || distances.at(-1));
     const forwardCount = Math.max(1, Number(section.lanesF) || 1);
@@ -448,16 +516,22 @@ function lanePathMarkingMeshes(routeData, routeHeightAtS) {
     const forward = (lane) => byKey.get(`1:${lane}`);
     const backward = (lane) => byKey.get(`-1:${lane}`);
     for (let lane = 0; lane < forwardCount - 1; lane++) {
-      addBoundary("lane", from, to, forward(lane), forward(lane + 1));
+      addBoundary("lane", from, to, forward(lane), forward(lane + 1), { dashed: true, halfWidth: 0.075 });
     }
     for (let lane = 0; lane < backwardCount - 1; lane++) {
-      addBoundary("lane", from, to, backward(lane), backward(lane + 1));
+      addBoundary("lane", from, to, backward(lane), backward(lane + 1), { dashed: true, halfWidth: 0.075 });
     }
     if (backwardCount && section.center !== "none") {
-      addBoundary("center", from, to, centerPath, centerPath);
+      addBoundary("center", from, to, centerPath, centerPath, { dashed: false, halfWidth: 0.075 });
+    }
+    if (section.sidewalk !== "none" && !String(section.source ?? "").includes("rotary")) {
+      const wL = Number(section.wL) || 4;
+      const wR = Number(section.wR) || 4;
+      addEdgeLine(from, to, -1, wL);
+      addEdgeLine(from, to, 1, wL + wR);
     }
   }
-  const materials = { center: 0xd8a017, lane: 0xf4f4f0 };
+  const materials = { center: 0xe5a817, lane: 0xf4f4f0, edge: 0xededeb };
   for (const [kind, data] of groups) {
     if (!data.indices.length) continue;
     const geometry = new THREE.BufferGeometry();
@@ -466,7 +540,13 @@ function lanePathMarkingMeshes(routeData, routeHeightAtS) {
     geometry.computeVertexNormals();
     const mesh = new THREE.Mesh(
       geometry,
-      new THREE.MeshBasicMaterial({ color: materials[kind], side: THREE.DoubleSide }),
+      new THREE.MeshBasicMaterial({
+        color: materials[kind],
+        side: THREE.DoubleSide,
+        polygonOffset: true,
+        polygonOffsetFactor: -2,
+        polygonOffsetUnits: -2,
+      }),
     );
     mesh.name = `plateau-lane-markings:${kind}`;
     meshes.push(mesh);
@@ -642,6 +722,73 @@ function compiledRoadDetailMeshes(network, terrainHeightAtWorld) {
       result.push(mesh);
     }
   }
+  if (details.stopLines?.length) {
+    const stopPositions = [];
+    const stopIndices = [];
+    for (const stopLine of details.stopLines) {
+      const quad = stopLine.quad ?? [];
+      if (quad.length < 4) continue;
+      const base = stopPositions.length / 3;
+      for (const [x, y, z] of quad) stopPositions.push(x, y + 0.064, z);
+      stopIndices.push(base, base + 1, base + 2, base, base + 2, base + 3);
+    }
+    if (stopIndices.length) {
+      const stopGeo = new THREE.BufferGeometry();
+      stopGeo.setAttribute("position", new THREE.Float32BufferAttribute(stopPositions, 3));
+      stopGeo.setIndex(stopIndices);
+      stopGeo.computeVertexNormals();
+      const stopMesh = new THREE.Mesh(stopGeo, white);
+      stopMesh.name = "osm-stop-lines";
+      result.push(stopMesh);
+    }
+  }
+  if (details.graphLaneDividers?.length) {
+    const divPositions = [];
+    const divIndices = [];
+    const divHalfW = 0.075;
+    for (const divider of details.graphLaneDividers) {
+      const pts = divider.points ?? [];
+      if (pts.length < 2) continue;
+      let dist = 0;
+      let prev = null;
+      for (let i = 0; i < pts.length; i++) {
+        const pt = pts[i];
+        if (i > 0) dist += Math.hypot(pt[0] - pts[i - 1][0], pt[2] - pts[i - 1][2]);
+        const paintOn = (dist % 10) <= 5.0;
+        const a = pts[Math.max(0, i - 1)], b = pts[Math.min(pts.length - 1, i + 1)];
+        const dx = b[0] - a[0], dz = b[2] - a[2];
+        const len = Math.hypot(dx, dz) || 1;
+        const nx = -dz / len, nz = dx / len;
+        if (!paintOn) {
+          prev = null;
+          continue;
+        }
+        const base = divPositions.length / 3;
+        divPositions.push(pt[0] - nx * divHalfW, pt[1] + 0.052, pt[2] - nz * divHalfW);
+        divPositions.push(pt[0] + nx * divHalfW, pt[1] + 0.052, pt[2] + nz * divHalfW);
+        if (prev != null) {
+          divIndices.push(base - 2, base - 1, base, base - 1, base + 1, base);
+        }
+        prev = base;
+      }
+    }
+    if (divIndices.length) {
+      const divGeo = new THREE.BufferGeometry();
+      divGeo.setAttribute("position", new THREE.Float32BufferAttribute(divPositions, 3));
+      divGeo.setIndex(divIndices);
+      divGeo.computeVertexNormals();
+      const divMat = new THREE.MeshBasicMaterial({
+        color: 0xf4f4f0,
+        side: THREE.DoubleSide,
+        polygonOffset: true,
+        polygonOffsetFactor: -2,
+        polygonOffsetUnits: -2,
+      });
+      const divMesh = new THREE.Mesh(divGeo, divMat);
+      divMesh.name = "osm-graph-lane-dividers";
+      result.push(divMesh);
+    }
+  }
   const deckMat = new THREE.MeshLambertMaterial({ color: 0x8c9194 });
   const sidewalkMat = new THREE.MeshLambertMaterial({ color: 0xcfd2cc, side: THREE.DoubleSide });
   const railMat = new THREE.MeshLambertMaterial({ color: 0xd8dde0 });
@@ -729,27 +876,34 @@ export function transportationSurfaceMesh(
     const polygon = feature.polygon ?? [];
     if (polygon.length < 3) continue;
     const sourceId = feature.source?.gmlId ?? feature.id?.replace(/#.*$/, "");
-    const fullPolygonZone = (zones ?? []).find((zone) =>
+    const fullPolygonZones = (zones ?? []).filter((zone) =>
       (zone.sourceFeatureIds ?? []).includes(sourceId),
     );
     // Elevate a complete, authoritative PLATEAU road polygon in place for
     // wide bridge decks, rather than leaving its outer fragments on ground.
-    if (fullPolygonZone) {
+    if (fullPolygonZones.length) {
       for (const sourceTriangle of triangulatedXZ(polygon)) {
         appendTerrainConformingXZSurface(
           sourceTriangle,
           positions,
           indices,
           (x, z) => {
-            const projection = path.closestS([x, z], fullPolygonZone.centerS, fullPolygonZone.searchWindow);
-            // A PLATEAU source polygon can include the bridge approaches and
-            // the east-end junction as one feature.  Only its declared
-            // structural interval is a bridge surface; assigning the
-            // path-centre height to the rest made that ground road tilt and
-            // left a lateral height mismatch below vehicles.
-            return projection.s >= fullPolygonZone.from && projection.s <= fullPolygonZone.to
-              ? routeHeightAtS(projection.s)
-              : terrainHeightAtWorld(x, z);
+            for (const zone of fullPolygonZones) {
+              const projection = path.closestS([x, z], zone.centerS, zone.searchWindow);
+              // A PLATEAU source polygon can include the bridge approaches and
+              // the east-end junction as one feature.  Only its declared
+              // structural interval is a bridge surface; assigning the
+              // path-centre height to the rest made that ground road tilt and
+              // left a lateral height mismatch below vehicles.
+              if (
+                projection.s >= zone.from
+                && projection.s <= zone.to
+                && Math.abs(projection.lateral) <= 28
+              ) {
+                return routeHeightAtS(projection.s);
+              }
+            }
+            return terrainHeightAtWorld(x, z);
           },
           yOffset,
         );
@@ -837,6 +991,7 @@ export function terrainGridMesh(
   path = null,
   bridges = [],
   rivers = [],
+  waterPolygons = [],
 ) {
   if (!grid || !Array.isArray(grid.heights)) return null;
   const width = Number(grid.width);
@@ -847,6 +1002,45 @@ export function terrainGridMesh(
   const positions = [];
   const indices = [];
   const riverDips = path ? buildRiverDips(path, bridges, rivers) : [];
+  const waterBankMeters = 14;
+  const waterZones = (waterPolygons ?? [])
+    .filter((item) => item?.name && Array.isArray(item.polygon) && item.polygon.length >= 3)
+    .map((item) => {
+      const xs = item.polygon.map((p) => p[0]);
+      const zs = item.polygon.map((p) => p[1]);
+      return {
+        polygon: item.polygon,
+        minX: Math.min(...xs) - waterBankMeters,
+        maxX: Math.max(...xs) + waterBankMeters,
+        minZ: Math.min(...zs) - waterBankMeters,
+        maxZ: Math.max(...zs) + waterBankMeters,
+      };
+    });
+  const waterPolygonDipAt = (x, z) => {
+    if (!waterZones.length) return 0;
+    let best = 0;
+    for (const zone of waterZones) {
+      if (x < zone.minX || x > zone.maxX || z < zone.minZ || z > zone.maxZ) continue;
+      if (pointInPolygon([x, z], zone.polygon)) return RIVER_TERRAIN_DIP_DEPTH;
+      let minDist2 = Infinity;
+      const poly = zone.polygon;
+      for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+        const ax = poly[j][0], az = poly[j][1];
+        const vx = poly[i][0] - ax, vz = poly[i][1] - az;
+        const l2 = vx * vx + vz * vz;
+        const t = l2 <= 1e-12 ? 0 : Math.max(0, Math.min(1, ((x - ax) * vx + (z - az) * vz) / l2));
+        const d2 = (x - (ax + vx * t)) ** 2 + (z - (az + vz * t)) ** 2;
+        if (d2 < minDist2) minDist2 = d2;
+      }
+      const dist = Math.sqrt(minDist2);
+      if (dist < waterBankMeters) {
+        const u = (waterBankMeters - dist) / waterBankMeters;
+        const smooth = u * u * (3 - 2 * u);
+        best = Math.max(best, smooth * RIVER_TERRAIN_DIP_DEPTH);
+      }
+    }
+    return best;
+  };
   const roads = roadFeatureIndex(
     roadFeatures,
     originX,
@@ -856,12 +1050,17 @@ export function terrainGridMesh(
     width,
     height,
   );
-  const heightAtGrid = (ix, iz) => {
-    const x = originX + ix * stepX;
+  const carvedHeights = new Float32Array(width * height);
+  for (let iz = 0; iz < height; iz++) {
     const z = originZ + iz * stepZ;
-    return Number(grid.heights[iz * width + ix] ?? 0)
-      - riverDipDepthAt(x, z, riverDips);
-  };
+    for (let ix = 0; ix < width; ix++) {
+      const x = originX + ix * stepX;
+      const idx = iz * width + ix;
+      const dip = Math.max(riverDipDepthAt(x, z, riverDips), waterPolygonDipAt(x, z));
+      carvedHeights[idx] = Number(grid.heights[idx] ?? 0) - dip;
+    }
+  }
+  const heightAtGrid = (ix, iz) => carvedHeights[iz * width + ix];
   const heightAtTriangle = (point, triangle, values) => {
     const [a, b, c] = triangle;
     const denominator = (b[1] - c[1]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[1] - c[1]);
@@ -1086,6 +1285,7 @@ export class PlateauWorldRenderer {
       this.routePath,
       this.routeData?.bridges ?? [],
       this.routeData?.rivers ?? [],
+      this.routeData?.waterPolygons ?? [],
     );
     if (terrain) this.add("terrain", terrain);
     if (documents.transportation) {
@@ -1156,6 +1356,8 @@ export class PlateauWorldRenderer {
       counts: Object.fromEntries(Object.entries(documents).map(([id, doc]) => [id, (doc.features ?? doc.triangles ?? doc.grid?.heights ?? []).length])),
       hasPlateauBuildings: Boolean(documents.buildings?.features?.length),
       hasConnectedTerrain: Boolean(terrain),
+      roadFeatures: transportationFeatures,
+      sidewalkFeatures: (documents["osm-road-overlays"]?.features ?? []).filter((feature) => feature.kind === "sidewalk"),
     };
   }
 

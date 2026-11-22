@@ -31,7 +31,11 @@ export async function buildWorldScenery(scene, path, route, builders) {
   const landmarkExclusions = asArray(
     captureAndSnap(scene, () => builders.buildLandmarks(scene, surfacePath), builders.terrainHeightAtWorld),
   );
-  const natureExclusions = asArray(builders.buildNature(scene, surfacePath));
+  let resolveRoadSurfaces;
+  const roadSurfacesPromise = new Promise((resolve) => {
+    resolveRoadSurfaces = resolve;
+  });
+  const natureExclusions = asArray(builders.buildNature(scene, surfacePath, { roadSurfacesPromise }));
   const exclusions = [
     ...landmarkExclusions,
     ...natureExclusions,
@@ -49,6 +53,10 @@ export async function buildWorldScenery(scene, path, route, builders) {
     routeHeightAtS: builders.elevationAt,
   });
   const plateau = await renderer.load(manifest);
+  resolveRoadSurfaces({
+    roadFeatures: plateau.roadFeatures ?? [],
+    sidewalkFeatures: plateau.sidewalkFeatures ?? [],
+  });
   if (plateau.hasConnectedTerrain && builders.baseTerrain) builders.baseTerrain.visible = false;
   if (!plateau.hasPlateauBuildings) {
     throw new Error("PLATEAU building layer is empty; OSM building fallback is intentionally disabled.");

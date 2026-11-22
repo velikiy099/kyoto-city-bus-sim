@@ -296,14 +296,87 @@ function nijoRotarySource() {
   return { source, inbound, outbound, rejoin, centerline, busLateral };
 }
 
+function applyTerminusTurnaround(baseSource) {
+  const cfgTurn = PATCHES.TERMINUS_TURNAROUND;
+  const ts = route.terminalStop;
+  const stopX = Array.isArray(ts) ? Number(ts[0]) : Number(ts?.x);
+  const stopZ = Array.isArray(ts) ? Number(ts[1]) : Number(ts?.z);
+  if (!cfgTurn || !Number.isFinite(stopX) || !Number.isFinite(stopZ)) return baseSource;
+
+  const entryX = stopX + Number(cfgTurn.entryXOffsetM ?? 22.5);
+  const approachZ = stopZ + Number(cfgTurn.approachZOffsetM ?? -4.5);
+  const r1 = Number(cfgTurn.entryRadiusM ?? 7.0);
+  const southTurnZ = stopZ + Number(cfgTurn.southTurnZOffsetM ?? 9.0);
+  const r2 = Number(cfgTurn.loopRadiusM ?? 6.6);
+  const stopLaneX = stopX + Number(cfgTurn.stopXOffsetM ?? 2.3);
+  const stopEndZ = stopZ + Number(cfgTurn.stopEndZOffsetM ?? -1.5);
+
+  const tailSearchStart = Math.max(0, baseSource.length - 120);
+  let cutIndex = baseSource.length - 1;
+  let bestDist = Infinity;
+  for (let i = tailSearchStart; i < baseSource.length; i++) {
+    const pt = baseSource[i].point;
+    if (pt[0] < entryX - 0.5) continue;
+    const d = Math.hypot(pt[0] - entryX, pt[1] - (approachZ - 2.0));
+    if (d < bestDist) {
+      bestDist = d;
+      cutIndex = i;
+    }
+  }
+  const trimmed = baseSource.slice(0, cutIndex + 1);
+  const baseRawS = trimmed.at(-1)?.rawS ?? 0;
+
+  const arcPoints = (cx, cz, radius, a0, a1, steps = 16) => {
+    const out = [];
+    for (let i = 0; i <= steps; i++) {
+      const a = a0 + (a1 - a0) * (i / steps);
+      out.push([cx + Math.cos(a) * radius, cz + Math.sin(a) * radius]);
+    }
+    return out;
+  };
+  const bayPolyline = [
+    [entryX, approachZ],
+    ...arcPoints(entryX, approachZ + r1, r1, -Math.PI / 2, -Math.PI, 16).slice(1),
+    [stopLaneX + 2 * r2, southTurnZ],
+    ...arcPoints(stopLaneX + r2, southTurnZ, r2, 0, Math.PI, 24).slice(1),
+    [stopLaneX, stopEndZ],
+  ];
+  const baySamples = resample(bayPolyline, 2);
+  const terminusSection = {
+    lanes: 1,
+    lanesF: 1,
+    lanesB: 0,
+    wL: 2.3,
+    wR: 2.3,
+    center: "none",
+    oneWay: true,
+    sidewalk: "none",
+    overlay: "terminus-bay",
+    source: "OSM terminus turnaround bay",
+  };
+  const cum = [0];
+  for (let k = 1; k < baySamples.length; k++) {
+    cum.push(cum[k - 1] + distance(baySamples[k - 1], baySamples[k]));
+  }
+  const bayTail = baySamples.map((pt, idx) => ({
+    point: pt,
+    rawS: +(baseRawS + cum[idx] + 2).toFixed(3),
+    overlay: "terminus-bay",
+    sectionOverride: terminusSection,
+  }));
+  return [...trimmed, ...bayTail];
+}
+
 const nijoRotary = nijoRotarySource();
-const raw = (nijoRotary?.source ?? rawRoute.map((point, index) => ({ point, rawS: index * 2 })));
+const raw = applyTerminusTurnaround(
+  nijoRotary?.source ?? rawRoute.map((point, index) => ({ point, rawS: index * 2 })),
+);
 const center = [];
 let previousFeature = null;
 for (let i = 0; i < raw.length; i++) {
   const sample = raw[i];
-  if (sample.overlay === "nijo-rotary") {
-    center.push({ rawS: sample.rawS, x: sample.point[0], z: sample.point[1], feature: { id: "osm-nijo-rotary" }, overlay: sample.overlay });
+  if (sample.overlay === "nijo-rotary" || sample.overlay === "terminus-bay") {
+    center.push({ rawS: sample.rawS, x: sample.point[0], z: sample.point[1], feature: { id: `osm-${sample.overlay}` }, overlay: sample.overlay });
     continue;
   }
   const hit = snapToSurface(sample.point[0], sample.point[1], previousFeature?.id);
@@ -462,6 +535,12 @@ const physicalLaneRows = center.map((point, index) => {
     forward: Array(maxForwardLaneCount).fill(false),
     reverse: Array(maxBackwardLaneCount).fill(false),
   };
+  if (point.overlay === "terminus-bay") {
+    active.forward[0] = true;
+    offsets.forward[0] = 0;
+    const halfW = Number(section?.wL) || 2.3;
+    return { rawS: point.rawS, nx, nz, negativeWidth: halfW, positiveWidth: halfW, min: -halfW, max: halfW, centerShift: 0, isFlare: false, offsets, active, overlay: true, forwardCount, backwardCount };
+  }
   if (point.overlay) {
     const outerSide = Math.sign(nijoRotary.busLateral || -1);
     for (let lane = 0; lane < forwardCount; lane++) {
@@ -686,36 +765,66 @@ const kogaBridgeRoad = (osmSource.roads ?? []).find((road) =>
   || (road.tags?.bridge === "yes" && road.tags?.name === PATCHES.KOGA_BRIDGE_NAME_FALLBACK)
 );
 
-function rawSAtPoint(point) {
-  let best = { distance2: Infinity, rawS: null };
+function rawHitAtPoint(point) {
+  let best = { distance2: Infinity, rawS: null, tangent: [0, 1] };
   for (let index = 1; index < nodes.length; index++) {
     const a = nodes[index - 1], b = nodes[index];
     const dx = b.x - a.x, dz = b.z - a.z;
     const length2 = dx * dx + dz * dz || 1;
+    const length = Math.sqrt(length2);
     const t = clamp(((point[0] - a.x) * dx + (point[1] - a.z) * dz) / length2, 0, 1);
     const x = a.x + dx * t, z = a.z + dz * t;
     const distance2 = (point[0] - x) ** 2 + (point[1] - z) ** 2;
-    if (distance2 < best.distance2) best = { distance2, rawS: a.rawS + (b.rawS - a.rawS) * t };
+    if (distance2 < best.distance2) best = { distance2, rawS: a.rawS + (b.rawS - a.rawS) * t, tangent: [dx / length, dz / length] };
   }
-  return best.rawS;
+  return best;
 }
+
+const rawSAtPoint = (point) => rawHitAtPoint(point).rawS;
 
 const kogaBridgeRawRange = kogaBridgeRoad?.points?.length >= 2
   ? [rawSAtPoint(kogaBridgeRoad.points[0]), rawSAtPoint(kogaBridgeRoad.points.at(-1))].sort((a, b) => a - b)
   : null;
 
+function osmBridgeRawRangeFor(rawFrom, rawTo) {
+  const from = Number(rawFrom), to = Number(rawTo);
+  if (!Number.isFinite(from) || !Number.isFinite(to)) return null;
+  const center = (from + to) / 2;
+  const halfSpan = Math.max(15, (to - from) / 2) + 30;
+  let best = null;
+  for (const road of osmSource.roads ?? []) {
+    if (road.tags?.bridge !== "yes") continue;
+    if (["motorway", "motorway_link"].includes(road.tags?.highway)) continue;
+    const pts = road.points ?? [];
+    if (pts.length < 2) continue;
+    const mid = pts[Math.floor(pts.length / 2)];
+    const hit = rawHitAtPoint(mid);
+    if (Math.sqrt(hit.distance2) > 10) continue;
+    const dx = pts.at(-1)[0] - pts[0][0], dz = pts.at(-1)[1] - pts[0][1];
+    const len = Math.hypot(dx, dz) || 1;
+    const dot = Math.abs((dx / len) * hit.tangent[0] + (dz / len) * hit.tangent[1]);
+    if (dot < 0.7) continue;
+    if (Math.abs(hit.rawS - center) > halfSpan) continue;
+    const [a, b] = [rawSAtPoint(pts[0]), rawSAtPoint(pts.at(-1))].sort((u, v) => u - v);
+    if (b < from - 30 || a > to + 30) continue;
+    const score = Math.sqrt(hit.distance2) + Math.abs((a + b) / 2 - center) * 0.25;
+    if (!best || score < best.score) best = { score, range: [Math.min(from, a), Math.max(to, b)] };
+  }
+  return best?.range ?? null;
+}
+
 function resolvedStructure(structure) {
+  const isFlatDeck = structure.profile === "flat-deck";
+  const osmRange = isFlatDeck ? osmBridgeRawRangeFor(structure.from, structure.to) : null;
   const range = structure.name === PATCHES.KOGA_FLAT_DECK_STRUCTURE_NAME && kogaBridgeRawRange
     ? kogaBridgeRawRange
-    : [Number(structure.from), Number(structure.to)];
-  const isKogaFlatDeck = structure.name === PATCHES.KOGA_FLAT_DECK_STRUCTURE_NAME
-    && structure.profile === "flat-deck"
-    && Boolean(kogaBridgeRawRange);
+    : (osmRange ?? [Number(structure.from), Number(structure.to)]);
+  const hasOsmSpan = isFlatDeck && (Boolean(osmRange) || (structure.name === PATCHES.KOGA_FLAT_DECK_STRUCTURE_NAME && Boolean(kogaBridgeRawRange)));
   return {
     ...structure,
     from: range[0],
     to: range[1],
-    ...(isKogaFlatDeck ? { approachIn: 0, approachOut: 0 } : {}),
+    ...(hasOsmSpan ? { approachIn: 0, approachOut: 0 } : {}),
   };
 }
 
@@ -1133,6 +1242,8 @@ function graphMaxHeadingJump(points) {
 function graphRoadAllowed(road) {
   const tags = road.tags ?? {};
   if (OMIYA_OVERPASS_SIDE_ROAD_WAY_IDS.has(Number(road.id))) return false;
+  // Overhead expressways (e.g. Meishin Expressway) are grade-separated above the street network.
+  if (["motorway", "motorway_link"].includes(tags.highway) && (tags.bridge === "yes" || Number(tags.layer) >= 1)) return false;
   // Roads crossing the bridge corridor are ground-level roads below the
   // elevated Omiya carriageway. They must not become graph edges or junction
   // openings for the bridge route.
@@ -1165,21 +1276,223 @@ function graphLaneOffset(tags, direction, laneIndex, laneCount) {
     ? LANE_WIDTH * (laneIndex - (laneCount - 1) / 2)
     : LANE_WIDTH * (laneIndex + 0.5);
 }
-function graphLanePoints(points, offset) {
+function graphSurfaceYAt(x, z, dirX = 0, dirZ = 0, proj = null) {
+  const gy = gridHeight(x, z);
+  const p = proj ?? projectToRouteCenter(x, z);
+  if (!p) return gy;
+  const dirLen = Math.hypot(dirX, dirZ);
+  const align = dirLen > 1e-6 ? Math.abs((dirX / dirLen) * p.tx + (dirZ / dirLen) * p.tz) : 0;
+  if (p.dist < 18 && align > 0.72) return p.y;
+  if (p.dist < 16 && Math.abs(p.y - gy) < 0.6) return p.y;
+  return gy;
+}
+function projectToRouteCenter(x, z) {
+  let bestD2 = Infinity;
+  let bestIdx = 0;
+  let bestT = 0;
+  let bestCx = 0;
+  let bestCz = 0;
+  for (let i = 0; i < roadCenter.length - 1; i++) {
+    const a = roadCenter[i], b = roadCenter[i + 1];
+    const dx = b.x - a.x, dz = b.z - a.z;
+    const len2 = dx * dx + dz * dz || 1;
+    const t = clamp(((x - a.x) * dx + (z - a.z) * dz) / len2, 0, 1);
+    const cx = a.x + dx * t, cz = a.z + dz * t;
+    const d2 = (x - cx) ** 2 + (z - cz) ** 2;
+    if (d2 < bestD2) {
+      bestD2 = d2;
+      bestIdx = i;
+      bestT = t;
+      bestCx = cx;
+      bestCz = cz;
+    }
+  }
+  const nA = nodes[bestIdx], nB = nodes[Math.min(nodes.length - 1, bestIdx + 1)];
+  const pA = roadCenter[bestIdx], pB = roadCenter[Math.min(roadCenter.length - 1, bestIdx + 1)];
+  const sdx = pB.x - pA.x, sdz = pB.z - pA.z;
+  const slen = Math.hypot(sdx, sdz);
+  const tx = slen > 1e-5 ? sdx / slen : Math.sin(nA.heading);
+  const tz = slen > 1e-5 ? sdz / slen : Math.cos(nA.heading);
+  const rx = -tz, rz = tx;
+  const s = nA.s + (nB.s - nA.s) * bestT;
+  const y = nA.y + (nB.y - nA.y) * bestT;
+  const hA = nodes[Math.max(0, bestIdx - 4)].heading;
+  const hB = nodes[Math.min(nodes.length - 1, bestIdx + 4)].heading;
+  const isSharpTurn = Math.cos(hB - hA) < 0.92;
+  const isTerminusBay = lane[bestIdx]?.overlay === "terminus-bay" || lane[Math.min(lane.length - 1, bestIdx + 1)]?.overlay === "terminus-bay";
+  const section = sampleSections[bestIdx] ?? { lanesF: 1, lanesB: 1, wL: 4, wR: 4, oneWay: false };
+  return {
+    idx: bestIdx,
+    t: bestT,
+    dist: Math.sqrt(bestD2),
+    s,
+    cx: bestCx,
+    cz: bestCz,
+    y,
+    tx,
+    tz,
+    rx,
+    rz,
+    isSharpTurn,
+    isTerminusBay,
+    section,
+  };
+}
+function interpMainPath(tp, idx, t) {
+  if (!tp?.points?.length || !tp.active?.length) return null;
+  const i0 = clamp(idx, 0, tp.points.length - 1);
+  const i1 = clamp(idx + 1, 0, tp.points.length - 1);
+  if (tp.active[i0] && tp.active[i1]) {
+    const a = tp.points[i0], b = tp.points[i1];
+    return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+  }
+  if (tp.active[i0] && t <= 0.5) return [...tp.points[i0]];
+  if (tp.active[i1] && t > 0.5) return [...tp.points[i1]];
+  return null;
+}
+function subdivideNearRoute(points, maxStep = 6.0, corridorDist = 22.0) {
+  if (!Array.isArray(points) || points.length < 2) return points;
+  const out = [points[0]];
+  for (let i = 1; i < points.length; i++) {
+    const a = points[i - 1], b = points[i];
+    const segLen = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    if (segLen > maxStep) {
+      const mid = [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5];
+      const nearRoute = projectToRouteCenter(a[0], a[1]).dist < corridorDist
+        || projectToRouteCenter(mid[0], mid[1]).dist < corridorDist
+        || projectToRouteCenter(b[0], b[1]).dist < corridorDist;
+      if (nearRoute) {
+        const steps = Math.ceil(segLen / maxStep);
+        for (let k = 1; k <= steps; k++) {
+          const t = k / steps;
+          out.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
+        }
+        continue;
+      }
+    }
+    out.push(b);
+  }
+  return out;
+}
+function graphLanePoints(points, offset, alignContext = null) {
   let previousFeature = null;
-  const result = [];
+  const rawTargets = [];
+  const alignedShifts = [];
+  const sharpTurnFlags = [];
+  const tangents = [];
+  const canAlignHighway = alignContext && !["service", "living_street"].includes(alignContext.highway);
   for (let i = 0; i < points.length; i++) {
     const a = points[Math.max(0, i - 1)], b = points[Math.min(points.length - 1, i + 1)];
     const dx = b[0] - a[0], dz = b[1] - a[1];
     const length = Math.hypot(dx, dz) || 1;
+    const tx = dx / length, tz = dz / length;
+    tangents.push([tx, tz]);
     // x=east, z=south.  [dz, -dx] is the left-hand normal for the
     // oriented travel direction, matching Japan's left-side traffic.
-    const candidate = [points[i][0] + (dz / length) * offset, points[i][1] + (-dx / length) * offset];
-    const hit = snapToSurface(candidate[0], candidate[1], previousFeature?.id);
-    previousFeature = hit.feature;
-    result.push([+hit.point[0].toFixed(3), +gridHeight(...hit.point).toFixed(3), +hit.point[1].toFixed(3)]);
+    const rawCand = [points[i][0] + tz * offset, points[i][1] + (-dx / length) * offset];
+    let alignedPt = null;
+    let isSharpTurn = false;
+    if (canAlignHighway) {
+      const proj = projectToRouteCenter(points[i][0], points[i][1]);
+      isSharpTurn = proj.isSharpTurn;
+      const dot = tx * proj.tx + tz * proj.tz;
+      const travelDir = dot >= 0 ? 1 : -1;
+      const maxRouteCorridor = Math.min(5.8, Math.max(Number(proj.section.wL) || 4, Number(proj.section.wR) || 4) + 1.2);
+      const secAllows = alignContext.oneway
+        ? (travelDir === 1 && (Number(proj.section.lanesF) || 0) > 0)
+        : (!proj.section.oneWay && (Number(proj.section.lanesB) || 0) > 0);
+      if (!proj.isTerminusBay && !proj.isSharpTurn && Math.abs(dot) > 0.88 && proj.dist < maxRouteCorridor && secAllows) {
+        if (travelDir === 1) {
+          const mLane = (alignContext.laneCount - 1) - alignContext.lane;
+          const mainPt = interpMainPath(alignContext.mainForwardPaths[mLane], proj.idx, proj.t);
+          if (mainPt) {
+            alignedPt = mainPt;
+          } else {
+            const centerOff = alignContext.oneway
+              ? LANE_WIDTH * ((alignContext.laneCount - 1) / 2 - alignContext.lane)
+              : -LANE_WIDTH * (alignContext.lane + 0.5);
+            alignedPt = [proj.cx + proj.rx * centerOff, proj.cz + proj.rz * centerOff];
+          }
+        } else {
+          const mLane = alignContext.lane;
+          const mainPt = interpMainPath(alignContext.mainReversePaths[mLane], proj.idx, proj.t);
+          if (mainPt) {
+            alignedPt = mainPt;
+          } else if (mLane > 0) {
+            const rev0 = interpMainPath(alignContext.mainReversePaths[0], proj.idx, proj.t);
+            if (rev0) {
+              alignedPt = [rev0[0] + proj.rx * (LANE_WIDTH * mLane), rev0[1] + proj.rz * (LANE_WIDTH * mLane)];
+            } else {
+              const centerOff = LANE_WIDTH * (alignContext.lane + 0.5);
+              alignedPt = [proj.cx + proj.rx * centerOff, proj.cz + proj.rz * centerOff];
+            }
+          } else {
+            const centerOff = LANE_WIDTH * (alignContext.lane + 0.5);
+            alignedPt = [proj.cx + proj.rx * centerOff, proj.cz + proj.rz * centerOff];
+          }
+        }
+      }
+    }
+    rawTargets.push({ rawCand, alignedPt });
+    sharpTurnFlags.push(isSharpTurn);
+    if (alignedPt) {
+      const sx = alignedPt[0] - rawCand[0], sz = alignedPt[1] - rawCand[1];
+      const smag = Math.hypot(sx, sz);
+      if (smag <= 4.5) {
+        alignedShifts.push([sx, sz]);
+      } else {
+        rawTargets[i].alignedPt = null;
+        alignedShifts.push(null);
+      }
+    } else {
+      alignedShifts.push(null);
+    }
   }
-  return result;
+
+  // Smooth corner-approach & S-curve carry-over: if an edge is predominantly aligned
+  // with the compiled route, carry the nearest aligned lateral shift onto any remaining
+  // unaligned end or S-curve gap vertices so approaches stay parallel into intersections
+  // without hooking back into the bus path.
+  const alignedCount = alignedShifts.filter(Boolean).length;
+  if (alignedCount >= 1 && (alignedCount >= 2 || points.length <= 3) && alignedCount >= Math.floor(points.length * 0.35)) {
+    for (let i = 0; i < points.length; i++) {
+      if (rawTargets[i].alignedPt) continue;
+      let nearestIdx = -1, nearestStep = Infinity;
+      for (let j = 0; j < points.length; j++) {
+        if (!alignedShifts[j]) continue;
+        const step = Math.abs(j - i);
+        if (step < nearestStep) { nearestStep = step; nearestIdx = j; }
+      }
+      if (nearestIdx >= 0 && nearestStep <= 4) {
+        const [sx, sz] = alignedShifts[nearestIdx];
+        const smag = Math.hypot(sx, sz);
+        const scale = smag > 4.2 ? 4.2 / smag : 1;
+        rawTargets[i].alignedPt = [
+          rawTargets[i].rawCand[0] + sx * scale,
+          rawTargets[i].rawCand[1] + sz * scale,
+        ];
+      }
+    }
+  }
+
+  const result = [];
+  let alignedUsed = 0;
+  for (let i = 0; i < points.length; i++) {
+    const { rawCand, alignedPt } = rawTargets[i];
+    const [tx, tz] = tangents[i];
+    let pt2d;
+    if (alignedPt) {
+      pt2d = alignedPt;
+      alignedUsed++;
+    } else {
+      const hit = snapToSurface(rawCand[0], rawCand[1], previousFeature?.id);
+      previousFeature = hit.feature;
+      pt2d = hit.point;
+    }
+    const y = graphSurfaceYAt(pt2d[0], pt2d[1], tx, tz);
+    result.push([+pt2d[0].toFixed(3), +y.toFixed(3), +pt2d[1].toFixed(3)]);
+  }
+  return { samples: result, aligned: alignedUsed > 0 };
 }
 function surfaceYAt(x, z) {
   let best = null;
@@ -1314,10 +1627,89 @@ function graphConnectorGeometryValid(points, inVector, outVector, isTurn = false
   if (totalAbsTurn - netTurn > (30 * Math.PI) / 180) return false;
   if (totalAbsTurn > (155 * Math.PI) / 180) return false;
   if (maxSegBend > (30 * Math.PI) / 180) return false;
-  if (minRadius < (isTurn ? 2.2 : 1.5)) return false;
+  if (minRadius < (isTurn ? 1.4 : 1.2)) return false;
   return true;
 }
 function buildTrafficGraph() {
+  const mainForwardPaths = trafficPaths
+    .filter((item) => item.role === "main" && item.direction === 1)
+    .sort((a, b) => a.lane - b.lane);
+  const mainReversePaths = trafficPaths
+    .filter((item) => item.role === "main" && item.direction === -1)
+    .sort((a, b) => a.lane - b.lane);
+  const nearestBusSeg = (x, z) => {
+    let bestD2 = Infinity;
+    let bestHeading = 0;
+    for (let i = 0; i < nodes.length - 1; i++) {
+      const a = nodes[i], b = nodes[i + 1];
+      const dx = b.x - a.x, dz = b.z - a.z;
+      const len2 = dx * dx + dz * dz || 1;
+      const t = clamp(((x - a.x) * dx + (z - a.z) * dz) / len2, 0, 1);
+      const cx = a.x + dx * t, cz = a.z + dz * t;
+      const d2 = (x - cx) ** 2 + (z - cz) ** 2;
+      if (d2 < bestD2) {
+        bestD2 = d2;
+        bestHeading = Math.atan2(dx, dz);
+      }
+    }
+    return { heading: bestHeading, dist: Math.sqrt(bestD2) };
+  };
+  const clearNonAlignedEndFromBus = (points, isStart) => {
+    if (points.length < 2) return points;
+    const ordered = isStart ? points : [...points].reverse();
+    const cum = graphCum(ordered.map(([x, , z]) => [x, z]));
+    const total = cum.at(-1);
+    if (!(total > 3.2)) return points;
+    const p0 = ordered[0];
+    const p1 = ordered[Math.min(1, ordered.length - 1)];
+    const edx = p1[0] - p0[0], edz = p1[2] - p0[2];
+    const elen = Math.hypot(edx, edz) || 1;
+    const hit0 = nearestBusSeg(p0[0], p0[2]);
+    const btx = Math.sin(hit0.heading), btz = Math.cos(hit0.heading);
+    const dot = Math.abs((edx / elen) * btx + (edz / elen) * btz);
+    if (hit0.dist >= 2.65 || dot >= 0.78) return points;
+    const maxTrim = Math.min(5.0, total - 3.0);
+    if (!(maxTrim > 0.2)) return points;
+    let chosenDist = maxTrim;
+    const sampleAtCum = (dist) => {
+      let segIdx = 0;
+      while (segIdx < cum.length - 2 && cum[segIdx + 1] < dist) segIdx++;
+      const span = cum[segIdx + 1] - cum[segIdx] || 1;
+      const t = clamp((dist - cum[segIdx]) / span, 0, 1);
+      const a = ordered[segIdx], b = ordered[segIdx + 1];
+      return [
+        +(a[0] + (b[0] - a[0]) * t).toFixed(3),
+        +(a[1] + (b[1] - a[1]) * t).toFixed(3),
+        +(a[2] + (b[2] - a[2]) * t).toFixed(3),
+      ];
+    };
+    for (let d = 0.25; d <= maxTrim + 1e-6; d += 0.25) {
+      const dd = Math.min(d, maxTrim);
+      const pt = sampleAtCum(dd);
+      if (nearestBusSeg(pt[0], pt[2]).dist >= 2.8) {
+        chosenDist = dd;
+        break;
+      }
+    }
+    const newStart = sampleAtCum(chosenDist);
+    // Replace vertices strictly before chosenDist while preserving vertex count.
+    let keepIdx = 1;
+    while (keepIdx < cum.length - 1 && cum[keepIdx] <= chosenDist + 0.05) keepIdx++;
+    const anchor = ordered[keepIdx];
+    const out = ordered.map((pt, idx) => {
+      if (idx === 0) return newStart;
+      if (idx < keepIdx) {
+        const frac = idx / keepIdx;
+        return [
+          +(newStart[0] + (anchor[0] - newStart[0]) * frac).toFixed(3),
+          +(newStart[1] + (anchor[1] - newStart[1]) * frac).toFixed(3),
+          +(newStart[2] + (anchor[2] - newStart[2]) * frac).toFixed(3),
+        ];
+      }
+      return pt;
+    });
+    return isStart ? out : out.reverse();
+  };
   const sourceRoads = (osmSource.roads ?? []).filter(graphRoadAllowed);
   const nodesByKey = new Map();
   let edges = [];
@@ -1408,20 +1800,34 @@ function buildTrafficGraph() {
     const { road, tags, segmentIndex, segmentPoints, startNodeId, endNodeId, fromKey, toKey, directions } = seg;
     const from = addNode(segmentPoints[0], fromKey, startNodeId);
     const to = addNode(segmentPoints.at(-1), toKey, endNodeId);
-    const trimmedSegmentPoints = trimPolyline2d(
-      segmentPoints,
-      nodeTrimAmount(fromKey, segmentPoints[0]),
-      nodeTrimAmount(toKey, segmentPoints.at(-1)),
+    const trimmedSegmentPoints = subdivideNearRoute(
+      trimPolyline2d(
+        segmentPoints,
+        nodeTrimAmount(fromKey, segmentPoints[0]),
+        nodeTrimAmount(toKey, segmentPoints.at(-1)),
+      ),
     );
     for (const direction of directions) {
       const laneCount = graphLaneCounts(tags, direction, road.id);
       const oriented = direction > 0 ? trimmedSegmentPoints : [...trimmedSegmentPoints].reverse();
       for (let lane = 0; lane < laneCount; lane++) {
-        let samples;
+        let laneResult;
         try {
-          samples = graphLanePoints(oriented, graphLaneOffset(tags, direction, lane, laneCount));
+          laneResult = graphLanePoints(oriented, graphLaneOffset(tags, direction, lane, laneCount), {
+            highway: tags.highway,
+            oneway: directions.length === 1,
+            lane,
+            laneCount,
+            mainForwardPaths,
+            mainReversePaths,
+          });
         } catch {
           continue;
+        }
+        let samples = laneResult.samples;
+        if (!laneResult.aligned) {
+          samples = clearNonAlignedEndFromBus(samples, true);
+          samples = clearNonAlignedEndFromBus(samples, false);
         }
         const length = graphCum(samples.map(([x, , z]) => [x, z])).at(-1);
         if (!(length > 2)) continue;
@@ -1498,6 +1904,46 @@ function buildTrafficGraph() {
   const edgeById = new Map(edges.map((edge) => [edge.id, edge]));
   const sourceSignals = osmSource.trafficSignals ?? [];
   const signalAt = (point) => sourceSignals.some((signal) => graphDistance(point, signal.point) < 14);
+  // Pre-pass: stitch micro-gaps/overlaps (< 0.35m) at straight way/segment transitions
+  // (e.g. slight vertex bends on split arterials or river/overpass bridges) so they
+  // form clean zero-length connectors without creating backward loops.
+  const stitchedEnds = new Set();
+  const touchedEdges = new Set();
+  for (const node of nodesByKey.values()) {
+    node.signal = signalAt(node.point);
+    for (const incomingId of node.incoming) for (const outgoingId of node.outgoing) {
+      const incoming = edgeById.get(incomingId), outgoing = edgeById.get(outgoingId);
+      if (!incoming || !outgoing || incoming.id === outgoing.id) continue;
+      if (incoming.wayId === outgoing.wayId && incoming.direction !== outgoing.direction) continue;
+      const inH = graphHeading(incoming.points.map(([x, , z]) => [x, z]), false);
+      const outH = graphHeading(outgoing.points.map(([x, , z]) => [x, z]), true);
+      let delta = outH - inH;
+      while (delta > Math.PI) delta -= Math.PI * 2;
+      while (delta < -Math.PI) delta += Math.PI * 2;
+      if (Math.abs(delta) > Math.PI / 6) continue;
+      if (outgoing.lane !== Math.min(incoming.lane, outgoing.laneCount - 1)) continue;
+      const a = incoming.points.at(-1), b = outgoing.points[0];
+      const chord = Math.hypot(b[0] - a[0], b[2] - a[2]);
+      if (!(chord >= 1e-3 && chord < 0.35)) continue;
+      if (stitchedEnds.has(`${incoming.id}:end`) || stitchedEnds.has(`${outgoing.id}:start`)) continue;
+      const mid = [
+        +((a[0] + b[0]) / 2).toFixed(3),
+        +((a[1] + b[1]) / 2).toFixed(3),
+        +((a[2] + b[2]) / 2).toFixed(3),
+      ];
+      incoming.points[incoming.points.length - 1] = [...mid];
+      outgoing.points[0] = [...mid];
+      stitchedEnds.add(`${incoming.id}:end`);
+      stitchedEnds.add(`${outgoing.id}:start`);
+      touchedEdges.add(incoming);
+      touchedEdges.add(outgoing);
+    }
+  }
+  for (const edge of touchedEdges) {
+    edge.length = +graphCum(edge.points.map(([x, , z]) => [x, z])).at(-1).toFixed(3);
+    edge.physicsSafe = graphMaxHeadingJump(edge.points) < Math.PI / 4;
+  }
+
   const connectors = [];
   for (const node of nodesByKey.values()) {
     node.signal = signalAt(node.point);
@@ -1505,14 +1951,14 @@ function buildTrafficGraph() {
       const incoming = edgeById.get(incomingId), outgoing = edgeById.get(outgoingId);
       if (!incoming || !outgoing || incoming.id === outgoing.id) continue;
       if (incoming.wayId === outgoing.wayId && incoming.direction !== outgoing.direction) continue;
-      // The elevated Omiya carriageway may continue through its own split
-      // nodes, but a road from another way must never be connected there.
-      if (graphNodeOnOmiyaBridge(node.point) && incoming.wayId !== outgoing.wayId) continue;
       const inHeading = graphHeading(incoming.points.map(([x, , z]) => [x, z]), false);
       const outHeading = graphHeading(outgoing.points.map(([x, , z]) => [x, z]), true);
       let delta = outHeading - inHeading;
       while (delta > Math.PI) delta -= Math.PI * 2;
       while (delta < -Math.PI) delta += Math.PI * 2;
+      // The elevated Omiya carriageway may continue collinearly through its split
+      // way nodes, but turns onto/from other ways on the overpass span are forbidden.
+      if (graphNodeOnOmiyaBridge(node.point) && incoming.wayId !== outgoing.wayId && Math.abs(delta) > Math.PI / 6) continue;
       // A U-turn is not a legal lane connector for this traffic model. It
       // was previously falling through as a "straight" connector and could
       // send an NPC back along its incoming lane.
@@ -1552,27 +1998,27 @@ function buildTrafficGraph() {
             const tA = (dx * outVector[1] - dz * outVector[0]) / det;
             const tB = (inVector[0] * dz - inVector[1] * dx) / det;
             if (tA > 0.3 && tB > 0.3 && tA < chord * 1.6 && tB < chord * 1.6) {
-              handleA = clamp(tA * 0.5523, 0.5, chord * 0.75);
-              handleB = clamp(tB * 0.5523, 0.5, chord * 0.75);
+              handleA = clamp(tA * 0.5523, 0.4, chord * 0.75);
+              handleB = clamp(tB * 0.5523, 0.4, chord * 0.75);
             }
           }
           if (!(handleA > 0 && handleB > 0)) {
-            const fallback = clamp(chord * 0.4, 0.5, 4.5);
+            const fallback = clamp(chord * 0.35, 0.4, 3.5);
             handleA = fallback;
             handleB = fallback;
           }
         } else {
-          const straightHandle = clamp(chord * 0.35, 0.2, 4.0);
+          const straightHandle = Math.min(chord * 0.35, 4.0);
           handleA = straightHandle;
           handleB = straightHandle;
         }
       }
       const ctrlA = zeroLength
         ? [...a]
-        : [a[0] + inVector[0] * handleA, surfaceYAt(a[0], a[2]), a[2] + inVector[1] * handleA];
+        : [a[0] + inVector[0] * handleA, +(a[1] + (b[1] - a[1]) * 0.33).toFixed(3), a[2] + inVector[1] * handleA];
       const ctrlB = zeroLength
         ? [...b]
-        : [b[0] - outVector[0] * handleB, surfaceYAt(b[0], b[2]), b[2] - outVector[1] * handleB];
+        : [b[0] - outVector[0] * handleB, +(a[1] + (b[1] - a[1]) * 0.67).toFixed(3), b[2] - outVector[1] * handleB];
       const points = [a, ctrlA, ctrlB, b];
       if (!zeroLength && !graphConnectorGeometryValid(points, inVector, outVector, isTurn)) continue;
       connectors.push({
@@ -1601,28 +2047,51 @@ function buildRoadOverlays(graph, bridgeRanges = []) {
   const medians = [];
   const paired = new Set();
   const usable = (road) => ["trunk", "primary", "secondary", "tertiary"].includes(road.tags?.highway) && road.tags?.oneway && road.tags?.name;
+  const nearestPointAndTangent = (pt, points) => {
+    let best = { point: points[0], tangent: [1, 0], distance: Infinity };
+    for (let sIdx = 1; sIdx < points.length; sIdx++) {
+      const p0 = points[sIdx - 1], p1 = points[sIdx];
+      const hit = nearestOnSegment(pt[0], pt[1], p0, p1);
+      if (hit.distance < best.distance) {
+        const sdx = p1[0] - p0[0], sdz = p1[1] - p0[1];
+        const slen = Math.hypot(sdx, sdz) || 1;
+        best = { point: hit.point, tangent: [sdx / slen, sdz / slen], distance: hit.distance };
+      }
+    }
+    return best;
+  };
   for (let i = 0; i < roads.length; i++) for (let j = i + 1; j < roads.length; j++) {
     const a = roads[i], b = roads[j];
     if (!usable(a) || !usable(b) || a.tags.name !== b.tags.name) continue;
     const key = `${a.id}:${b.id}`;
     if (paired.has(key)) continue;
-    const ca = graphCum(a.points), cb = graphCum(b.points);
-    const steps = Math.min(80, Math.max(4, Math.ceil(Math.min(ca.at(-1), cb.at(-1)) / 8)));
-    const ah = graphHeading(a.points, true), bh = graphHeading(b.points, true);
-    const reverseB = Math.cos(ah - bh) < 0;
+    const ca = graphCum(a.points);
+    const steps = Math.min(80, Math.max(4, Math.ceil(ca.at(-1) / 8)));
     const rows = [];
     for (let k = 0; k <= steps; k++) {
-      const pa = graphPointAt(a.points, ca, (ca.at(-1) * k) / steps);
-      const pb = graphPointAt(b.points, cb, (cb.at(-1) * (reverseB ? steps - k : k)) / steps);
+      const targetS = (ca.at(-1) * k) / steps;
+      const pa = graphPointAt(a.points, ca, targetS);
+      const paNext = graphPointAt(a.points, ca, Math.min(ca.at(-1), targetS + 0.5));
+      const paPrev = graphPointAt(a.points, ca, Math.max(0, targetS - 0.5));
+      const adx = paNext[0] - paPrev[0], adz = paNext[1] - paPrev[1];
+      const alen = Math.hypot(adx, adz) || 1;
+      const ta = [adx / alen, adz / alen];
+      const near = nearestPointAndTangent(pa, b.points);
+      const pb = near.point;
       const dx = pb[0] - pa[0], dz = pb[1] - pa[1];
       const distance = Math.hypot(dx, dz);
       if (distance < 5 || distance > 24) continue;
+      // Pair points perpendicularly across the opposing carriageways rather than
+      // linearly along the way, so unmatched intersection extensions do not skew
+      // medians diagonally into a travel lane.
+      if (ta[0] * near.tangent[0] + ta[1] * near.tangent[1] > -0.7) continue;
+      if (Math.abs((dx * ta[0] + dz * ta[1]) / distance) > 0.35) continue;
       const wa = numberTag(a.tags.width, Math.max(1, numberTag(a.tags.lanes, 2)) * LANE_WIDTH) / 2;
       const wb = numberTag(b.tags.width, Math.max(1, numberTag(b.tags.lanes, 2)) * LANE_WIDTH) / 2;
       if (distance <= wa + wb + 0.7) continue;
       rows.push([
-        [pa[0] + (dx / distance) * wa, surfaceYAt(pa[0], pa[1]), pa[1] + (dz / distance) * wa],
-        [pb[0] - (dx / distance) * wb, surfaceYAt(pb[0], pb[1]), pb[1] - (dz / distance) * wb],
+        [pa[0] + (dx / distance) * (wa + 0.2), surfaceYAt(pa[0], pa[1]), pa[1] + (dz / distance) * (wa + 0.2)],
+        [pb[0] - (dx / distance) * (wb + 0.2), surfaceYAt(pb[0], pb[1]), pb[1] - (dz / distance) * (wb + 0.2)],
       ]);
     }
     if (rows.length < 3) continue;
@@ -1994,18 +2463,23 @@ function buildRoadOverlays(graph, bridgeRanges = []) {
   return { medians, crosswalks, footbridges, bridgeSidewalks };
 }
 
-function nearestNode(x, z, start = 0) {
+function nearestNode(x, z, start = 0, filterFn = null) {
   let best = start, bestD2 = Infinity;
   for (let i = start; i < nodes.length; i++) {
+    if (filterFn && !filterFn(i)) continue;
     const d2 = (nodes[i].x - x) ** 2 + (nodes[i].z - z) ** 2;
     if (d2 < bestD2) { bestD2 = d2; best = i; }
   }
   return { index: best, distance: Math.sqrt(bestD2) };
 }
 let stopCursor = 0;
-const stops = (route.stops ?? []).map((stop) => {
+const hasTerminusBayNodes = lane.some((item) => item.overlay === "terminus-bay");
+const stops = (route.stops ?? []).map((stop, stopIdx, stopArr) => {
   const [px, pz] = stop.platform ?? [0, 0];
-  const hit = nearestNode(px, pz, stopCursor);
+  const isTerminal = stopIdx === stopArr.length - 1;
+  const hit = isTerminal && hasTerminusBayNodes
+    ? nearestNode(px, pz, stopCursor, (i) => lane[i]?.overlay === "terminus-bay")
+    : nearestNode(px, pz, stopCursor);
   stopCursor = hit.index;
   if (hit.distance > 28) throw new Error(`OSM stop ${stop.name} is ${hit.distance.toFixed(1)}m from generated driving path`);
   const node = nodes[hit.index];
@@ -2047,6 +2521,8 @@ const stops = (route.stops ?? []).map((stop) => {
   };
 });
 
+const sectionsList = compiledSections();
+const trafficPaths = compiledTrafficPaths();
 const trafficGraph = buildTrafficGraph();
 const crosswalkExclusions = (route.elevations ?? [])
   .filter((structure) => structure.name === PATCHES.OMIYA_OVERPASS_NAME)
@@ -2055,12 +2531,14 @@ const roadOverlays = buildRoadOverlays(trafficGraph, crosswalkExclusions);
 
 function compiledBridge(bridge) {
   const result = { ...compiledRouteObject(bridge) };
-  // Keep the visible bridge rails on the same OSM span as the road deck.
-  // The generated bridge table is intentionally approximate, while the OSM
-  // bridge way gives us the authoritative endpoints for 久我橋.
-  if (bridge.name === "久我橋(桂川)" && kogaBridgeRawRange) {
-    const from = compiledS(kogaBridgeRawRange[0]);
-    const to = compiledS(kogaBridgeRawRange[1]);
+  const rawFrom = Number(bridge.s) - Number(bridge.length ?? 0) / 2;
+  const rawTo = Number(bridge.s) + Number(bridge.length ?? 0) / 2;
+  const osmRange = bridge.name === "久我橋(桂川)" && kogaBridgeRawRange
+    ? kogaBridgeRawRange
+    : osmBridgeRawRangeFor(rawFrom, rawTo);
+  if (osmRange) {
+    const from = compiledS(osmRange[0]);
+    const to = compiledS(osmRange[1]);
     result.s = +((from + to) / 2).toFixed(3);
     result.length = +(to - from).toFixed(3);
   }
@@ -2111,8 +2589,6 @@ const compiledIntersections = (route.intersections ?? [])
 const compiledTurnIntersections = (route.turnIntersections ?? [])
   .map(compiledRouteObject)
   .filter((item) => !crossesOmiyaBridge(item));
-const sectionsList = compiledSections();
-const trafficPaths = compiledTrafficPaths();
 
 function routeStateAt(s) {
   const maxS = nodes.at(-1)?.s ?? 0;
@@ -2446,6 +2922,216 @@ const compiledSignals = (route.signals ?? [])
   .map(compiledRouteObject)
   .filter((item) => !withinOmiyaBridge(item.s))
   .map(compileSignalHeads);
+
+// Build generic painted white stop lines (main route, opposing lanes, and
+// signalized graph approaches) and multi-lane divider polylines for opposite or
+// cross-street graph carriageways not covered by main trafficPaths.
+function buildStopLinesAndDividers() {
+  const stopLines = [];
+  const mainStopLines = [];
+  const routeCws = (roadOverlays.crosswalks ?? []).filter((cw) => cw.routeDistance < 12);
+  const stopBarHalfThick = 0.225;
+  const surfaceCenterAt = (s) => {
+    const clamped = clamp(s, 0, nodes.at(-1)?.s ?? 0);
+    let i = 0;
+    while (i < nodes.length - 2 && nodes[i + 1].s < clamped) i++;
+    const a = nodes[i], b = nodes[i + 1] ?? a;
+    const t = clamp((clamped - a.s) / Math.max(1e-6, b.s - a.s), 0, 1);
+    const spA = roadCenter[i], spB = roadCenter[i + 1] ?? spA;
+    let dh = b.heading - a.heading;
+    while (dh > Math.PI) dh -= 2 * Math.PI;
+    while (dh < -Math.PI) dh += 2 * Math.PI;
+    const heading = a.heading + dh * t;
+    const tx = Math.sin(heading), tz = Math.cos(heading);
+    const nx = -tz, nz = tx;
+    const nodeFrame = routeStateAt(clamped);
+    // Lateral bounds expressed relative to surfacePath (sp)
+    const busLatFromSp = (nodeFrame.x - (spA.x + (spB.x - spA.x) * t)) * nx
+      + (nodeFrame.z - (spA.z + (spB.z - spA.z) * t)) * nz;
+    return {
+      cx: spA.x + (spB.x - spA.x) * t,
+      cz: spA.z + (spB.z - spA.z) * t,
+      y: a.y + (b.y - a.y) * t,
+      tx,
+      tz,
+      nx,
+      nz,
+      minLatSp: busLatFromSp - nodeFrame.left,
+      maxLatSp: busLatFromSp + nodeFrame.right,
+      section: nodeFrame.section,
+    };
+  };
+  const makeBarQuad = (cx, cz, tx, tz, nx, nz, latA, latB) => {
+    const [la, lb] = latA < latB ? [latA, latB] : [latB, latA];
+    if (lb - la < 1.2) return null;
+    const pts = [
+      [cx + nx * la - tx * stopBarHalfThick, cz + nz * la - tz * stopBarHalfThick],
+      [cx + nx * lb - tx * stopBarHalfThick, cz + nz * lb - tz * stopBarHalfThick],
+      [cx + nx * lb + tx * stopBarHalfThick, cz + nz * lb + tz * stopBarHalfThick],
+      [cx + nx * la + tx * stopBarHalfThick, cz + nz * la + tz * stopBarHalfThick],
+    ];
+    return pts.map(([x, z]) => [+x.toFixed(3), +surfaceYAt(x, z).toFixed(3), +z.toFixed(3)]);
+  };
+
+  for (let i = 0; i < compiledSignals.length; i++) {
+    const sig = compiledSignals[i];
+    const matchedInt = compiledIntersections
+      .filter((item) => Math.abs(item.s - sig.s) <= 18)
+      .sort((a, b) => Math.abs(a.s - sig.s) - Math.abs(b.s - sig.s))[0] ?? null;
+    const matchedTurn = compiledTurnIntersections
+      .filter((item) => Math.abs(item.s - sig.s) <= 22)
+      .sort((a, b) => Math.abs(a.s - sig.s) - Math.abs(b.s - sig.s))[0] ?? null;
+    const halfCross = Math.max(4.0, Math.min(18.0, Number(matchedInt?.width ?? matchedTurn?.crossWidth ?? 8) / 2));
+    const approachCws = routeCws
+      .filter((cw) => cw.routeS < sig.s - 1.5 && cw.routeS >= sig.s - 28)
+      .sort((a, b) => b.routeS - a.routeS);
+    let stopS = sig.s - 9.0;
+    if (approachCws.length) {
+      stopS = Math.min(stopS, approachCws[0].routeS - 3.6);
+    } else if (halfCross > 5.5) {
+      stopS = Math.min(stopS, sig.s - (halfCross + 3.5));
+    }
+    stopS = clamp(stopS, Math.max(2, sig.s - 26), Math.max(2, sig.s - 5.5));
+    sig.stopLineS = +stopS.toFixed(3);
+
+    const frame = surfaceCenterAt(stopS);
+    const twoWay = !frame.section?.oneWay && (frame.section?.lanesB ?? 0) > 0;
+    const fwdLeft = Math.max(frame.minLatSp + 0.25, -Math.max(Number(frame.section?.wL) || 4, frame.minLatSp * -1) + 0.25);
+    const fwdRight = twoWay ? -0.18 : frame.maxLatSp - 0.25;
+    const fwdQuad = makeBarQuad(frame.cx, frame.cz, frame.tx, frame.tz, frame.nx, frame.nz, fwdLeft, fwdRight);
+    if (fwdQuad) {
+      const barCenter = [
+        (fwdQuad[0][0] + fwdQuad[2][0]) / 2,
+        (fwdQuad[0][2] + fwdQuad[2][2]) / 2,
+      ];
+      stopLines.push({ id: `stop-line-route-${i}`, kind: "route", routeS: +stopS.toFixed(3), quad: fwdQuad });
+      mainStopLines.push({ pt: barCenter, dir: [frame.tx, frame.tz] });
+    }
+
+    if (twoWay) {
+      const farCws = routeCws
+        .filter((cw) => cw.routeS > sig.s + 1.5 && cw.routeS <= sig.s + 28)
+        .sort((a, b) => a.routeS - b.routeS);
+      let oppS = sig.s + 9.0;
+      if (farCws.length) oppS = Math.max(oppS, farCws[0].routeS + 3.6);
+      else if (halfCross > 5.5) oppS = Math.max(oppS, sig.s + (halfCross + 3.5));
+      oppS = clamp(oppS, sig.s + 5.5, Math.min(nodes.at(-1).s - 2, sig.s + 26));
+      const oppFrame = surfaceCenterAt(oppS);
+      if (!oppFrame.section?.oneWay && (oppFrame.section?.lanesB ?? 0) > 0) {
+        const oppQuad = makeBarQuad(oppFrame.cx, oppFrame.cz, oppFrame.tx, oppFrame.tz, oppFrame.nx, oppFrame.nz, 0.18, oppFrame.maxLatSp - 0.25);
+        if (oppQuad) {
+          const oppCenter = [
+            (oppQuad[0][0] + oppQuad[2][0]) / 2,
+            (oppQuad[0][2] + oppQuad[2][2]) / 2,
+          ];
+          stopLines.push({ id: `stop-line-opp-${i}`, kind: "route-opposing", routeS: +oppS.toFixed(3), quad: oppQuad });
+          mainStopLines.push({ pt: oppCenter, dir: [-oppFrame.tx, -oppFrame.tz] });
+        }
+      }
+    }
+  }
+
+  // Signalized graph edge stop lines (cross streets & separated carriageways)
+  const graphNodeById = new Map((trafficGraph.nodes ?? []).map((n) => [n.id, n]));
+  const sigEdgeGroups = new Map();
+  for (const edge of trafficGraph.edges ?? []) {
+    const toNode = graphNodeById.get(edge.to);
+    if (!toNode?.signal || edge.length < 8 || edge.highway === "service") continue;
+    const gk = `${edge.wayId}:${edge.segmentIndex}:${edge.direction}:${edge.to}`;
+    if (!sigEdgeGroups.has(gk)) sigEdgeGroups.set(gk, []);
+    sigEdgeGroups.get(gk).push(edge);
+  }
+  let gIdx = 0;
+  for (const groupEdges of sigEdgeGroups.values()) {
+    groupEdges.sort((a, b) => a.lane - b.lane);
+    const refEdge = groupEdges[Math.floor(groupEdges.length / 2)];
+    const pts = refEdge.points ?? [];
+    if (pts.length < 2) continue;
+    const pPrev = pts.at(-2), pEnd = pts.at(-1);
+    const edx = pEnd[0] - pPrev[0], edz = pEnd[2] - pPrev[2];
+    const elen = Math.hypot(edx, edz) || 1;
+    const tx = edx / elen, tz = edz / elen;
+    const nx = -tz, nz = tx;
+    const cx = pEnd[0] - tx * 1.2, cz = pEnd[2] - tz * 1.2;
+    if (mainStopLines.some((m) =>
+      Math.hypot(m.pt[0] - cx, m.pt[1] - cz) < 12
+      && m.dir[0] * tx + m.dir[1] * tz > 0.7
+    )) continue;
+    const lats = groupEdges.map((e) => {
+      const ep = e.points.at(-1);
+      return (ep[0] - cx) * nx + (ep[2] - cz) * nz;
+    });
+    const latA = Math.min(...lats) - LANE_WIDTH * 0.44;
+    const latB = Math.max(...lats) + LANE_WIDTH * 0.44;
+    const quad = makeBarQuad(cx, cz, tx, tz, nx, nz, latA, latB);
+    if (quad) {
+      stopLines.push({ id: `stop-line-graph-${gIdx++}`, kind: "graph", quad });
+    }
+  }
+
+  // Multi-lane divider polylines for opposite separated carriageways (e.g. Kujo-dori EB)
+  // and major cross streets not already covered by main trafficPaths.
+  const mainTpSections = compiledSections();
+  const sectionHasMainDivider = (s, dirSign) => {
+    const sec = mainTpSections.find((item) => s >= item.from && s < item.to) ?? mainTpSections.at(-1);
+    return dirSign > 0 ? (sec?.lanesF ?? 1) > 1 : (sec?.lanesB ?? 0) > 1;
+  };
+  const multiLaneGroups = new Map();
+  for (const edge of trafficGraph.edges ?? []) {
+    if ((edge.laneCount ?? 1) < 2 || edge.length < 12) continue;
+    const gk = `${edge.wayId}:${edge.segmentIndex}:${edge.direction}`;
+    if (!multiLaneGroups.has(gk)) multiLaneGroups.set(gk, []);
+    multiLaneGroups.get(gk).push(edge);
+  }
+  const graphLaneDividers = [];
+  for (const [gk, groupEdges] of multiLaneGroups) {
+    groupEdges.sort((a, b) => a.lane - b.lane);
+    if (groupEdges.length < 2) continue;
+    const refMid = groupEdges[0].points[Math.floor(groupEdges[0].points.length / 2)];
+    const refPrev = groupEdges[0].points[0], refLast = groupEdges[0].points.at(-1);
+    const rdx = refLast[0] - refPrev[0], rdz = refLast[2] - refPrev[2];
+    const rlen = Math.hypot(rdx, rdz) || 1;
+    // Check if this group overlaps the bus carriageway where main trafficPaths already draw its divider
+    let nearMain = false;
+    let bestD = Infinity, bestS = 0, bestDot = 0;
+    for (let i = 0; i < roadCenter.length; i += 2) {
+      const d = Math.hypot(roadCenter[i].x - refMid[0], roadCenter[i].z - refMid[2]);
+      if (d < bestD) {
+        bestD = d;
+        bestS = nodes[i].s;
+        bestDot = (rdx / rlen) * Math.sin(nodes[i].heading) + (rdz / rlen) * Math.cos(nodes[i].heading);
+      }
+    }
+    if (bestD < 7.5 && Math.abs(bestDot) > 0.75 && sectionHasMainDivider(bestS, bestDot > 0 ? 1 : -1)) {
+      nearMain = true;
+    }
+    if (nearMain) continue;
+    for (let l = 0; l < groupEdges.length - 1; l++) {
+      const ea = groupEdges[l], eb = groupEdges[l + 1];
+      if (eb.lane !== ea.lane + 1) continue;
+      const ca = graphCum(ea.points.map(([x, , z]) => [x, z]));
+      const cb = graphCum(eb.points.map(([x, , z]) => [x, z]));
+      const total = Math.min(ca.at(-1), cb.at(-1));
+      if (total < 10) continue;
+      const divPts = [];
+      for (let d = 0; ; d += 2) {
+        const dd = Math.min(d, total);
+        const pa = graphPointAt(ea.points.map(([x, , z]) => [x, z]), ca, dd);
+        const pb = graphPointAt(eb.points.map(([x, , z]) => [x, z]), cb, dd);
+        const mx = (pa[0] + pb[0]) / 2, mz = (pa[1] + pb[1]) / 2;
+        divPts.push([+mx.toFixed(3), +surfaceYAt(mx, mz).toFixed(3), +mz.toFixed(3)]);
+        if (dd >= total) break;
+      }
+      if (divPts.length >= 2) {
+        graphLaneDividers.push({ id: `div-${gk}-${l}`, points: divPts });
+      }
+    }
+  }
+  return { stopLines, graphLaneDividers };
+}
+const extraMarkings = buildStopLinesAndDividers();
+roadOverlays.stopLines = extraMarkings.stopLines;
+roadOverlays.graphLaneDividers = extraMarkings.graphLaneDividers;
 // A PLATEAU seam may cut across a compiled NPC lane even when the adjacent
 // polygons describe one physical carriageway.  Emit the same narrow visible
 // asphalt patch used for the bus footprint; never collapse two lane centres
@@ -2490,7 +3176,15 @@ function compiledStructure(structure) {
   };
   // Flat river decks use PLATEAU terrain only; structural clearance is not
   // carried into the runtime route metadata.
-  if (structure.profile === "flat-deck") delete result.height;
+  if (structure.profile === "flat-deck") {
+    delete result.height;
+    const ids = [...new Set(
+      nodes
+        .filter((n) => n.surfaceId && n.s >= result.from && n.s <= result.to)
+        .map((n) => String(n.surfaceId).replace(/#.*$/, "")),
+    )];
+    if (ids.length) result.sourceFeatureIds = ids;
+  }
   return result;
 }
 

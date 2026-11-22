@@ -24,6 +24,9 @@
   "WAY_LANE_OVERRIDES": {
     "157229578": { "lanesF": 2, "lanesB": 0, "oneWay": true, "center": "none", "wL": 3.6, "wR": 3.6 },
     "968042876": { "lanesF": 2, "lanesB": 0, "oneWay": true, "center": "none", "wL": 3.6, "wR": 3.6 },
+    "968070115": { "lanesF": 2, "lanesB": 0, "oneWay": true, "center": "none", "wL": 3.6, "wR": 3.6 },
+    "968070112": { "lanesF": 2, "lanesB": 0, "oneWay": true, "center": "none", "wL": 3.6, "wR": 3.6 },
+    "968070111": { "lanesF": 2, "lanesB": 0, "oneWay": true, "center": "none", "wL": 3.6, "wR": 3.6 },
     "273254459": { "lanesF": 2, "lanesB": 2, "oneWay": false, "center": "line", "wL": 7.2, "wR": 7.2 },
     "26950287": { "lanesF": 1, "lanesB": 1, "oneWay": false, "center": "line", "wL": 4.8, "wR": 4.8 },
     "462459519": { "lanesF": 1, "lanesB": 1, "oneWay": false, "center": "line", "wL": 4.8, "wR": 4.8 },
@@ -32,6 +35,17 @@
     "1219710803": { "lanesF": 1, "lanesB": 1, "oneWay": false, "center": "line", "wL": 4.6, "wR": 4.6 },
     "531155907": { "lanesF": 1, "lanesB": 1, "oneWay": false, "center": "line", "wL": 4.6, "wR": 4.6 },
     "296206310": { "lanesF": 1, "lanesB": 1, "oneWay": false, "center": "line", "wL": 4.6, "wR": 4.6 }
+  },
+  "TERMINUS_TURNAROUND": {
+    "stopName": "久我石原町",
+    "entryXOffsetM": 23.0,
+    "approachZOffsetM": -4.5,
+    "entryRadiusM": 7.5,
+    "southTurnZOffsetM": 9.0,
+    "loopRadiusM": 6.9,
+    "stopXOffsetM": 1.7,
+    "stopEndZOffsetM": -1.5,
+    "note": "Offsets [dx, dz] relative to route.terminalStop [stopX, stopZ] (-1594.23, 3005.94): sweeps off westbound Route 202 via left turn (r1=7.5 -> dx=+15.5) then clockwise U-turn (r2=6.9 -> dz=+15.9 -> dx=+1.7) ending due north (-Z) beside the bus stop shelter/pole."
   },
   "EXTRA_CROSSWALKS": [
     {

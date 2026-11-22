@@ -36,7 +36,7 @@ const SCRUB_AREA_M2 = NATURE_DEFS.TREE_DENSITY.scrubAreaM2PerTree;
  * 川は bridges の s 位置で経路と直交する帯として描く。川底は RIVER_DEPTH ぶん低く、
  * 土手は段状(芝→護岸)に地表から水面まで下る。
  */
-export function buildNature(scene, path) {
+export function buildNature(scene, path, options = {}) {
   const g = new THREE.Group();
   scene.add(g);
   const exclusions = [];
@@ -93,8 +93,38 @@ export function buildNature(scene, path) {
   function waterPolygonGeometry(polygon) {
     const shape = polygon.map(([x, z]) => new THREE.Vector2(x, z));
     const triangles = THREE.ShapeUtils.triangulateShape(shape, []);
-    const positions = polygon.flatMap(([x, z]) => [x, terrainHeightAtWorld(x, z) - RIVER_DEPTH + 0.05, z]);
-    const indices = triangles.flatMap((triangle) => triangle);
+    const waterYAt = (x, z) => terrainHeightAtWorld(x, z) - RIVER_DEPTH + 0.05;
+    const positions = [];
+    const indices = [];
+    const addTriangle = (a, b, c, depth = 0) => {
+      const ya = waterYAt(a[0], a[1]);
+      const yb = waterYAt(b[0], b[1]);
+      const yc = waterYAt(c[0], c[1]);
+      const maxEdge = Math.max(
+        Math.hypot(b[0] - a[0], b[1] - a[1]),
+        Math.hypot(c[0] - b[0], c[1] - b[1]),
+        Math.hypot(a[0] - c[0], a[1] - c[1]),
+      );
+      const center = [(a[0] + b[0] + c[0]) / 3, (a[1] + b[1] + c[1]) / 3];
+      const planarY = (ya + yb + yc) / 3;
+      const targetY = waterYAt(center[0], center[1]);
+      if (depth < 4 && (maxEdge > 80 || Math.abs(targetY - planarY) > 0.25)) {
+        const ab = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+        const bc = [(b[0] + c[0]) / 2, (b[1] + c[1]) / 2];
+        const ca = [(c[0] + a[0]) / 2, (c[1] + a[1]) / 2];
+        addTriangle(a, ab, ca, depth + 1);
+        addTriangle(ab, b, bc, depth + 1);
+        addTriangle(ca, bc, c, depth + 1);
+        addTriangle(ab, bc, ca, depth + 1);
+        return;
+      }
+      const base = positions.length / 3;
+      positions.push(a[0], ya, a[1], b[0], yb, b[1], c[0], yc, c[1]);
+      indices.push(base, base + 1, base + 2);
+    };
+    for (const [i0, i1, i2] of triangles) {
+      addTriangle(polygon[i0], polygon[i1], polygon[i2]);
+    }
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
     geometry.setIndex(indices);
@@ -455,9 +485,16 @@ export function buildNature(scene, path) {
     }
   }
 
+  const bridgeRanges = [
+    ...(route.bridges ?? []).map((b) => ({ from: b.s - (b.length ?? 0) / 2 - 4, to: b.s + (b.length ?? 0) / 2 + 4 })),
+    ...(route.elevations ?? [])
+      .filter((e) => e.profile === "flat-deck" || Number(e.height) > 0)
+      .map((e) => ({ from: Number(e.from) - 4, to: Number(e.to) + 4 })),
+  ];
   for (let s = NATURE_DEFS.STREET_TREES.startS; s < path.length * NATURE_DEFS.STREET_TREES.routeFraction; s += NATURE_DEFS.STREET_TREES.stepM) {
     if (railZones.some((z) => s > z.from && s < z.to)) continue;
     if (noSidewalkZones.some((z) => s > z.from && s < z.to)) continue;
+    if (bridgeRanges.some((z) => s >= z.from && s <= z.to)) continue;
     for (const side of [-1, 1]) {
       if (((s / NATURE_DEFS.STREET_TREES.stepM) | 0) % 2 === (side === -1 ? 0 : 1)) continue; // 互い違い
       const [px, pz] = path.getPoint(s);
@@ -507,10 +544,68 @@ export function buildNature(scene, path) {
     const v = Math.sin(x * 127.1 + z * 311.7 + k * 74.7) * 43758.5453;
     return v - Math.floor(v);
   };
-  loadProps().then((lib) => {
+  const buildPolyGrid = (polygons, cellSize = 80) => {
+    const grid = new Map();
+    const entries = [];
+    for (const pts of polygons) {
+      if (!pts || pts.length < 3) continue;
+      let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+      for (const [x, z] of pts) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (z < minZ) minZ = z;
+        if (z > maxZ) maxZ = z;
+      }
+      const entry = { pts, minX, maxX, minZ, maxZ };
+      entries.push(entry);
+      const ix0 = Math.floor(minX / cellSize), ix1 = Math.floor(maxX / cellSize);
+      const iz0 = Math.floor(minZ / cellSize), iz1 = Math.floor(maxZ / cellSize);
+      for (let iz = iz0; iz <= iz1; iz++) {
+        for (let ix = ix0; ix <= ix1; ix++) {
+          const key = `${ix}:${iz}`;
+          let bucket = grid.get(key);
+          if (!bucket) { bucket = []; grid.set(key, bucket); }
+          bucket.push(entry);
+        }
+      }
+    }
+    return {
+      contains(x, z) {
+        const bucket = grid.get(`${Math.floor(x / cellSize)}:${Math.floor(z / cellSize)}`);
+        if (!bucket) return false;
+        for (const e of bucket) {
+          if (x >= e.minX && x <= e.maxX && z >= e.minZ && z <= e.maxZ && pointInPolygon(x, z, e.pts)) {
+            return true;
+          }
+        }
+        return false;
+      },
+    };
+  };
+
+  const greenGrid = buildPolyGrid((route.osmVegetation?.greenAreas ?? []).map((a) => cleanPolygon(a.polygon)));
+  const waterGrid = buildPolyGrid((route.waterPolygons ?? []).map((w) => cleanPolygon(w.polygon)));
+
+  Promise.all([loadProps(), options?.roadSurfacesPromise ?? Promise.resolve(null)]).then(([lib, surfaces]) => {
+    const roadGrid = buildPolyGrid(
+      (surfaces?.roadFeatures ?? []).map((f) => cleanPolygon((f.polygon ?? []).map(([x, , z]) => [x, z]))),
+    );
+    const isClearTreePlacement = (x, z) => {
+      if (waterGrid.contains(x, z)) return false;
+      const { s: ts, lateral: tlat } = path.closestS([x, z]);
+      const bounds = driveBoundsAt(ts);
+      if (bridgeRanges.some((r) => ts >= r.from && ts <= r.to) && Math.abs(tlat) < Math.max(bounds.left, bounds.right) + 5) {
+        return false;
+      }
+      if (roadGrid.contains(x, z) && !greenGrid.contains(x, z)) return false;
+      return true;
+    };
+    const placedTrees = items.filter(([x, z]) => isClearTreePlacement(x, z));
+    const placedScrubs = scrubItems.filter(([x, z]) => isClearTreePlacement(x, z));
+
     const dummy = new THREE.Object3D();
     ["TreeA", "TreeB"].forEach((name, vi) => {
-      const own = items.filter((_, i) => i % 2 === vi); // 2種を交互に
+      const own = placedTrees.filter((_, i) => i % 2 === vi); // 2種を交互に
       if (!own.length) return;
       lib.getObjectByName(name).traverse((part) => {
         if (!part.isMesh) return;
@@ -534,15 +629,15 @@ export function buildNature(scene, path) {
     // OSM natural=scrub は樹木ではなく、地表近くの低木群として描く。
     // 既存のTreeA/TreeBを縮小して代用せず、低く横に広がる簡易メッシュを
     // InstancedMeshでまとめて生成する。
-    if (scrubItems.length) {
+    if (placedScrubs.length) {
       const shrubGeometry = new THREE.IcosahedronGeometry(1, 1);
       const shrubMaterial = mat(0x58743b);
       const shrubs = new THREE.InstancedMesh(
         shrubGeometry,
         shrubMaterial,
-        scrubItems.length,
+        placedScrubs.length,
       );
-      scrubItems.forEach(([x, z], i) => {
+      placedScrubs.forEach(([x, z], i) => {
         dummy.position.set(x, terrainHeightAtWorld(x, z) + 0.8, z);
         dummy.rotation.set(
           (rnd(x, z, 3) - 0.5) * 0.12,

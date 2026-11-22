@@ -448,7 +448,7 @@ export function createTrafficAgents(scene, path, runtime, events = {}, signalsAp
     let dist = 0;
     for (let i = 0; i < cursor.entries.length && dist < maxDist; i++) {
       const item = cursor.entries[i].item;
-      if (item.connector && item.connector.right) {
+      if (i > 0 && dist > 0.5 && item.connector && item.connector.right) {
         return { connector: item.connector, distToEntry: dist };
       }
       dist += i === 0 ? cursor.remainingOnCurrent() : item.length;
@@ -537,21 +537,29 @@ export function createTrafficAgents(scene, path, runtime, events = {}, signalsAp
         let yieldingToCrossNpc = false;
         let blockingNpc = null;
 
-        // 自車バスの前後端・中心を前方経路へ射影し、同方向だけでなく交差・右左折中のバスも回避する。
+        // 自車バスの前後端・中心・予測到達点を前方経路へ射影し、同方向・対向はみ出し・交差/右左折中のバスを回避する。
         if (horizontalDistanceToBus(agent, busPoint) < 80
           && Math.abs(agent.outer.position.y - (bus.y - 1.5)) < 3.0) {
+          const inConnector = Boolean(current.connector);
           const fwd = [Math.sin(bus.heading), Math.cos(bus.heading)];
           const busPts = [
-            [bus.x, bus.z],
-            [bus.x + fwd[0] * 4.8, bus.z + fwd[1] * 4.8],
-            [bus.x - fwd[0] * 4.8, bus.z - fwd[1] * 4.8],
+            { pt: [bus.x, bus.z], predictive: false },
+            { pt: [bus.x + fwd[0] * 4.8, bus.z + fwd[1] * 4.8], predictive: false },
+            { pt: [bus.x - fwd[0] * 4.8, bus.z - fwd[1] * 4.8], predictive: false },
           ];
-          for (const [bx, bz] of busPts) {
+          if (!inConnector && bus.speed > 2.0) {
+            busPts.push(
+              { pt: [bus.x + fwd[0] * (4.8 + bus.speed * 1.0), bus.z + fwd[1] * (4.8 + bus.speed * 1.0)], predictive: true },
+              { pt: [bus.x + fwd[0] * (4.8 + bus.speed * 2.0), bus.z + fwd[1] * (4.8 + bus.speed * 2.0)], predictive: true },
+            );
+          }
+          const oppClearance = 1.19 + agent.width * 0.5 + 0.35;
+          for (const { pt: [bx, bz], predictive } of busPts) {
             const busProj = agent.cursor.projectPoint(bx, bz, 55);
             if (!busProj) continue;
             const seg = [Math.sin(busProj.segmentHeading), Math.cos(busProj.segmentHeading)];
             const dot = fwd[0] * seg[0] + fwd[1] * seg[1];
-            if (dot > 0.7) {
+            if (!predictive && dot > 0.7) {
               if (busProj.lateral < 2.3) {
                 const busGap = busProj.arcAhead - (agent.length + 2.5) * 0.5;
                 if (busGap < gap) {
@@ -561,13 +569,59 @@ export function createTrafficAgents(scene, path, runtime, events = {}, signalsAp
                   if (bus.speed < 0.5) stoppedForSignalOrBus = true;
                 }
               }
-            } else if (busProj.arcAhead > 0.5 && busProj.arcAhead < 32 && busProj.lateral < 3.6) {
+            } else if (inConnector) {
+              if (busProj.arcAhead > 0.2 && busProj.arcAhead < agent.length * 0.5 + 3.5 && busProj.lateral < 2.6) {
+                const busGap = Math.max(0, busProj.arcAhead - agent.length * 0.5 - 1.5);
+                if (busGap < gap) {
+                  gap = busGap;
+                  leadSpeed = 0;
+                  leadIsNpc = false;
+                  stoppedForSignalOrBus = true;
+                }
+              }
+            } else if (!predictive && dot < -0.7) {
+              if (busProj.arcAhead > 0.5 && busProj.arcAhead < 28 && busProj.lateral < oppClearance) {
+                const busGap = Math.max(0, busProj.arcAhead - agent.length * 0.5 - 2.0);
+                if (busGap < gap) {
+                  gap = busGap;
+                  leadSpeed = 0;
+                  leadIsNpc = false;
+                  stoppedForSignalOrBus = true;
+                }
+              }
+            } else if (Math.abs(dot) <= 0.7 && busProj.arcAhead > 0.5 && busProj.arcAhead < 32 && busProj.lateral < 3.6) {
               const busGap = Math.max(0, busProj.arcAhead - agent.length * 0.5 - 2.0);
               if (busGap < gap) {
                 gap = busGap;
                 leadSpeed = 0;
                 leadIsNpc = false;
                 stoppedForSignalOrBus = true;
+              }
+            }
+          }
+
+          // 対向車線から交差点へ右折進入する際、直進接近中の自車バスへ譲る(進入前のみ)。
+          const busRightTurn = findUpcomingRightTurn(agent.cursor, 28);
+          if (busRightTurn) {
+            const rightNode = runtime.nodeById.get(busRightTurn.connector.node);
+            if (rightNode?.point) {
+              const ownFromEdge = runtime.edgeById.get(busRightTurn.connector.from);
+              const ownApproachH = ownFromEdge
+                ? (runtime.edgeEndHeading.get(ownFromEdge.id) ?? agent.outer.rotation.y)
+                : agent.outer.rotation.y;
+              const oppDot = fwd[0] * Math.sin(ownApproachH) + fwd[1] * Math.cos(ownApproachH);
+              const busDistToNode = Math.hypot(bus.x - rightNode.point[0], bus.z - rightNode.point[1]);
+              const busAheadTowardNode = (rightNode.point[0] - bus.x) * fwd[0]
+                + (rightNode.point[1] - bus.z) * fwd[1];
+              const busYieldDist = Math.max(36, bus.speed * 4.0 + 16);
+              if (oppDot < -0.5 && busDistToNode < busYieldDist && busAheadTowardNode > -6) {
+                const yieldGap = Math.max(0, busRightTurn.distToEntry - agent.length * 0.5 - 1.5);
+                if (yieldGap < gap) {
+                  gap = yieldGap;
+                  leadSpeed = 0;
+                  leadIsNpc = false;
+                  stoppedForSignalOrBus = true;
+                }
               }
             }
           }
@@ -809,31 +863,38 @@ export function createTrafficAgents(scene, path, runtime, events = {}, signalsAp
     },
 
     /**
-     * autoDrive用: グラフ上のNPCのうち、本線上で自車と同方向・同車線に
-     * 近い車両までの実車間を返す。交差道路上の車は進行方向が一致しない
-     * ため除外し、交差点付近の横切り車を同行車と誤認しない。
+     * autoDrive用: グラフ上のNPCのうち、本線上で自車と同方向・同車線に近い車両、
+     * または前方交差点のコネクタ上で自車の進路を占有中の車両までの実車間を返す。
      */
     leadGapAhead(busS, busLat, maxDist = 80) {
       let best = null;
+      const busY = elevationAt(busS);
       for (const agent of agents) {
         if (!agent.active) continue;
         const current = agent.cursor?.current;
-        if (!current || current.connector) continue;
+        if (!current) continue;
+        // 高架とアンダーパスのように平面上で近くても高さが違う道路を除外する。
+        if (Math.abs(agent.outer.position.y - busY) > 2.5) continue;
         const projection = path.closestS(
           [agent.outer.position.x, agent.outer.position.z],
           busS,
           Math.max(150, maxDist + 50),
         );
-        if (projection.s <= busS || projection.s - busS > maxDist) continue;
-        if (projection.dist > 9 || Math.abs(projection.lateral - busLat) > 2.5) continue;
+        if (projection.s <= busS || projection.s - busS > maxDist || projection.dist > 9) continue;
         const tangent = path.getTangent(projection.s);
         const heading = agent.outer.rotation.y;
         const forward = [Math.sin(heading), Math.cos(heading)];
-        if (forward[0] * tangent[0] + forward[1] * tangent[1] < 0.8) continue;
-        // 高架とアンダーパスのように平面上で近くても高さが違う道路を除外する。
-        const busY = elevationAt(busS);
-        if (Math.abs(agent.outer.position.y - busY) > 2.5) continue;
-        const gap = projection.s - busS - (agent.length + 11.4) * 0.5;
+        const dot = forward[0] * tangent[0] + forward[1] * tangent[1];
+        const latDiff = Math.abs(projection.lateral - busLat);
+        const sameLaneMatch = !current.connector && dot >= 0.8 && latDiff <= 2.5;
+        const sinCross = Math.sqrt(Math.max(0, 1 - dot * dot));
+        const occupyHalfW = 1.2 + Math.abs(dot) * (agent.width * 0.5) + sinCross * (agent.length * 0.5);
+        const corridorOccupy = (projection.s - busS) < Math.min(maxDist, 45)
+          && latDiff < occupyHalfW
+          && !(dot < -0.75 && latDiff > 2.25);
+        if (!sameLaneMatch && !corridorOccupy) continue;
+        const npcHalfAlong = Math.abs(dot) * (agent.length * 0.5) + sinCross * (agent.width * 0.5);
+        const gap = projection.s - busS - (11.4 * 0.5 + npcHalfAlong);
         if (gap > 0 && gap < maxDist && (best == null || gap < best)) best = gap;
       }
       return best;

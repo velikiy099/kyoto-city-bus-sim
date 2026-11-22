@@ -121,6 +121,12 @@ export function createGraphRuntime(trafficGraph) {
   const regionMultiplier = (edgeId) => regionMultipliers.get(edgeId) ?? defaultRegionMultiplier;
 
   const spawnEdges = [];
+  const spawnEdgeIds = new Set();
+  const addSpawnEdge = (edge) => {
+    if (!edge || spawnEdgeIds.has(edge.id) || !paths.has(edge.id) || !continuingEdgeIds.has(edge.id)) return;
+    spawnEdgeIds.add(edge.id);
+    spawnEdges.push(edge);
+  };
   const sinkNodeIds = new Set();
   const isDeadEndNode = (node) => {
     const incoming = node.incoming ?? [];
@@ -141,11 +147,23 @@ export function createGraphRuntime(trafficGraph) {
     const deadEnd = isDeadEndNode(node);
     if (outgoing.length > 0 && (incoming.length === 0 || deadEnd)) {
       for (const edgeId of outgoing) {
-        const edge = edgeById.get(edgeId);
-        if (edge && paths.has(edge.id) && continuingEdgeIds.has(edge.id)) spawnEdges.push(edge);
+        addSpawnEdge(edgeById.get(edgeId));
       }
     }
     if (incoming.length > 0 && (outgoing.length === 0 || deadEnd)) sinkNodeIds.add(node.id);
+  }
+  // Include any continuing-core edge that receives zero continuing incoming connectors
+  // (e.g. a boundary lane of a multi-lane carriageway whose start node also touches
+  // a non-continuing edge or side street), preventing single-lane starvation.
+  const continuingInDegree = new Map();
+  for (const connector of graph.connectors ?? []) {
+    if (!continuingEdgeIds.has(connector.from) || !continuingEdgeIds.has(connector.to)) continue;
+    continuingInDegree.set(connector.to, (continuingInDegree.get(connector.to) ?? 0) + 1);
+  }
+  for (const edgeId of continuingEdgeIds) {
+    if ((continuingInDegree.get(edgeId) ?? 0) === 0) {
+      addSpawnEdge(edgeById.get(edgeId));
+    }
   }
 
   const sample = (item, distance) => {
