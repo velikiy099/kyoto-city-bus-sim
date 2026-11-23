@@ -10,6 +10,7 @@ data/raw/plateau/
 data/work/plateau/
 .venv-world/
 .plateau-osm-backup/
+*.zip
 
 # OSM/PLATEAU由来の生成データ(git管理外。再生成: npm run build-data / npm run world:build)
 /public/world/generated/
