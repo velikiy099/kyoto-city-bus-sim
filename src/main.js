@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import "./style.css";
+import ROUTE_SEMANTICS from "./data/definitions/route-semantics.json" with { type: "json" };
 import { CFG } from "./config.js";
 import {
   route,
@@ -11,6 +12,8 @@ import {
   roadAttachmentHalfWidthAt,
   gradeAt,
   driveBoundsAt,
+  hasCenterlineAt,
+  centerlineLateralAt,
   turnExclusions,
 } from "./route/routeData.js";
 import { input } from "./input.js";
@@ -23,7 +26,7 @@ import {
   roadHeightAtWorld,
 } from "./world/declarative/continuousTerrain.js";
 import { setupDebug, dbg, autoDriveInput, recordFrame } from "./debug.js";
-import { initHud, updateHud } from "./ui/hud.js";
+import { initHud, updateHud, clearHudMessages } from "./ui/hud.js";
 import { createMinimap } from "./ui/minimap.js";
 import { showTitle, showResult } from "./ui/screens.js";
 import { buildStops } from "./game/stops.js";
@@ -40,7 +43,7 @@ import {
 import { buildLandmarks } from "./world/landmarks.js";
 import { buildNature } from "./world/nature.js";
 import { buildRailways } from "./world/railways.js";
-import { buildTraffic } from "./world/traffic.js";
+import { buildTraffic } from "./world/traffic/index.js";
 import { buildWorldScenery } from "./world/declarative/buildWorldScenery.js";
 import * as sfx from "./audio/sfx.js";
 import {
@@ -54,7 +57,7 @@ import {
 const STEP = 1 / 60;
 const DOOR_OFFSET = CFG.bus.wheelbase + 1.3; // 後軸→前扉
 const path = route.path;
-const kujoOmiyaS = route.stops.find((stop) => stop.name === "九条大宮")?.s ?? Infinity;
+const kujoOmiyaS = route.stops.find((stop) => stop.name === ROUTE_SEMANTICS.headsignPhaseSwitchStop)?.s ?? Infinity;
 configureWorldHeightSamplers(
   path,
   terrainElevationAt,
@@ -81,6 +84,7 @@ scene.add(sun);
 
 const baseTerrain = buildContinuousTerrain(path, route.bridges, route.rivers);
 scene.add(baseTerrain);
+let railwaysView = null;
 void buildWorldScenery(scene, path, route, {
   buildRailways,
   buildLandmarks,
@@ -90,6 +94,8 @@ void buildWorldScenery(scene, path, route, {
   terrainHeightAtWorld,
   roadHeightAtWorld,
   baseTerrain,
+}).then((res) => {
+  railwaysView = res?.railways ?? null;
 });
 
 // ---------------------------------------------------------------- bus / game objects
@@ -130,6 +136,7 @@ const traffic = buildTraffic(scene, path, {
     scoring.add(CFG.score.redLight, "信号無視!");
   },
 });
+let completeTimer = null;
 const ops = createOps({
   bus,
   route,
@@ -151,23 +158,37 @@ const ops = createOps({
     },
     onComplete() {
       state.completed = true;
+      bus.v = 0;
+      bus.throttleState = 0;
+      bus.accel = 0;
+      bus.latAccel = 0;
+      bus.throttleLocked = true;
+      dbg.autoDrive = false;
+      const summary = scoring.resultSummary();
+      const arrivalClock = state.clock;
+      const carried = pax.totalCarried;
+      const fare = state.fareTotal;
+      const d = delayInfo(arrivalClock, path.length - 1);
       announceTerminal();
-      setTimeout(() => {
+      if (completeTimer) clearTimeout(completeTimer);
+      completeTimer = setTimeout(() => {
+        completeTimer = null;
+        if (!state.completed) return;
         state.phase = "RESULT";
-        const d = delayInfo(state.clock, path.length - 1);
         showResult({
-          score: state.score,
-          rank: scoring.rank(),
-          carried: pax.totalCarried,
-          fare: state.fareTotal,
-          clock: state.clock,
+          score: summary.score,
+          rank: summary.rank,
+          carried,
+          fare,
+          clock: arrivalClock,
           schedArrival: schedule[schedule.length - 1].time,
           delayText: d.text,
-          breakdown: [...scoring.breakdown.entries()],
+          breakdown: summary.breakdown,
         });
       }, 1200);
     },
   },
+  isAutoDrive: () => dbg.autoDrive,
 });
 
 function placeBusAtS(s) {
@@ -281,6 +302,34 @@ function autoDockLateralAt(s, stop) {
   return stop.dockLateral * (1 - smoothstep01((s - target) / depart));
 }
 
+function guideSampleLateralAt(samples, s) {
+  if (!samples?.length) return 0;
+  if (s <= samples[0][0]) return samples[0][1];
+  if (s >= samples.at(-1)[0]) return samples.at(-1)[1];
+  let lo = 0, hi = samples.length - 1;
+  while (lo + 1 < hi) {
+    const mid = (lo + hi) >> 1;
+    if (samples[mid][0] <= s) lo = mid;
+    else hi = mid;
+  }
+  const a = samples[lo], b = samples[hi];
+  const t = (s - a[0]) / Math.max(1e-6, b[0] - a[0]);
+  return a[1] + (b[1] - a[1]) * t;
+}
+
+function autoLaneGuideLateralAt(s) {
+  for (const guide of route.autoLaneGuides ?? []) {
+    if (s < guide.fromS || s > guide.toS) continue;
+    const baseLat = guideSampleLateralAt(guide.samples, s);
+    if (s < guide.holdFromS) {
+      return baseLat * smoothstep01((s - guide.fromS) / Math.max(1e-6, guide.holdFromS - guide.fromS));
+    }
+    if (s <= guide.holdToS) return baseLat;
+    return baseLat * (1 - smoothstep01((s - guide.holdToS) / Math.max(1e-6, guide.toS - guide.holdToS)));
+  }
+  return 0;
+}
+
 // ---------------------------------------------------------------- game tick (fixed step)
 function tick(dt, ePressed) {
   let axes;
@@ -291,14 +340,24 @@ function tick(dt, ePressed) {
     const target = autoStop?.target ?? autoStopTargetS();
     let effTarget = target;
     let vCap = Infinity;
+    const lookaheadS = state.s + Math.max(8, Math.min(30, 6 + bus.v * 1.8));
+    const dockLat = autoDockLateralAt(lookaheadS, autoStop?.stop);
+    const guideLat = autoLaneGuideLateralAt(lookaheadS);
+    const targetLat = Math.abs(dockLat) > 1e-3 ? dockLat : guideLat;
     // 赤信号の停止線が停留所より手前ならそちらを優先
     const redS = traffic.redStopTarget(state.s, bus.v);
     if (redS != null && (effTarget == null || redS < effTarget))
       effTarget = redS;
-    // 前方の同行車との車間を保つ(信号待ち行列への追突防止)
-    const lead = traffic.leadGapAhead(state.s, state.lateral);
+    // 前方の同行車との車間を保つ(信号待ち行列への追突や車線変更中の接触を防止)
+    let lead = traffic.leadGapAhead(state.s, state.lateral);
+    if (Math.abs(targetLat - state.lateral) > 0.35) {
+      const targetLead = traffic.leadGapAhead(state.s, targetLat);
+      if (targetLead != null && (lead == null || targetLead < lead)) {
+        lead = targetLead;
+      }
+    }
     if (lead != null) {
-      const followS = state.s + lead - 11;
+      const followS = state.s + Math.max(0, lead - 4.0);
       if (effTarget == null || followS < effTarget) effTarget = followS;
     }
     axes = autoDriveInput(
@@ -306,10 +365,7 @@ function tick(dt, ePressed) {
       path,
       state.s,
       effTarget,
-      autoDockLateralAt(
-        state.s + Math.max(8, Math.min(30, 6 + bus.v * 1.8)),
-        autoStop?.stop,
-      ),
+      targetLat,
       vCap,
     );
     // ドア操作の自動化: プロンプトが出たら即 E
@@ -333,22 +389,36 @@ function tick(dt, ePressed) {
 
   state.clock += dt;
   ops.update(dt, ePressed);
-  scoring.tick(dt, bus, speedLimitAt(state.s));
-  // 衝突判定は後軸でなく車体中心基準
+  if (state.completed) return;
+  // 衝突判定・中央線判定は後軸でなく車体中心基準
   const [bfx, bfz] = bus.forward;
+  const centerOffset = CFG.bus.length / 2 - CFG.bus.rearOverhang;
+  const hasCenterline = hasCenterlineAt(state.s);
+  const centerLateral = hasCenterline
+    ? centerlineLateralAt(
+        bus.x + bfx * centerOffset,
+        bus.z + bfz * centerOffset,
+        state.s,
+      )
+    : -Infinity;
+  scoring.tick(dt, bus, speedLimitAt(state.s), {
+    hasCenterline,
+    centerLateral,
+  });
   traffic.update(
     dt,
     state.s,
     [
-      bus.x + bfx * 3.15,
-      bus.z + bfz * 3.15,
-      surfaceElevationAt(state.s, bus.x + bfx * 3.15, bus.z + bfz * 3.15) + 1.6,
+      bus.x + bfx * centerOffset,
+      bus.z + bfz * centerOffset,
+      surfaceElevationAt(state.s, bus.x + bfx * centerOffset, bus.z + bfz * centerOffset) + 1.6,
     ],
     bus.v,
     bus.heading,
     state.lateral,
   );
   stopsView.updateWalkers(dt);
+  railwaysView?.update?.(dt);
 }
 
 // ---------------------------------------------------------------- pause overlay
@@ -369,28 +439,48 @@ function setPaused(on) {
 
 // ---------------------------------------------------------------- return to title
 function returnToTitle() {
-  // ゲーム状態をリセットしてタイトル画面を再表示する
+  // ゲーム状態を完全にリセットしてタイトル画面を再表示する
+  if (completeTimer) {
+    clearTimeout(completeTimer);
+    completeTimer = null;
+  }
   state.phase = "TITLE";
   state.paused = false;
   state.demoMode = false;
+  dbg.autoDrive = false;
   setPaused(false);
   // 音声を停止
   sfx.stopEngine();
-  // 既存のタイトル画面以外のスクリーンを消す(リザルト等)
+  // 既存のタイトル画面以外のスクリーンとHUDメッセージを消す
   document.querySelectorAll(".screen").forEach((el) => el.remove());
-  // バスを始発位置に戻す
+  clearHudMessages();
+  // バスを始発位置・完全停止状態に戻す
   placeBusAtS(Math.max(0.5, route.stops[0].s - DOOR_OFFSET));
+  bus.throttleState = 0;
+  bus.accel = 0;
+  bus.latAccel = 0;
+  bus.throttleLocked = false;
+  bus.reverseArmed = false;
+  bus.reverseHold = 0;
+  bus.brakeWasDown = false;
   camInit = false;
-  // 乗客・スコア・時計をリセット
-  state.score = 0;
+  // 乗客・スコア・停留所・NPC交通・時計を全て初期化
+  pax.reset();
+  scoring.reset();
+  stopsView.clearWalkers();
+  traffic.reset();
+  state.lateral = 0;
+  state.offRoute = false;
   state.fareTotal = 0;
   state.nextStopIndex = 0;
   state.doorState = "CLOSED";
   state.buzzer = false;
   state.promptText = null;
+  state.waitingDepart = false;
   state.completed = false;
+  state.collisionLog = [];
   state.clock = firstDepartTime - 45;
-  ops.resetTo(0);
+  ops.resetForNewRun();
   // タイトル再表示
   showTitle((demoMode) => {
     sfx.initAudio();
@@ -422,10 +512,10 @@ function frame(now) {
   const dt = dtMs / 1000;
 
   if (state.phase === "RUNNING") {
-    // P キーでポーズトグル
-    if (input.pressed("KeyP")) setPaused(!state.paused);
+    // P キーでポーズトグル(完走後は無効)
+    if (!state.completed && input.pressed("KeyP")) setPaused(!state.paused);
 
-    if (!state.paused) {
+    if (!state.paused && !state.completed) {
       if (input.pressed("KeyC"))
         state.camMode = state.camMode === "chase" ? "cockpit" : "chase";
       if (input.pressed("KeyM")) {
@@ -467,7 +557,7 @@ function frame(now) {
     kujoOmiyaS,
   );
   updateCamera(dt);
-  if (state.phase === "RUNNING") {
+  if (state.phase === "RUNNING" && !state.paused && !state.completed) {
     sfx.updateEngine(bus.speedKmh, bus.throttleState);
   } else {
     sfx.stopEngine();
@@ -484,9 +574,9 @@ function frame(now) {
     else if (state.doorState !== "CLOSED") sub = "乗降中";
     else if (state.buzzer)
       sub = `🔔 つぎ とまります ・ あと${distTo.toFixed(0)}m`;
-    else if (mustStopAt(i)) sub = `停車 ・ あと${distTo.toFixed(0)}m`;
+    else if (mustStopAt(i)) sub = `要停車 ・ あと${distTo.toFixed(0)}m`;
     else sub = `通過可 ・ あと${distTo.toFixed(0)}m`;
-    const started = state.nextStopIndex > 0 || state.doorState !== "CLOSED";
+    const started = state.nextStopIndex > 0 || state.clock > firstDepartTime;
     const d = started ? delayInfo(state.clock, state.s) : null;
     updateHud({
       speedKmh: bus.speedKmh,
@@ -495,6 +585,7 @@ function frame(now) {
       score: Math.round(state.score),
       passengers: pax.onboard,
       fareTotal: state.fareTotal,
+      demoMode: state.demoMode,
       nextStopName: state.completed ? "── 終点 ──" : nextStop.name,
       nextStopSchedule: state.completed ? null : fmtTime(schedule[i].time),
       nextStopSub: sub,
@@ -516,6 +607,7 @@ setupDebug({
   bus,
   path,
   route,
+  traffic,
   scene,
   camera,
   tick: (dt, e) => {
@@ -553,6 +645,7 @@ setupDebug({
     state.s = s;
     camInit = false;
     ops.resetTo(stopIndex ?? 0);
+    traffic.reset();
     state.clock = scheduledClockAt(s); // ダイヤも位置に同期
   },
 });

@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import ROUTE_SEMANTICS from "../data/definitions/route-semantics.json" with { type: "json" };
 import { elevationAt } from "../route/routeData.js";
 import { terrainHeightAtWorld } from "../world/declarative/continuousTerrain.js";
 import { loadProps } from "../util/propsLib.js";
@@ -63,15 +64,44 @@ function addStopFrame(group, x, z, tx, tz, baseY) {
   const nx = -tz, nz = tx;
   const halfWidth = 1.3;
   const halfLength = 6;
-  const corners = [[-halfWidth, -halfLength], [halfWidth, -halfLength], [halfWidth, halfLength], [-halfWidth, halfLength]]
-    .map(([lateral, along]) => new THREE.Vector3(
-      x + nx * lateral + tx * along,
-      baseY + 0.04,
-      z + nz * lateral + tz * along,
-    ));
-  corners.push(corners[0].clone());
-  const geometry = new THREE.BufferGeometry().setFromPoints(corners);
-  const frame = new THREE.Line(geometry, new THREE.LineBasicMaterial({ color: 0xffffff }));
+  const lineHalf = 0.07;
+  const positions = [];
+  const indices = [];
+  const addBar = (l0, a0, l1, a1) => {
+    const dx = nx * (l1 - l0) + tx * (a1 - a0);
+    const dz = nz * (l1 - l0) + tz * (a1 - a0);
+    const len = Math.hypot(dx, dz) || 1;
+    const px = -dz / len, pz = dx / len;
+    const cx0 = x + nx * l0 + tx * a0, cz0 = z + nz * l0 + tz * a0;
+    const cx1 = x + nx * l1 + tx * a1, cz1 = z + nz * l1 + tz * a1;
+    const base = positions.length / 3;
+    const y = baseY + 0.055;
+    positions.push(
+      cx0 - px * lineHalf, y, cz0 - pz * lineHalf,
+      cx0 + px * lineHalf, y, cz0 + pz * lineHalf,
+      cx1 + px * lineHalf, y, cz1 + pz * lineHalf,
+      cx1 - px * lineHalf, y, cz1 - pz * lineHalf,
+    );
+    indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
+  };
+  addBar(-halfWidth, -halfLength, halfWidth, -halfLength);
+  addBar(halfWidth, -halfLength, halfWidth, halfLength);
+  addBar(halfWidth, halfLength, -halfWidth, halfLength);
+  addBar(-halfWidth, halfLength, -halfWidth, -halfLength);
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  const frame = new THREE.Mesh(
+    geometry,
+    new THREE.MeshBasicMaterial({
+      color: 0xf4f4f0,
+      side: THREE.DoubleSide,
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+      polygonOffsetUnits: -2,
+    }),
+  );
   frame.name = "bus-stop-frame";
   group.add(frame);
 }
@@ -106,7 +136,7 @@ export function buildStops(scene, path, stops) {
   }
 
   stops.forEach((stop, i) => {
-    const terminal = stop.name === "久我石原町"
+    const terminal = stop.name === ROUTE_SEMANTICS.terminal
       ? terminusStopAnchor(terminusLotAnchor(path))
       : null;
     // The stopping pose is the single source for the stop marker, pole,
@@ -116,13 +146,13 @@ export function buildStops(scene, path, stops) {
     const baseY = terminal
       ? terrainHeightAtWorld(terminal.x, terminal.z)
       : (pose.y ?? elevationAt(stop.s));
-    const [px, pz] = terminal
-      ? [terminal.x, terminal.z]
-      : (pose.x != null ? [pose.x, pose.z] : path.getPoint(stop.s));
-    const [tx, tz] = terminal
-      ? [Math.sin(terminal.heading), Math.cos(terminal.heading)]
-      : (pose.heading != null
-        ? [Math.sin(pose.heading), Math.cos(pose.heading)]
+    const [px, pz] = pose.x != null
+      ? [pose.x, pose.z]
+      : (terminal ? [terminal.x, terminal.z] : path.getPoint(stop.s));
+    const [tx, tz] = pose.heading != null
+      ? [Math.sin(pose.heading), Math.cos(pose.heading)]
+      : (terminal
+        ? [Math.sin(terminal.heading), Math.cos(terminal.heading)]
         : path.getTangent(stop.s));
     const nx = -tz,
       nz = tx; // lateral 正方向(右)
@@ -130,6 +160,10 @@ export function buildStops(scene, path, stops) {
     const [poleX, poleZ] = terminal
       ? [terminal.x, terminal.z]
       : [stop.anchor?.x ?? px + nx * side * (HW + 0.9), stop.anchor?.z ?? pz + nz * side * (HW + 0.9)];
+    const [frameTx, frameTz] = terminal
+      ? [Math.sin(terminal.heading), Math.cos(terminal.heading)]
+      : [tx, tz];
+    const [framePx, framePz] = terminal && pose.x == null ? [terminal.x, terminal.z] : [px, pz];
     const waitingAt = (_lat, along = 0) => [
       poleX + nx * side * Math.abs(_lat),
       poleZ + nz * side * Math.abs(_lat) + tz * along,
@@ -164,8 +198,8 @@ export function buildStops(scene, path, stops) {
     sign.rotation.y = Math.atan2(-side * nx, -side * nz); // 車道側を向く
     group.add(sign);
 
-    if (stop.shelter) addShelter(group, poleX, poleZ, tx, tz, nx, nz, baseY, side);
-    addStopFrame(group, px, pz, tx, tz, baseY);
+    if (stop.shelter) addShelter(group, poleX, poleZ, frameTx, frameTz, nx, nz, baseY, side);
+    addStopFrame(group, framePx, framePz, tx, tz, pose.y ?? baseY);
 
     waiting.push({
       at: waitingAt,
@@ -235,6 +269,13 @@ export function buildStops(scene, path, stops) {
           group.remove(w.mesh);
           walkers.splice(k, 1);
         }
+      }
+    },
+    /** 再乗務時に残存する降車歩行者メッシュを全て除去する */
+    clearWalkers() {
+      while (walkers.length > 0) {
+        const w = walkers.pop();
+        group.remove(w.mesh);
       }
     },
   };

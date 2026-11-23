@@ -1,0 +1,10 @@
+{
+  "note": "信号の位相タイミング(秒)とフォールバック信号位置。位相: 自道 青22→黄3→赤17(周期42)。交差道は自道赤の間に全赤1→青→黄2。",
+  "TIMING": { "cycleS": 42, "greenS": 22, "yellowS": 3, "crossAllRedLeadS": 1, "crossYellowS": 2 },
+  "FALLBACK": {
+    "note": "route.signals が空の場合に使う停留所ベースの信号位置",
+    "stops": ["四条大宮", "大宮五条", "七条大宮・京都水族館前", "九条大宮", "千本十条", "城南宮道"],
+    "offsetM": 32,
+    "endMarginM": 30
+  }
+}

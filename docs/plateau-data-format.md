@@ -13,7 +13,7 @@
 | 他車交通 | driving network | 交通グラフ、信号、合流、車線変更、IDM追従 |
 | 道路詳細 | `public/world/generated/osm-road-overlays.json` と driving network | 歩道、区画線、車線、横断歩道 |
 | 河川・水域 | `src/data/route18.json` | 水面、河床、護岸、橋との位置関係 |
-| 橋梁・鉄道・高架 | `src/data/route18.json` と PLATEAU交通面 | 構造標高、橋面、橋脚、欄干、高架 |
+| 橋梁・鉄道・高架 | `src/data/route18.json` と PLATEAU交通面 | 河川橋の橋面（3橋は浅いアーチ、天神橋は平坦）、付属歩道、橋脚、欄干、高架 |
 | 植生・緑地 | `src/data/route18.json` | OSMの樹木、森林、低木、緑地 |
 
 PLATEAU選択範囲の生成結果は、`bldg` 36ファイル、`tran` 36ファイル、`dem` 16ファイル、`frn` 3ファイルです。`brid`、`wtr`、`veg` の選択ファイルはありません。対応するワールドレイヤーは空のデータとして保持され、河川・植生・橋梁構造は路線データとOSM由来の要素で描画されます。
@@ -64,9 +64,9 @@ PLATEAU `bldg` のfootprintと高さを地形に合わせて配置します。�
 
 ## 道路と構造区間
 
-PLATEAU `tran` の道路・歩道ポリゴンを表示し、橋梁・高架の車道部分だけを構造標高へ合わせます。地上側の道路面は地形標高に残し、同じ区間へ別の道路板を追加しません。
+PLATEAU `tran` の道路・歩道ポリゴンを表示します。4つの河川橋は始終点をPLATEAU地盤に合わせ、橋の前後に地盤を持ち上げる区間は設けません。小枝橋・京川橋・久我橋は浅いアーチ、天神橋は平坦面とし、橋付属歩道もそれぞれの橋面に追従させます。同じ区間へ別の道路板は追加しません。
 
-driving networkは、PLATEAU交通面へ走行経路を対応付けたデータです。道路ノード5,453件、停留所30件、交通グラフの辺4,016件を持ちます。
+driving networkは、PLATEAU交通面へ走行経路を対応付けたデータです。道路ノード5,453件、停留所30件、交通グラフv3の辺3,938件と接続線5,762件を持ちます。交通グラフの双方向車線は進行方向の左側へ配置し、接続線は旋回方向ごとに接続先車線を正規化します。同一点を結ぶ直進接続は `zeroLength: true` として距離を持たないグラフ遷移を表します。辺の `physicsSafe` は隣接区間の最大折れ角が45度未満であることを示し、それ以外の辺と接続線手前ではNPCを経路拘束で走行させます。実行時は終端へ流入しない有向循環コアを抽出し、NPCの初期配置・流入・経路選択をその範囲に限定します。
 
 ## 河川・植生・道路詳細
 
@@ -112,9 +112,12 @@ npm run validate:terrain-fix
 npm run validate:world-alignment
 npm run validate:structural-road
 npm run validate:driving-network
+npm run validate:traffic-continuity
 npm run validate:bridge-water-alignment
 npm run map-check
 npm run build
 ```
 
 `world:validate` は生成ファイル、連続地形、実行時地形コピー、driving network、OSM歩道オーバーレイを検証します。`validate:world-alignment`、`validate:structural-road`、`validate:driving-network`、`validate:bridge-water-alignment` は標高、構造道路、交通グラフ、橋梁・河川の整合性を検証します。
+
+OSM/PLATEAUデータへの手動補正の定義ファイル一覧は [`definitions.md`](definitions.md) を参照してください。

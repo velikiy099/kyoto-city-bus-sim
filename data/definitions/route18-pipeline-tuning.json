@@ -1,0 +1,51 @@
+{
+  "OVERPASS_ENDPOINTS": [
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter"
+  ],
+  "SCALE": 1.0,
+  "CROSS_STREET_ARM_LEN": 100,
+  "CROSS_STREET_ARM_MIN": 15,
+  "RESAMPLE_STEP": 2,
+  "FILLET_RADIUS": 18,
+  "FILLET_MIN_ANGLE": 25,
+  "TURN_MIN_ANGLE": 55,
+  "TURN_FILLET_RADIUS": 12,
+  "ROAD_AROUND_RADIUS": 90,
+  "BUILDING_AROUND_RADIUS": 95,
+  "BUILDING_ROADSIDE_DEPTH": 20,
+  "FALLBACK_BUILDING_ROAD_HALF_WIDTH": 6,
+  "RAILWAY_BBOX": [34.982, 135.744, 34.9895, 135.752],
+  "ROAD_TYPES": [
+    "primary",
+    "secondary",
+    "tertiary",
+    "unclassified",
+    "residential",
+    "service"
+  ],
+  "VISUAL_ROAD_TYPES": [
+    "motorway",
+    "motorway_link",
+    "trunk",
+    "trunk_link",
+    "primary",
+    "primary_link",
+    "secondary",
+    "secondary_link",
+    "tertiary",
+    "tertiary_link",
+    "unclassified",
+    "residential",
+    "living_street",
+    "service"
+  ],
+  "OSM_VISUAL_CORRIDOR_METERS": 240,
+  "OSM_VEGETATION_CORRIDOR_METERS": 240,
+  "NIJO_STATION_BBOX": [35.0094, 135.7394, 35.0134, 135.7438],
+  "DETOUR_BBOX": [34.943, 135.735, 34.956, 135.746],
+  "RIVER_BBOX": [34.93, 135.715, 34.965, 135.755],
+  "LANE_W": 3.2,
+  "PATH_START_EXTENSION_M": 18,
+  "PATH_END_EXTENSION_M": 30
+}

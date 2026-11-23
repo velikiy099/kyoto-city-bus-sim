@@ -1,6 +1,13 @@
 import raw from "../data/route18.json";
-import drivingNetwork from "../data/generated/driving-network.json";
+import ROUTE_SEMANTICS from "../data/definitions/route-semantics.json" with { type: "json" };
 import { RoutePath } from "./path.js";
+
+const drivingNetworkUrl = `${import.meta.env.BASE_URL}world/generated/driving-network.json`;
+const drivingNetworkResponse = await fetch(drivingNetworkUrl);
+if (!drivingNetworkResponse.ok) {
+  throw new Error(`Failed to load compiled driving network (${drivingNetworkResponse.status}): ${drivingNetworkUrl}`);
+}
+const drivingNetwork = await drivingNetworkResponse.json();
 
 /**
  * Runtime reads only this compiled network for driving geometry, road height,
@@ -41,7 +48,7 @@ export const route = {
   path,
   surfacePath,
   terminalStop: raw.terminalStop ?? null,
-  stops: (drivingNetwork.stops ?? []).filter((stop) => stop.name !== "上鳥羽村山町"),
+  stops: (drivingNetwork.stops ?? []).filter((stop) => !ROUTE_SEMANTICS.excludedStops.includes(stop.name)),
   bridges: drivingNetwork.bridges ?? [],
   rivers: raw.rivers ?? [],
   waterPolygons: raw.waterPolygons ?? [],
@@ -53,6 +60,7 @@ export const route = {
   intersections: drivingNetwork.intersections ?? [],
   turnIntersections: drivingNetwork.turnIntersections ?? [],
   signals: drivingNetwork.signals ?? [],
+  autoLaneGuides: drivingNetwork.autoLaneGuides ?? [],
   osmVegetation,
   railStructures: drivingNetwork.railStructures ?? [],
   elevations: drivingNetwork.structures ?? [],
@@ -81,6 +89,17 @@ export function backLanesAt(s) { return sectionAt(s).lanesB; }
 export function leftWidthAt(s) { return sectionAt(s).wL; }
 export function rightWidthAt(s) { return sectionAt(s).wR; }
 export function halfWidthAt(s) { const sec = sectionAt(s); return Math.max(sec.wL, sec.wR); }
+
+/** 描画と同一条件で、対向車線と中央線が存在する区間かどうかを返す。 */
+export function hasCenterlineAt(s) {
+  const sec = sectionAt(s);
+  return !sec.oneWay && sec.lanesB > 0 && sec.center !== "none";
+}
+
+/** 描画中央線(surfacePath)に対する横位置(左が負・右が正)を返す。 */
+export function centerlineLateralAt(x, z, s) {
+  return surfacePath.closestS([x, z], s, 150).lateral;
+}
 
 function driveBoundAt(s, side) {
   const bounds = drivingNetwork.driveBounds;

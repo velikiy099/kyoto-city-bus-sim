@@ -1,0 +1,25 @@
+{
+  "note": "ランドマーク配置のOSM(ODbL)/PLATEAU実測データ。座標は route18.json と同じ projOrigin [34.9746902, 135.7422893] の equirectangular 投影によるゲーム座標。",
+  "TOJI_POS": {
+    "pagoda": { "x": 590.22, "z": -578.63, "note": "PLATEAU measuredHeight=55.0 の建物中心" },
+    "kondo": { "x": 496.62, "z": -632.03, "note": "PLATEAU 金堂(高さ24.9m)の建物中心" },
+    "nandaimon": { "x": 495.37, "z": -540.99, "halfGap": 13.3, "note": "南大門(屋根全長23.6m)" },
+    "todaimon": { "x": 618.51, "z": -667.9, "halfGap": 9.3, "note": "東大門・不開門(同15.4m)" },
+    "keigamon": { "x": 618.51, "z": -799.26, "halfGap": 9.4, "note": "慶賀門(同15.65m)" }
+  },
+  "TOJI_REFS": {
+    "northIntersection": "東寺道",
+    "westIntersection": "京阪国道口(国道1号)",
+    "turnCrossName": "大宮通",
+    "keigamonExclusion": { "radius": 10, "note": "PLATEAU側の門建物 bldg_b170a8f2(高さ8.3m)をGLBと重ならないよう個別除外" }
+  },
+  "TERMINUS": {
+    "stopName": "久我石原町",
+    "LOT": { "w": 22.5, "d": 24.7, "note": "OSM landuse=garages の実測範囲" },
+    "STOP_INSET": { "x": 1.8, "z": 2.0 },
+    "legacyFallback": { "sBackM": 9.5, "lateralM": -16.6 }
+  },
+  "AQUARIUM": { "stopName": "七条大宮・京都水族館前", "sOffsetM": 20, "parkHalfWidthM": 75, "exclusionRadiusM": 95 },
+  "KYOTO_TOWER": { "stopName": "七条大宮・京都水族館前", "lateralM": -620, "exclusionRadiusM": 60 },
+  "MIBU_DEPOT": { "stopName": "みぶ操車場前", "lotW": 50, "lotD": 56, "roadSetbackM": 8 }
+}

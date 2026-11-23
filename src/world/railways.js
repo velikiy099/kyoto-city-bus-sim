@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import RAILWAY_DEFS from "../data/definitions/railways.json" with { type: "json" };
 import {
   route,
   elevationAt,
@@ -6,6 +7,7 @@ import {
   halfWidthAt,
 } from "../route/routeData.js";
 import { terrainHeightAtWorld } from "./declarative/continuousTerrain.js";
+import { makeCar, makeTruck } from "./traffic/vehicleModels.js";
 
 const mat = (color, opts = {}) =>
   new THREE.MeshLambertMaterial({ color, ...opts });
@@ -106,8 +108,8 @@ function buildConventionalUnderpass(scene, path, spec) {
     g.add(wall);
   }
 
-  const trackCount = spec.trackCount ?? 6;
-  const spacing = 3.2;
+  const trackCount = spec.trackCount ?? RAILWAY_DEFS.CONVENTIONAL_UNDERPASS.trackCountDefault;
+  const spacing = RAILWAY_DEFS.CONVENTIONAL_UNDERPASS.trackSpacingM;
   const first = -((trackCount - 1) * spacing) / 2;
   for (let i = 0; i < trackCount; i++)
     addRailPair(g, first + i * spacing, -0.05, length - 8);
@@ -119,9 +121,9 @@ function buildConventionalUnderpass(scene, path, spec) {
   // 高架桁の範囲(bridgeFromS/bridgeToS があれば八条通の先まで延伸)
   const sFrom = spec.bridgeFromS ?? railFrom;
   const sTo = spec.bridgeToS ?? railTo;
-  const aIn = spec.approachIn ?? 52;
-  const aOut = spec.approachOut ?? 52;
-  const deckHalf = spec.deckHalf ?? 7.2; // 車道の外縁(橋上に歩道は無い実際の大宮跨線橋に合わせる)
+  const aIn = spec.approachIn ?? RAILWAY_DEFS.CONVENTIONAL_UNDERPASS.approachDefaultM;
+  const aOut = spec.approachOut ?? RAILWAY_DEFS.CONVENTIONAL_UNDERPASS.approachDefaultM;
+  const deckHalf = spec.deckHalf ?? RAILWAY_DEFS.CONVENTIONAL_UNDERPASS.deckHalfDefaultM; // 車道の外縁(橋上に歩道は無い実際の大宮跨線橋に合わせる)
   // 大宮跨線橋では路面を覆う灰色デッキ・桁・擁壁を重ねない。
   // 橋上には、唯一の路面高さ elevationAt(s) を基準にした約1m高の欄干だけを生成する。
   addOmiyaParapets(scene, path, sFrom - aIn, sTo + aOut, deckHalf);
@@ -139,7 +141,7 @@ function buildShinkansenViaduct(scene, path, spec) {
 
   const length = spec.length ?? 190;
   const width = spec.width ?? 16;
-  const deckY = 8.2;
+  const deckY = RAILWAY_DEFS.SHINKANSEN_VIADUCT.deckY;
   const girder = new THREE.Mesh(
     new THREE.BoxGeometry(width, 1.05, length),
     mat(0xd7d9d6),
@@ -150,7 +152,7 @@ function buildShinkansenViaduct(scene, path, spec) {
 
   // 橋脚(道路上には立てない — 高架は線路が道路と直交して跨ぐ)
   const clearHalf = halfWidthAt(spec.s) + 4;
-  for (const z of [-70, -35, 0, 35, 70]) {
+  for (const z of RAILWAY_DEFS.SHINKANSEN_VIADUCT.pierRowsM) {
     if (Math.abs(z) < clearHalf) continue;
     const wx = p.x + Math.sin(spec.heading) * z;
     const wz = p.z + Math.cos(spec.heading) * z;
@@ -179,7 +181,7 @@ function buildExpresswayViaduct(scene, path, spec) {
 
   const length = spec.length ?? 210;
   const width = spec.width ?? 27;
-  const deckY = 7.0;
+  const deckY = RAILWAY_DEFS.EXPRESSWAY_VIADUCT.deckY;
   const girder = new THREE.Mesh(
     new THREE.BoxGeometry(width, 1.2, length),
     mat(0xaeb2ae),
@@ -225,8 +227,8 @@ function buildExpresswayViaduct(scene, path, spec) {
     g.add(parapet);
   }
 
-  const isKoeda = spec.name?.includes("鴨川・小枝橋");
-  const isHishizuma = spec.name?.includes("桂川・菱妻神社");
+  const isKoeda = spec.name?.includes(RAILWAY_DEFS.EXPRESSWAY_VIADUCT.nameMatchKoeda);
+  const isHishizuma = spec.name?.includes(RAILWAY_DEFS.EXPRESSWAY_VIADUCT.nameMatchHishizuma);
 
   const addFenceLine = (z, span, height = 2.2) => {
     const fenceMat = mat(0xb9bfbd, { transparent: true, opacity: 0.78 });
@@ -281,7 +283,7 @@ function buildExpresswayViaduct(scene, path, spec) {
     const b = at(path, br.s);
     return { x: b.x, z: b.z, r: Math.max(18, br.length * 0.85) / 2 + 24 };
   });
-  const pierRows = spec.pierRows ?? (isKoeda ? [-90, 90] : [-75, 75]);
+  const pierRows = spec.pierRows ?? (isKoeda ? RAILWAY_DEFS.EXPRESSWAY_VIADUCT.pierRowsKoedaM : RAILWAY_DEFS.EXPRESSWAY_VIADUCT.pierRowsDefaultM);
   const pierX = Math.min(
     width / 2 - 1.5,
     Math.max(clearHalf + 1, width * 0.38),
@@ -312,61 +314,230 @@ function buildExpresswayViaduct(scene, path, spec) {
   scene.add(g);
 }
 
-/** Render an OSM motorway way as a continuous carriageway strip.
- * Mainline geometry is kept segment-by-segment so OSM bridge/layer tags remain
- * authoritative; motorway_link ramps are filtered during route-data build.
+/** Render an OSM motorway way as a 3D box-girder viaduct with sound barriers,
+ * cleared portal piers, and overhead traffic (matching Meishin Expressway).
  */
-function buildOsmExpressway(scene, spec) {
-  const points = spec.points ?? [];
-  if (points.length < 2) return;
-  const halfWidth = Math.max(4, Number(spec.width) || 15) / 2;
-  const elevated = spec.bridge === true || Number(spec.layer) > 0;
-  const vertices = [];
-  for (let i = 0; i < points.length; i++) {
-    const prev = points[Math.max(0, i - 1)];
-    const next = points[Math.min(points.length - 1, i + 1)];
-    const dx = next[0] - prev[0];
-    const dz = next[1] - prev[1];
-    const len = Math.hypot(dx, dz) || 1;
-    const nx = -dz / len;
-    const nz = dx / len;
-    const y = terrainHeightAtWorld(points[i][0], points[i][1]) + (elevated ? 7.0 : 0.16);
-    vertices.push(
-      [points[i][0] + nx * halfWidth, y, points[i][1] + nz * halfWidth],
-      [points[i][0] - nx * halfWidth, y, points[i][1] - nz * halfWidth],
-    );
+function resample2d(points, maxStep = 6) {
+  const out = [points[0]];
+  for (let i = 1; i < points.length; i++) {
+    const a = points[i - 1], b = points[i];
+    const dist = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    const steps = Math.max(1, Math.ceil(dist / maxStep));
+    for (let k = 1; k <= steps; k++) {
+      const t = k / steps;
+      out.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
+    }
   }
+  return out;
+}
+
+function addRibbonMesh(scene, rows, material, name) {
+  if (rows.length < 2) return null;
   const positions = [];
   const indices = [];
-  for (const vertex of vertices) positions.push(...vertex);
-  for (let i = 0; i < points.length - 1; i++) {
-    const a = i * 2;
-    const b = a + 1;
-    const c = a + 2;
-    const d = a + 3;
+  for (const [l, r] of rows) positions.push(l[0], l[1], l[2], r[0], r[1], r[2]);
+  for (let i = 0; i < rows.length - 1; i++) {
+    const a = i * 2, b = a + 1, c = a + 2, d = a + 3;
     indices.push(a, c, b, b, c, d);
   }
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
-  geometry.setIndex(indices);
-  geometry.computeVertexNormals();
-  const mesh = new THREE.Mesh(
-    geometry,
-    mat(elevated ? 0x454a50 : 0x55595c, { side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -1 }),
-  );
-  mesh.name = `osm-meishin:${spec.id}`;
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  const mesh = new THREE.Mesh(geo, material);
+  mesh.name = name;
   scene.add(mesh);
+  return mesh;
+}
+
+function buildOsmExpressway(scene, spec, routePath) {
+  const rawPts = spec.points ?? [];
+  if (rawPts.length < 2) return null;
+  const points = resample2d(rawPts, 6);
+  const halfWidth = Math.max(4, Number(spec.width) || 15) / 2;
+  const elevated = spec.bridge === true || Number(spec.layer) > 0;
+  const soffitOffset = 7.0;
+  const deckTopOffset = 8.3;
+
+  const frames = points.map((pt, i) => {
+    const prev = points[Math.max(0, i - 1)];
+    const next = points[Math.min(points.length - 1, i + 1)];
+    const dx = next[0] - prev[0], dz = next[1] - prev[1];
+    const len = Math.hypot(dx, dz) || 1;
+    const tx = dx / len, tz = dz / len;
+    const nx = -tz, nz = tx;
+    const gy = terrainHeightAtWorld(pt[0], pt[1]);
+    return { x: pt[0], z: pt[1], tx, tz, nx, nz, gy };
+  });
 
   if (elevated) {
-    const mid = points[Math.floor(points.length / 2)];
-    const support = new THREE.Mesh(
-      new THREE.BoxGeometry(Math.min(2.5, halfWidth), 6.3, 1.2),
-      mat(0x969b9b),
-    );
-    support.position.set(mid[0], terrainHeightAtWorld(mid[0], mid[1]) + 3.2, mid[1]);
-    support.name = `osm-meishin-pier:${spec.id}`;
-    scene.add(support);
+    // 3D box girder (deck top, concrete soffit, and left/right concrete fascia webs)
+    const topRows = frames.map((f) => [
+      [f.x + f.nx * (halfWidth - 0.35), f.gy + deckTopOffset + 0.02, f.z + f.nz * (halfWidth - 0.35)],
+      [f.x - f.nx * (halfWidth - 0.35), f.gy + deckTopOffset + 0.02, f.z - f.nz * (halfWidth - 0.35)],
+    ]);
+    const botRows = frames.map((f) => [
+      [f.x - f.nx * (halfWidth - 0.4), f.gy + soffitOffset, f.z - f.nz * (halfWidth - 0.4)],
+      [f.x + f.nx * (halfWidth - 0.4), f.gy + soffitOffset, f.z + f.nz * (halfWidth - 0.4)],
+    ]);
+    addRibbonMesh(scene, topRows, mat(0x454a50, { side: THREE.DoubleSide }), `osm-meishin:${spec.id}:top`);
+    addRibbonMesh(scene, botRows, mat(0xb5b9b6, { side: THREE.DoubleSide }), `osm-meishin:${spec.id}:soffit`);
+
+    const concreteMat = mat(0xc2c6c2, { side: THREE.DoubleSide });
+    const blueStripeMat = mat(0x3c6b9c, { side: THREE.DoubleSide });
+    const creamPanelMat = mat(0xdcd9d0, { side: THREE.DoubleSide });
+    const copingMat = mat(0x6d7275, { side: THREE.DoubleSide });
+
+    for (const side of [-1, 1]) {
+      const fasciaRows = frames.map((f) => [
+        [f.x + f.nx * side * halfWidth, f.gy + deckTopOffset, f.z + f.nz * side * halfWidth],
+        [f.x + f.nx * side * (halfWidth - 0.4), f.gy + soffitOffset, f.z + f.nz * side * (halfWidth - 0.4)],
+      ]);
+      addRibbonMesh(scene, fasciaRows, concreteMat, `osm-meishin:${spec.id}:fascia:${side}`);
+
+      // Plinth + blue lower stripe + cream acoustic sound barrier + coping
+      const wx = (f) => f.x + f.nx * side * (halfWidth - 0.15);
+      const wz = (f) => f.z + f.nz * side * (halfWidth - 0.15);
+      addRibbonMesh(
+        scene,
+        frames.map((f) => [[wx(f), f.gy + deckTopOffset, wz(f)], [wx(f), f.gy + deckTopOffset + 0.65, wz(f)]]),
+        concreteMat,
+        `osm-meishin:${spec.id}:plinth:${side}`,
+      );
+      addRibbonMesh(
+        scene,
+        frames.map((f) => [[wx(f), f.gy + deckTopOffset + 0.65, wz(f)], [wx(f), f.gy + deckTopOffset + 1.1, wz(f)]]),
+        blueStripeMat,
+        `osm-meishin:${spec.id}:stripe:${side}`,
+      );
+      addRibbonMesh(
+        scene,
+        frames.map((f) => [[wx(f), f.gy + deckTopOffset + 1.1, wz(f)], [wx(f), f.gy + deckTopOffset + 2.65, wz(f)]]),
+        creamPanelMat,
+        `osm-meishin:${spec.id}:barrier:${side}`,
+      );
+      addRibbonMesh(
+        scene,
+        frames.map((f) => [[wx(f), f.gy + deckTopOffset + 2.65, wz(f)], [wx(f), f.gy + deckTopOffset + 2.8, wz(f)]]),
+        copingMat,
+        `osm-meishin:${spec.id}:coping:${side}`,
+      );
+    }
+
+    // Spaced portal piers that strictly avoid intersecting the route carriageway
+    const pierMat = mat(0x9a9f9c);
+    let distSincePier = 12;
+    for (let i = 0; i < frames.length; i++) {
+      if (i > 0) distSincePier += Math.hypot(frames[i].x - frames[i - 1].x, frames[i].z - frames[i - 1].z);
+      if (distSincePier < 26 && i !== 0 && i !== frames.length - 1) continue;
+      const f = frames[i];
+      const latStep = Math.max(3.5, halfWidth - 1.6);
+      let placed = false;
+      for (const lat of [-latStep, latStep]) {
+        const px = f.x + f.nx * lat;
+        const pz = f.z + f.nz * lat;
+        const pr = routePath?.closestS?.([px, pz]);
+        const minClear = pr ? halfWidthAt(pr.s) + 3.2 : 10;
+        if (pr && pr.dist < minClear) continue;
+        const localGy = terrainHeightAtWorld(px, pz);
+        const pierTop = f.gy + soffitOffset + 0.1;
+        const pierH = Math.max(1.2, pierTop - localGy);
+        const pier = new THREE.Mesh(new THREE.BoxGeometry(1.6, pierH, 2.2), pierMat);
+        pier.position.set(px, localGy + pierH / 2, pz);
+        pier.rotation.y = Math.atan2(f.tx, f.tz);
+        pier.name = `osm-meishin-pier:${spec.id}`;
+        scene.add(pier);
+        placed = true;
+      }
+      if (placed) distSincePier = 0;
+    }
+
+    // Dashed highway lane markings on top
+    const lineMat = mat(0xebeae4);
+    for (const laneOff of [-2.4, 2.4]) {
+      for (let i = 0; i < frames.length - 1; i += 2) {
+        const a = frames[i], b = frames[i + 1];
+        const segLen = Math.hypot(b.x - a.x, b.z - a.z);
+        if (segLen < 1) continue;
+        const dash = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.03, segLen * 0.65), lineMat);
+        dash.position.set(
+          ((a.x + b.x) / 2) + a.nx * laneOff,
+          ((a.gy + b.gy) / 2) + deckTopOffset + 0.04,
+          ((a.z + b.z) / 2) + a.nz * laneOff,
+        );
+        dash.rotation.y = Math.atan2(b.x - a.x, b.z - a.z);
+        scene.add(dash);
+      }
+    }
+
+    return frames.map((f) => [f.x, f.gy + deckTopOffset + 0.04, f.z, f.nx, f.nz]);
   }
+
+  // Non-elevated approach embankment strip
+  addRibbonMesh(
+    scene,
+    frames.map((f) => [
+      [f.x + f.nx * halfWidth, f.gy + 0.16, f.z + f.nz * halfWidth],
+      [f.x - f.nx * halfWidth, f.gy + 0.16, f.z - f.nz * halfWidth],
+    ]),
+    mat(0x55595c, { side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -1 }),
+    `osm-meishin:${spec.id}`,
+  );
+  return null;
+}
+
+function createExpresswayTraffic(scene, trackPolylines) {
+  const tracks = [];
+  for (const pts of trackPolylines) {
+    const cum = [0];
+    for (let i = 1; i < pts.length; i++) {
+      cum.push(cum.at(-1) + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][2] - pts[i - 1][2]));
+    }
+    const total = cum.at(-1);
+    if (total >= 35) tracks.push({ pts, cum, total });
+  }
+  if (!tracks.length) return () => {};
+
+  const runners = [];
+  const palette = [0xdedfe3, 0x3a4856, 0xc94238, 0xd8a832, 0x5c6873];
+  for (let ti = 0; ti < tracks.length; ti++) {
+    const tr = tracks[ti];
+    const count = Math.max(1, Math.min(3, Math.floor(tr.total / 42)));
+    for (let k = 0; k < count; k++) {
+      const isTruck = (ti + k) % 3 === 0;
+      const color = palette[(ti + k) % palette.length];
+      const mesh = isTruck ? makeTruck(color) : makeCar(color);
+      mesh.name = `expressway-npc:${ti}:${k}`;
+      scene.add(mesh);
+      runners.push({
+        track: tr,
+        mesh,
+        s: (tr.total * (k + 0.25)) / count,
+        speed: isTruck ? 19 + (k % 3) : 23 + (k % 4) * 1.2,
+        laneOffset: k % 2 === 0 ? -3.4 : 3.4,
+      });
+    }
+  }
+
+  return (dt) => {
+    for (const r of runners) {
+      r.s = (r.s + r.speed * dt) % r.track.total;
+      const { pts, cum } = r.track;
+      let i = 0;
+      while (i < cum.length - 2 && cum[i + 1] < r.s) i++;
+      const span = cum[i + 1] - cum[i] || 1;
+      const t = (r.s - cum[i]) / span;
+      const a = pts[i], b = pts[i + 1];
+      const nx = a[3] + (b[3] - a[3]) * t;
+      const nz = a[4] + (b[4] - a[4]) * t;
+      r.mesh.position.set(
+        a[0] + (b[0] - a[0]) * t + nx * r.laneOffset,
+        a[1] + (b[1] - a[1]) * t,
+        a[2] + (b[2] - a[2]) * t + nz * r.laneOffset,
+      );
+      r.mesh.rotation.y = Math.atan2(b[0] - a[0], b[2] - a[2]);
+    }
+  };
 }
 
 export function buildRailways(scene, path, structures = [], osmExpressways = []) {
@@ -378,6 +549,11 @@ export function buildRailways(scene, path, structures = [], osmExpressways = [])
     else if (spec.kind === "expressway-viaduct" && !osmExpressways.length)
       buildExpresswayViaduct(scene, path, spec);
   }
-  for (const spec of osmExpressways) buildOsmExpressway(scene, spec);
-  return { count: structures.length + osmExpressways.length };
+  const elevatedTracks = [];
+  for (const spec of osmExpressways) {
+    const track = buildOsmExpressway(scene, spec, path);
+    if (track?.length >= 2) elevatedTracks.push(track);
+  }
+  const update = createExpresswayTraffic(scene, elevatedTracks);
+  return { count: structures.length + osmExpressways.length, update };
 }

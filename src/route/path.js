@@ -66,10 +66,10 @@ export class RoutePath {
     let i0 = 0,
       i1 = this.points.length - 2;
     if (hintS != null) {
-      i0 = Math.max(0, Math.floor((hintS - window) / this.step));
+      i0 = this._locate(Math.max(0, hintS - window)).i;
       i1 = Math.min(
         this.points.length - 2,
-        Math.ceil((hintS + window) / this.step),
+        this._locate(Math.min(this.length, hintS + window)).i + 1,
       );
     }
     let bestS = 0,
@@ -90,7 +90,7 @@ export class RoutePath {
       const d2 = dx * dx + dz * dz;
       if (d2 < bestD2) {
         bestD2 = d2;
-        bestS = this.cum[i] + Math.sqrt(ab2) * t;
+        bestS = this.cum[i] + (this.cum[i + 1] - this.cum[i]) * t;
         // 横偏差: 接線×偏差ベクトルの外積符号(右手系 x-z 平面)
         const l = Math.sqrt(ab2);
         bestLat = (abx / l) * dz - (abz / l) * dx; // 左が負・右が正になるよう符号調整済み

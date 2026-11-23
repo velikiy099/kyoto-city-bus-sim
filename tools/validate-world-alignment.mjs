@@ -14,7 +14,7 @@ const terrain = read("src/world/declarative/generated/terrain-grid.json");
 const transportation = read("public/world/generated/plateau-transportation.json");
 const buildings = read("public/world/generated/plateau-buildings.json");
 const manifest = read("public/world/world-manifest.json");
-const drivingNetwork = read("src/data/generated/driving-network.json");
+const drivingNetwork = read("public/world/generated/driving-network.json");
 
 const nijoStop = route.stops.find((stop) => stop.name === "二条駅西口");
 const nijoStationAheadStop = route.stops.find((stop) => stop.name === "二条駅前");
@@ -125,15 +125,17 @@ for (let s = omiyaProfile.peak + 0.5; s <= omiyaProfile.to; s += 0.5) {
   assert(roadAt(s) < roadAt(s - 0.5), "Absolute Omiya road profile does not descend continuously after JR");
 }
 
-const bridgeProfileChecks = (route.elevations ?? []).filter((item) => Number(item.height) > 0).map((item) => {
-  const sampleS = item.profile === "single-crest"
-    ? Number(item.peak)
-    : (Number(item.from) + Number(item.to)) / 2;
-  const terrainY = terrainAtS(sampleS);
-  const delta = structuralAt(sampleS);
-  return { name: item.name, sampleS, terrainY, roadY: roadAt(sampleS), delta, expected: Number(item.height) };
-});
-assert(bridgeProfileChecks.every((item) => Math.abs(item.delta - item.expected) < 1e-6), "Structural bridge height is not applied to the PLATEAU terrain profile");
+const bridgeProfileChecks = (route.elevations ?? [])
+  .filter((item) => item.profile !== "flat-deck" && Number(item.height) > 0)
+  .map((item) => {
+    const sampleS = item.profile === "single-crest"
+      ? Number(item.peak)
+      : (Number(item.from) + Number(item.to)) / 2;
+    const terrainY = terrainAtS(sampleS);
+    const delta = structuralAt(sampleS);
+    return { name: item.name, sampleS, terrainY, roadY: roadAt(sampleS), delta, expected: Number(item.height) };
+  });
+assert(bridgeProfileChecks.every((item) => Math.abs(item.delta - item.expected) < 1e-6), "Structural overpass height is not applied to the PLATEAU terrain profile");
 
 const [originX, originZ] = terrain.origin;
 const [stepX, stepZ] = terrain.spacing;
@@ -186,7 +188,13 @@ assert(incompleteShells === 0, "Incomplete PLATEAU shells remain and would rende
 const main = fs.readFileSync("src/main.js", "utf8");
 const scenery = fs.readFileSync("src/world/declarative/buildWorldScenery.js", "utf8");
 const config = fs.readFileSync("src/world/declarative/config.js", "utf8");
-const traffic = fs.readFileSync("src/world/traffic.js", "utf8");
+const traffic = [
+  fs.readFileSync("src/world/traffic/dynamics.js", "utf8"),
+  fs.readFileSync("src/world/traffic/agents.js", "utf8"),
+  fs.readFileSync("src/world/traffic/graph.js", "utf8"),
+  fs.readFileSync("src/world/traffic/npcPhysics.js", "utf8"),
+  fs.readFileSync("src/world/traffic/npcDriver.js", "utf8"),
+].join("\n");
 const routeDataSource = fs.readFileSync("src/route/routeData.js", "utf8");
 const heightSampler = fs.readFileSync("src/world/declarative/continuousTerrain.js", "utf8");
 const railways = fs.readFileSync("src/world/railways.js", "utf8");
@@ -199,12 +207,12 @@ assert(config.includes("transportation: true"), "PLATEAU transportation surfaces
 assert(!config.includes("osmRouteSurface"), "OSM route surface option must not exist");
 assert(!main.includes("buildRoad("), "OSM route surface renderer is still wired into main.js");
 assert(plateauRenderer.includes("compiledRoadDetailMeshes"), "Compiled OSM road details are not rendered on PLATEAU surfaces");
-for (const marker of ["idmAcceleration", "canMergeIntoLane", "reserveIntersection", "assignExitPlan", "orientedBoxesOverlap"]) {
+for (const marker of ["idmAcceleration", "orientedBoxesOverlap", "junctionBusy", "chooseNextConnector", "NpcPhysics", "steerInput"]) {
   assert(traffic.includes(marker), `Traffic safety feature missing: ${marker}`);
 }
 assert(railways.includes("terrainHeightAtWorld"), "Railway/viaduct ground structures are not PLATEAU-ground-aware");
-assert(traffic.includes("function setRoutePose") && traffic.includes("surfaceElevationAt(s, x, z) + yOffset"), "Main-route traffic is not pinned to the PLATEAU road surface");
-assert(routeDataSource.includes('import drivingNetwork from "../data/generated/driving-network.json"'), "Runtime does not use the compiled driving network");
+assert(traffic.includes("agent.cursor.pose()"), "NPC pose is not sampled from compiled lane geometry");
+assert(routeDataSource.includes("world/generated/driving-network.json"), "Runtime does not use the compiled driving network");
 assert(routeDataSource.includes("return networkNodeAt(s).y;"), "Road height is not read from the compiled PLATEAU driving network");
 assert(routeDataSource.includes("export function surfaceElevationAt(s)"), "Vehicles do not use the compiled PLATEAU road surface");
 assert(!routeDataSource.includes("route-elevation.json"), "A stale route elevation profile is still imported at runtime");
@@ -256,9 +264,8 @@ console.log(JSON.stringify({
   },
   traffic: {
     idmFollowing: true,
-    safeMerging: true,
-    intersectionReservations: true,
-    dynamicNetworkExits: true,
+    graphNetworkRouting: true,
+    junctionLocking: true,
     threeDimensionalCollisionSeparation: true,
   },
   structuralRoads: {

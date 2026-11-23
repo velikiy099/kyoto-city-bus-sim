@@ -4,6 +4,9 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "predev": "node tools/check-generated-data.mjs",
+    "prebuild": "node tools/check-generated-data.mjs",
+    "check-data": "node tools/check-generated-data.mjs",
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
@@ -21,6 +24,7 @@
     "validate:world-alignment": "node tools/validate-world-alignment.mjs",
     "validate:structural-road": "node tools/validate-structural-road-runtime.mjs",
     "validate:driving-network": "node tools/validate-driving-network.mjs",
+    "validate:traffic-continuity": "node tools/validate-traffic-continuity.mjs",
     "rebuild:route-elevation": "node tools/rebuild-route-elevation-from-grid.mjs",
     "validate:bridge-water-alignment": "node tools/validate-bridge-water-alignment.mjs"
   },

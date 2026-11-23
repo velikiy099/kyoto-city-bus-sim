@@ -1,0 +1,9 @@
+{
+  "note": "OSMのwaterway=riverは中心線のため、riverbankポリゴンやwidthタグが無い河川の描画幅フォールバック(メートル)。実測に基づく手動補正値。",
+  "OSM_LINE_WIDTH_FALLBACK": {
+    "桂川": 48,
+    "鴨川": 22,
+    "西高瀬川": 8
+  },
+  "DEFAULT_RIVER_WIDTH_M": 12
+}

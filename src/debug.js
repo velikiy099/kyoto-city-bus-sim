@@ -4,7 +4,7 @@ import { speedLimitAt } from "./route/routeData.js";
 
 /**
  * デバッグ/自動運転。window.game に API を公開する。
- * ctx: { bus, path, route, getState } — getState() は毎回最新のゲーム状態を返す
+ * ctx: { bus, path, route, traffic, getState } — getState() は毎回最新のゲーム状態を返す
  */
 export const dbg = {
   autoDrive: false,
@@ -22,8 +22,14 @@ export function autoDriveInput(
   vCap = Infinity,
 ) {
   const B = CFG.bus;
+  const maxSteerRad = (B.maxSteerDeg * Math.PI) / 180;
   // --- 操舵: 目標横位置を狙う pure pursuit ---
-  const Ld = Math.max(8, Math.min(30, 6 + bus.v * 1.8));
+  const kLocal = Math.max(
+    Math.abs(path.curvatureAt(s)),
+    Math.abs(path.curvatureAt(Math.min(s + 8, path.length - 0.1))),
+  );
+  const minLd = kLocal > 0.08 ? 4.2 : 6.0;
+  const Ld = Math.max(minLd, Math.min(30, 3.2 + bus.v * 1.8));
   const sAhead = Math.min(s + Ld, path.length - 0.1);
   const target = laneCenterPoint(
     path,
@@ -41,14 +47,24 @@ export function autoDriveInput(
   const deltaDesired = Math.atan(curvature * B.wheelbase);
   const steer = Math.max(-1, Math.min(1, -deltaDesired / bus.maxSteer));
 
-  // --- 速度: 制限速度・前方カーブ・停止目標から目標速度を決定 ---
+  // --- 速度: 制限速度・前方カーブ(横G + 舵角制限)・停止目標から目標速度を決定 ---
   let vTarget = speedLimitAt(s) * 0.92;
-  for (let ahead = 10; ahead <= 90; ahead += 10) {
-    const k = Math.abs(path.curvatureAt(Math.min(s + ahead, path.length - 1)));
+  for (let ahead = 0; ahead <= 90; ahead += 3) {
+    const sampleS = Math.min(s + ahead, path.length - 1);
+    const k = Math.max(
+      Math.abs(path.curvatureAt(sampleS, 6)),
+      Math.abs(path.curvatureAt(sampleS, 2)),
+    );
     if (k > 1e-4) {
-      // 横G 2.2m/s^2 上限。遠いカーブほど今は速くてよい(間に減速余地)
-      const vCurve = Math.sqrt(2.2 / k) + Math.max(0, ahead - 15) * 0.09;
-      vTarget = Math.min(vTarget, Math.max(2.5, vCurve));
+      // 横G 2.2m/s^2 上限と、車速に応じた最大舵角制限の両方を満たす安全速度
+      const deltaReq = Math.atan(k * B.wheelbase);
+      const steerCap = deltaReq >= maxSteerRad * 0.94
+        ? 1.5
+        : Math.max(1.5, B.steerSpeedFactor * (maxSteerRad / Math.max(1e-4, deltaReq) - 1) * 0.88);
+      const latGCat = Math.max(2.5, Math.sqrt(2.4 / k));
+      const apexV = Math.min(latGCat, steerCap);
+      const vReach = Math.sqrt(apexV * apexV + 2 * 0.75 * Math.max(0, ahead - 6));
+      vTarget = Math.min(vTarget, vReach);
     }
   }
   if (stopTargetS != null) {
@@ -69,8 +85,8 @@ export function autoDriveInput(
   if (vTarget < 0.05 && Math.abs(bus.v) < 0.15) {
     // 完全停止: ブレーキも離す(踏み続けると後退アームの誤発動につながる)
   } else if (vTarget < 0.05 && bus.v < 0.6) brake = 1;
-  else if (dv > 0.3) throttle = Math.min(1, dv * 0.8);
-  else if (dv < -0.3) brake = Math.min(0.85, -dv * 0.45); // フル制動を避け急ブレーキ減点を防ぐ
+  else if (vTarget > 0.1 && dv > 0.04) throttle = Math.min(1, 0.25 + dv * 0.85);
+  else if (dv < -0.25) brake = Math.min(0.85, -dv * 0.45); // フル制動を避け急ブレーキ減点を防ぐ
   return { throttle, brake, steer };
 }
 
@@ -84,6 +100,7 @@ export function setupDebug(ctx) {
   const { bus, path, route } = ctx;
   window.game = {
     _ctx: ctx,
+    traffic: ctx.traffic,
     input: {
       override: (o) => input.setOverride(o),
       clear: () => input.setOverride(null),

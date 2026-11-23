@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import LANDMARK_DEFS from "../data/definitions/landmarks.json" with { type: "json" };
 import { route, rightWidthAt } from "../route/routeData.js";
 import { lambertize } from "../util/lambertize.js";
 import { snapHierarchyToTerrain } from "./declarative/continuousTerrain.js";
@@ -44,13 +45,7 @@ function anchor(path, s, lat) {
 // OSM(ODbL)実測の門位置と PLATEAU 実測の建物中心を、route18.json と同じ
 // projOrigin [34.9746902, 135.7422893] の equirectangular で投影した値。
 // halfGap は塀に空ける開口の半幅(門の屋根全長の半分+余白)。
-const TOJI_POS = {
-  pagoda: { x: 590.22, z: -578.63 }, // PLATEAU measuredHeight=55.0 の建物中心
-  kondo: { x: 496.62, z: -632.03 }, // PLATEAU 金堂(高さ24.9m)の建物中心
-  nandaimon: { x: 495.37, z: -540.99, halfGap: 13.3 }, // 南大門(屋根全長23.6m)
-  todaimon: { x: 618.51, z: -667.9, halfGap: 9.3 }, // 東大門・不開門(同15.4m)
-  keigamon: { x: 618.51, z: -799.26, halfGap: 9.4 }, // 慶賀門(同15.65m)
-};
+const TOJI_POS = LANDMARK_DEFS.TOJI_POS;
 
 // 五重塔・三門の実測GLB(Blender製)。一度だけロードして共有する。
 let tojiModelsPromise = null;
@@ -83,9 +78,9 @@ function loadTojiModels() {
 function buildToji(scene, path) {
   const g = new THREE.Group();
   const findIx = (name) => route.intersections.find((ix) => ix.name === name);
-  const tojiDo = findIx("東寺道");
-  const keihan = findIx("京阪国道口(国道1号)");
-  const turn = route.turnIntersections.find((t) => t.crossName === "大宮通");
+  const tojiDo = findIx(LANDMARK_DEFS.TOJI_REFS.northIntersection);
+  const keihan = findIx(LANDMARK_DEFS.TOJI_REFS.westIntersection);
+  const turn = route.turnIntersections.find((t) => t.crossName === LANDMARK_DEFS.TOJI_REFS.turnCrossName);
   if (!tojiDo || !keihan || !turn) {
     scene.add(g);
     return [];
@@ -184,16 +179,16 @@ function buildToji(scene, path) {
     { x: cx, z: cz, r: Math.max(w, d) / 2 + 15 },
     // 慶賀門は境内北東角にあり上の円から外れるため、PLATEAU側の門建物
     // (bldg_b170a8f2, 高さ8.3m)を個別に除外して GLB と重ならないようにする。
-    { x: keigamon.x, z: keigamon.z, r: 10 },
+    { x: keigamon.x, z: keigamon.z, r: LANDMARK_DEFS.TOJI_REFS.keigamonExclusion.radius },
   ];
 }
 
 /** 京都水族館+梅小路公園 */
 function buildAquarium(scene, path) {
-  const s = stopS("七条大宮・京都水族館前");
-  const PARK_HALF_W = 75; // PlaneGeometry(150,120) の半幅(道路と垂直な方向)
-  const lat = rightWidthAt(s + 20) + 3.2 + 8 + PARK_HALF_W; // 車道+歩道+余白の外側に芝生の内縁を置く
-  const a = anchor(path, s + 20, lat); // 右(西)側
+  const s = stopS(LANDMARK_DEFS.AQUARIUM.stopName);
+  const PARK_HALF_W = LANDMARK_DEFS.AQUARIUM.parkHalfWidthM; // PlaneGeometry(150,120) の半幅(道路と垂直な方向)
+  const lat = rightWidthAt(s + LANDMARK_DEFS.AQUARIUM.sOffsetM) + 3.2 + 8 + PARK_HALF_W; // 車道+歩道+余白の外側に芝生の内縁を置く
+  const a = anchor(path, s + LANDMARK_DEFS.AQUARIUM.sOffsetM, lat); // 右(西)側
   const g = new THREE.Group();
   g.position.set(a.x, 0, a.z);
   g.rotation.y = a.ry;
@@ -213,13 +208,13 @@ function buildAquarium(scene, path) {
   g.add(aqRoof);
   // 公園の木は OSM 実測の木に置き換わるため削除(nature.js で生成)
   scene.add(g);
-  return { x: a.x, z: a.z, r: 95 };
+  return { x: a.x, z: a.z, r: LANDMARK_DEFS.AQUARIUM.exclusionRadiusM };
 }
 
 /** 京都タワー(遠景・東方向) */
 function buildKyotoTower(scene, path) {
-  const s = stopS("七条大宮・京都水族館前");
-  const a = anchor(path, s, -620); // 左(東)遠方
+  const s = stopS(LANDMARK_DEFS.KYOTO_TOWER.stopName);
+  const a = anchor(path, s, LANDMARK_DEFS.KYOTO_TOWER.lateralM); // 左(東)遠方
   const g = new THREE.Group();
   g.position.set(a.x, 0, a.z);
   const base = new THREE.Mesh(new THREE.BoxGeometry(40, 30, 40), mat(0xcfd4d8));
@@ -244,7 +239,7 @@ function buildKyotoTower(scene, path) {
   tip.position.y = 114;
   g.add(tip);
   scene.add(g);
-  return { x: a.x, z: a.z, r: 60 };
+  return { x: a.x, z: a.z, r: LANDMARK_DEFS.KYOTO_TOWER.exclusionRadiusM };
 }
 
 function makeLabelTexture(text) {
@@ -274,8 +269,8 @@ function makeLabelTexture(text) {
  * OSMの転回場・停留所座標を基準に敷地を置く(位置決めのみ経路を使い、向きは使わない)。
  */
 // 久我石原町敷地(操車場)の寸法。OSM landuse=garages の実測範囲に合わせる。
-const TERMINUS_LOT = { w: 22.5, d: 24.7 };
-const TERMINUS_STOP_INSET = { x: 1.8, z: 2.0 }; // 西端・北端からポールまで
+const TERMINUS_LOT = LANDMARK_DEFS.TERMINUS.LOT;
+const TERMINUS_STOP_INSET = LANDMARK_DEFS.TERMINUS.STOP_INSET; // 西端・北端からポールまで
 
 /**
  * 久我石原町敷地のアンカー(位置)を計算。buildTerminus と stops.js(バス停を
@@ -286,7 +281,7 @@ const TERMINUS_STOP_INSET = { x: 1.8, z: 2.0 }; // 西端・北端からポー�
  * OSMのバス停座標を基準に、西端・北寄りへ敷地を復元する。南北の構内道路は経路に含めない。
  */
 export function terminusLotAnchor(path) {
-  const stop = route.stops.find((st) => st.name === "久我石原町");
+  const stop = route.stops.find((st) => st.name === LANDMARK_DEFS.TERMINUS.stopName);
   if (!stop) return null;
   if (route.terminalStop) {
     const { x: stopX, z: stopZ } = route.terminalStop;
@@ -303,8 +298,8 @@ export function terminusLotAnchor(path) {
   }
 
   // 旧データ互換: OSM停留所メタデータがない場合も、終端手前の道路南側へ置く。
-  const s = Math.max(0, Math.min(path.length, stop.s - 9.5));
-  const { x, z } = anchor(path, s, -16.6);
+  const s = Math.max(0, Math.min(path.length, stop.s - LANDMARK_DEFS.TERMINUS.legacyFallback.sBackM));
+  const { x, z } = anchor(path, s, LANDMARK_DEFS.TERMINUS.legacyFallback.lateralM);
   return {
     s,
     x,
@@ -335,10 +330,10 @@ function buildTerminus(scene, path) {
   g.position.set(lot.x, 0, lot.z); // 向きは世界軸のまま(rotation.y=0): +X=東, +Z=南
   const pavement = new THREE.Mesh(
     new THREE.PlaneGeometry(lotW, lotD),
-    mat(0x6a6e70),
+    mat(0x55585a),
   );
   pavement.rotation.x = -Math.PI / 2;
-  pavement.position.y = 0.02;
+  pavement.position.y = 0.035;
   g.add(pavement);
 
   // 南東の角にバス駐車区画を2つ(いずれも北向き=バスの前面が-Z)。
@@ -357,7 +352,7 @@ function buildTerminus(scene, path) {
   for (const x of [bayLeftX, bayMidX, bayRightX]) {
     const line = new THREE.Mesh(new THREE.PlaneGeometry(0.15, BAY_L), lineMat);
     line.rotation.x = -Math.PI / 2;
-    line.position.set(x, 0.03, bayZ);
+    line.position.set(x, 0.048, bayZ);
     g.add(line);
   }
   const backLine = new THREE.Mesh(
@@ -365,7 +360,7 @@ function buildTerminus(scene, path) {
     lineMat,
   );
   backLine.rotation.x = -Math.PI / 2;
-  backLine.position.set((bayLeftX + bayRightX) / 2, 0.03, bayBackZ);
+  backLine.position.set((bayLeftX + bayRightX) / 2, 0.048, bayBackZ);
   g.add(backLine);
 
   // The terminal pole, shelter and north-facing stopping frame are generated
@@ -377,6 +372,14 @@ function buildTerminus(scene, path) {
   bus.position.set(bay2X, 0, bayZ);
   bus.rotation.y = Math.PI;
   g.add(bus);
+
+  // 南西隅の乗務員休憩所(白いプレハブ小屋)
+  const shed = new THREE.Mesh(
+    new THREE.BoxGeometry(2.6, 2.5, 4.0),
+    mat(0xe8eae6),
+  );
+  shed.position.set(-lotW / 2 + 1.6, 1.25, lotD / 2 - 2.4);
+  g.add(shed);
 
   // 敷地境界のフェンス(南・東・西の3辺。北側は出入口として開放)
   const fenceMat = mat(0xb4b8b4);
@@ -399,23 +402,23 @@ function buildTerminus(scene, path) {
  * 斜め駐車ベイ2列×4区画+事務所小屋を敷地内に置き、うち数区画にバスを駐機させる。
  */
 function buildMibuDepot(scene, path) {
-  const stop = route.stops.find((st) => st.name === "みぶ操車場前");
+  const stop = route.stops.find((st) => st.name === LANDMARK_DEFS.MIBU_DEPOT.stopName);
   if (!stop) return { x: 0, z: 0, r: 0 };
   const s = stop.s;
   const HW = rightWidthAt(s);
-  const lotW = 50,
-    lotD = 56; // lotW: 道路からの奥行き, lotD: 道路沿いの長さ
-  const a = anchor(path, s, HW + 8 + lotW / 2);
+  const lotW = LANDMARK_DEFS.MIBU_DEPOT.lotW,
+    lotD = LANDMARK_DEFS.MIBU_DEPOT.lotD; // lotW: 道路からの奥行き, lotD: 道路沿いの長さ
+  const a = anchor(path, s, HW + LANDMARK_DEFS.MIBU_DEPOT.roadSetbackM + lotW / 2);
   const g = new THREE.Group();
   g.position.set(a.x, 0, a.z);
   g.rotation.y = a.ry;
 
   const pavement = new THREE.Mesh(
     new THREE.PlaneGeometry(lotW, lotD),
-    mat(0x6a6e70),
+    mat(0x55585a),
   );
   pavement.rotation.x = -Math.PI / 2;
-  pavement.position.y = 0.02;
+  pavement.position.y = 0.035;
   g.add(pavement);
 
   // 事務所・車庫(道路から一番遠い奥側)

@@ -1,0 +1,13 @@
+{
+  "note": "路線18号系統のセマンティクス定義。停留所名はOSM/公式表記。",
+  "routeNumber": "18",
+  "origin": "二条駅西口",
+  "terminal": "久我石原町",
+  "headsignPhaseSwitchStop": "九条大宮",
+  "excludedStops": ["上鳥羽村山町"],
+  "HEADSIGNS": {
+    "selfBeforeKujo": { "via": "大宮通", "japanese": "東寺・久我石原町", "english": "Koga Ishiharacho" },
+    "selfAfterKujo": { "via": null, "japanese": "久我石原町", "english": "Koga Ishiharacho" },
+    "oncoming": { "via": "大宮通", "japanese": "四条大宮・二条駅", "english": "Nijo Sta. Via Shijo Omiya" }
+  }
+}

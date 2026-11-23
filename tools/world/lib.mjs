@@ -11,9 +11,10 @@ export function readJson(file) {
   return JSON.parse(fs.readFileSync(file, "utf8"));
 }
 
-export function writeJson(file, value) {
+export function writeJson(file, value, { compact = false } = {}) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`);
+  const text = compact ? JSON.stringify(value) : JSON.stringify(value, null, 2);
+  fs.writeFileSync(file, `${text}\n`);
 }
 
 export function config() {

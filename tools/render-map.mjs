@@ -19,12 +19,13 @@ import { fileURLToPath } from "node:url";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const readJson = (relative) => JSON.parse(readFileSync(join(ROOT, relative), "utf8"));
 const raw = readJson("src/data/route18.json");
-const network = readJson("src/data/generated/driving-network.json");
+const network = readJson("public/world/generated/driving-network.json");
 const transportation = readJson("public/world/generated/plateau-transportation.json");
 const roadOverlays = readJson("public/world/generated/osm-road-overlays.json");
 const osmCorridor = readJson("data/osm/route18-corridor.json");
 const buildings = readJson("public/world/generated/plateau-buildings.json");
 const water = readJson("public/world/generated/plateau-water.json");
+const RIVER_DEFS = readJson("data/definitions/rivers.json");
 const terrain = readJson("src/world/declarative/generated/terrain-grid.json");
 
 const args = process.argv.slice(2);
@@ -42,6 +43,10 @@ const TERRAIN_STEP = Math.max(1, Math.round(Number(argValue("--terrain-step", 2)
 const OUT = resolve(ROOT, argValue("--out", "tools/map.svg"));
 const CHECK = args.includes("--check");
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+const crossesFlatBridgeBoundary = (a, b) => (network.structures ?? []).some((structure) =>
+  structure.profile === "flat-deck"
+  && ((a.s < structure.from && b.s >= structure.from) || (a.s <= structure.to && b.s > structure.to))
+);
 const xml = (value) => String(value)
   .replaceAll("&", "&amp;")
   .replaceAll("<", "&lt;")
@@ -150,7 +155,7 @@ function mapChecks() {
     const a = nodes[index - 1], b = nodes[index];
     const ds = Math.max(1e-6, b.s - a.s);
     const grade = Math.abs((b.y - a.y) / ds);
-    if (grade > maxGrade.value) maxGrade = { value: grade, s: b.s };
+    if (!crossesFlatBridgeBoundary(a, b) && grade > maxGrade.value) maxGrade = { value: grade, s: b.s };
     let turn = Math.abs(b.heading - a.heading);
     while (turn > Math.PI) turn = Math.abs(turn - Math.PI * 2);
     const turnDeg = turn * 180 / Math.PI;
@@ -233,7 +238,7 @@ function ribbonPoints(points, halfWidth) {
 const waterLineWidth = (river, bridge) => {
   const tagged = Number(river?.widthMeters ?? bridge?.riverWidth);
   if (Number.isFinite(tagged) && tagged > 0) return tagged;
-  return ({ "桂川": 48, "鴨川": 22, "西高瀬川": 8 })[river?.river] ?? 12;
+  return RIVER_DEFS.OSM_LINE_WIDTH_FALLBACK[river?.river] ?? RIVER_DEFS.DEFAULT_RIVER_WIDTH_M;
 };
 
 // The simulator's connected terrain grid, rendered as a subdued elevation
@@ -513,6 +518,7 @@ for (const lanePath of (network.trafficPaths ?? []).filter((item) => item.role =
 for (let index = 1; index < nodes.length; index++) {
   const a = nodes[index - 1], b = nodes[index];
   if (b.s < S_FROM || a.s > S_TO) continue;
+  if (crossesFlatBridgeBoundary(a, b)) continue;
   const grade = Math.abs((b.y - a.y) / Math.max(1e-6, b.s - a.s));
   if (grade > 0.08) layers.grades.push(polylineSvg([[a.x, a.z], [b.x, b.z]], `stroke="${grade > 0.12 ? "#ff173d" : "#ff9f1a"}" stroke-width="${grade > 0.12 ? 3 : 2}"`));
 }
