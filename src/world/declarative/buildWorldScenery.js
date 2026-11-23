@@ -26,7 +26,7 @@ function captureAndSnap(scene, build, heightAtWorld) {
 export async function buildWorldScenery(scene, path, route, builders) {
   const surfacePath = route.surfacePath ?? path;
   // Railway/viaduct builders already distinguish ground height from deck height.
-  builders.buildRailways(scene, surfacePath, route.railStructures, route.osmExpressways ?? []);
+  const railways = builders.buildRailways(scene, surfacePath, route.railStructures, route.osmExpressways ?? []);
 
   const landmarkExclusions = asArray(
     captureAndSnap(scene, () => builders.buildLandmarks(scene, surfacePath), builders.terrainHeightAtWorld),
@@ -62,5 +62,5 @@ export async function buildWorldScenery(scene, path, route, builders) {
     throw new Error("PLATEAU building layer is empty; OSM building fallback is intentionally disabled.");
   }
   console.info("PLATEAU-authoritative world loaded", { counts: plateau.counts });
-  return { mode: "plateau", exclusions, plateau, manifest };
+  return { mode: "plateau", exclusions, plateau, manifest, railways };
 }

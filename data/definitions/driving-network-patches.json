@@ -23,10 +23,12 @@
   },
   "WAY_LANE_OVERRIDES": {
     "157229578": { "lanesF": 2, "lanesB": 0, "oneWay": true, "center": "none", "wL": 3.6, "wR": 3.6 },
-    "968042876": { "lanesF": 2, "lanesB": 0, "oneWay": true, "center": "none", "wL": 3.6, "wR": 3.6 },
+    "968042876": { "lanesF": 3, "lanesB": 0, "oneWay": true, "center": "none", "wL": 6.6, "wR": 3.0 },
     "968070115": { "lanesF": 2, "lanesB": 0, "oneWay": true, "center": "none", "wL": 3.6, "wR": 3.6 },
     "968070112": { "lanesF": 2, "lanesB": 0, "oneWay": true, "center": "none", "wL": 3.6, "wR": 3.6 },
     "968070111": { "lanesF": 2, "lanesB": 0, "oneWay": true, "center": "none", "wL": 3.6, "wR": 3.6 },
+    "724814700": { "lanesF": 3, "lanesB": 3, "oneWay": false, "center": "line", "wL": 9.6, "wR": 9.6 },
+    "968070113": { "lanesF": 3, "lanesB": 3, "oneWay": false, "center": "line", "wL": 9.6, "wR": 9.6 },
     "273254459": { "lanesF": 2, "lanesB": 2, "oneWay": false, "center": "line", "wL": 7.2, "wR": 7.2 },
     "26950287": { "lanesF": 1, "lanesB": 1, "oneWay": false, "center": "line", "wL": 4.8, "wR": 4.8 },
     "462459519": { "lanesF": 1, "lanesB": 1, "oneWay": false, "center": "line", "wL": 4.8, "wR": 4.8 },
@@ -36,6 +38,38 @@
     "531155907": { "lanesF": 1, "lanesB": 1, "oneWay": false, "center": "line", "wL": 4.6, "wR": 4.6 },
     "296206310": { "lanesF": 1, "lanesB": 1, "oneWay": false, "center": "line", "wL": 4.6, "wR": 4.6 }
   },
+  "SECTION_RANGE_OVERRIDES": [
+    {
+      "afterStructure": "大宮跨線橋",
+      "untilWayId": 724814700,
+      "lanesF": 3,
+      "lanesB": 3,
+      "oneWay": false,
+      "center": "line",
+      "wL": 9.6,
+      "wR": 9.6
+    }
+  ],
+  "AUTO_LANE_GUIDES": [
+    {
+      "label": "千本御池右折",
+      "fromStop": "二条駅西口",
+      "fromOffsetM": 215,
+      "holdFromOffsetM": 265,
+      "holdToOffsetM": 438,
+      "toOffsetM": 482,
+      "target": "rightmost"
+    },
+    {
+      "label": "九条大宮右折",
+      "fromStop": "九条大宮",
+      "fromOffsetM": 2,
+      "holdFromOffsetM": 24,
+      "holdToOffsetM": 54,
+      "toOffsetM": 88,
+      "laneIndex": 1
+    }
+  ],
   "TERMINUS_TURNAROUND": {
     "stopName": "久我石原町",
     "entryXOffsetM": 23.0,

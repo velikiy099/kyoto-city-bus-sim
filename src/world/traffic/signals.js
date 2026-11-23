@@ -224,9 +224,14 @@ export function buildSignals(group, path) {
         }
       }
       if (best) {
+        // 交差点中心(sig.s)は右左折カーブ途中の45°接線になり交差道路と誤判定しやすいため、
+        // 停止線手前(進入方向)の接線を本線軸として信号現示を割り当てる。
+        const approachS = best.sig.stopLineS != null
+          ? Math.max(0, best.sig.stopLineS - 2)
+          : Math.max(0, best.sig.s - 12);
         nodeSignalMap.set(node.id, {
           sig: best.sig,
-          mainTangent: path.getTangent(best.sig.s),
+          mainTangent: path.getTangent(approachS),
         });
       }
     }

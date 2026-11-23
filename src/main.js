@@ -84,6 +84,7 @@ scene.add(sun);
 
 const baseTerrain = buildContinuousTerrain(path, route.bridges, route.rivers);
 scene.add(baseTerrain);
+let railwaysView = null;
 void buildWorldScenery(scene, path, route, {
   buildRailways,
   buildLandmarks,
@@ -93,6 +94,8 @@ void buildWorldScenery(scene, path, route, {
   terrainHeightAtWorld,
   roadHeightAtWorld,
   baseTerrain,
+}).then((res) => {
+  railwaysView = res?.railways ?? null;
 });
 
 // ---------------------------------------------------------------- bus / game objects
@@ -299,6 +302,34 @@ function autoDockLateralAt(s, stop) {
   return stop.dockLateral * (1 - smoothstep01((s - target) / depart));
 }
 
+function guideSampleLateralAt(samples, s) {
+  if (!samples?.length) return 0;
+  if (s <= samples[0][0]) return samples[0][1];
+  if (s >= samples.at(-1)[0]) return samples.at(-1)[1];
+  let lo = 0, hi = samples.length - 1;
+  while (lo + 1 < hi) {
+    const mid = (lo + hi) >> 1;
+    if (samples[mid][0] <= s) lo = mid;
+    else hi = mid;
+  }
+  const a = samples[lo], b = samples[hi];
+  const t = (s - a[0]) / Math.max(1e-6, b[0] - a[0]);
+  return a[1] + (b[1] - a[1]) * t;
+}
+
+function autoLaneGuideLateralAt(s) {
+  for (const guide of route.autoLaneGuides ?? []) {
+    if (s < guide.fromS || s > guide.toS) continue;
+    const baseLat = guideSampleLateralAt(guide.samples, s);
+    if (s < guide.holdFromS) {
+      return baseLat * smoothstep01((s - guide.fromS) / Math.max(1e-6, guide.holdFromS - guide.fromS));
+    }
+    if (s <= guide.holdToS) return baseLat;
+    return baseLat * (1 - smoothstep01((s - guide.holdToS) / Math.max(1e-6, guide.toS - guide.holdToS)));
+  }
+  return 0;
+}
+
 // ---------------------------------------------------------------- game tick (fixed step)
 function tick(dt, ePressed) {
   let axes;
@@ -309,14 +340,24 @@ function tick(dt, ePressed) {
     const target = autoStop?.target ?? autoStopTargetS();
     let effTarget = target;
     let vCap = Infinity;
+    const lookaheadS = state.s + Math.max(8, Math.min(30, 6 + bus.v * 1.8));
+    const dockLat = autoDockLateralAt(lookaheadS, autoStop?.stop);
+    const guideLat = autoLaneGuideLateralAt(lookaheadS);
+    const targetLat = Math.abs(dockLat) > 1e-3 ? dockLat : guideLat;
     // 赤信号の停止線が停留所より手前ならそちらを優先
     const redS = traffic.redStopTarget(state.s, bus.v);
     if (redS != null && (effTarget == null || redS < effTarget))
       effTarget = redS;
-    // 前方の同行車との車間を保つ(信号待ち行列への追突防止)
-    const lead = traffic.leadGapAhead(state.s, state.lateral);
+    // 前方の同行車との車間を保つ(信号待ち行列への追突や車線変更中の接触を防止)
+    let lead = traffic.leadGapAhead(state.s, state.lateral);
+    if (Math.abs(targetLat - state.lateral) > 0.35) {
+      const targetLead = traffic.leadGapAhead(state.s, targetLat);
+      if (targetLead != null && (lead == null || targetLead < lead)) {
+        lead = targetLead;
+      }
+    }
     if (lead != null) {
-      const followS = state.s + lead - 11;
+      const followS = state.s + Math.max(0, lead - 4.0);
       if (effTarget == null || followS < effTarget) effTarget = followS;
     }
     axes = autoDriveInput(
@@ -324,10 +365,7 @@ function tick(dt, ePressed) {
       path,
       state.s,
       effTarget,
-      autoDockLateralAt(
-        state.s + Math.max(8, Math.min(30, 6 + bus.v * 1.8)),
-        autoStop?.stop,
-      ),
+      targetLat,
       vCap,
     );
     // ドア操作の自動化: プロンプトが出たら即 E
@@ -371,15 +409,16 @@ function tick(dt, ePressed) {
     dt,
     state.s,
     [
-      bus.x + bfx * 3.15,
-      bus.z + bfz * 3.15,
-      surfaceElevationAt(state.s, bus.x + bfx * 3.15, bus.z + bfz * 3.15) + 1.6,
+      bus.x + bfx * centerOffset,
+      bus.z + bfz * centerOffset,
+      surfaceElevationAt(state.s, bus.x + bfx * centerOffset, bus.z + bfz * centerOffset) + 1.6,
     ],
     bus.v,
     bus.heading,
     state.lateral,
   );
   stopsView.updateWalkers(dt);
+  railwaysView?.update?.(dt);
 }
 
 // ---------------------------------------------------------------- pause overlay

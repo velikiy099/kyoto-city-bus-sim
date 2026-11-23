@@ -14,8 +14,8 @@ export const CFG = {
     maxSpeed: 60 / 3.6, // [m/s]
     maxReverse: 5 / 3.6,
     reverseAccel: 0.8,
-    maxSteerDeg: 40, // 静止時最大舵角
-    steerSpeedFactor: 6, // δmax(v) = maxSteer / (1 + v/factor)
+    maxSteerDeg: 45, // 静止時最大舵角
+    steerSpeedFactor: 12, // δmax(v) = maxSteer / (1 + v/factor)
     steerRate: (60 * Math.PI) / 180, // 操舵追従 [rad/s]
     centerRate: (45 * Math.PI) / 180, // 自動センタリング [rad/s]
   },

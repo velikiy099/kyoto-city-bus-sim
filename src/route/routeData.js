@@ -60,6 +60,7 @@ export const route = {
   intersections: drivingNetwork.intersections ?? [],
   turnIntersections: drivingNetwork.turnIntersections ?? [],
   signals: drivingNetwork.signals ?? [],
+  autoLaneGuides: drivingNetwork.autoLaneGuides ?? [],
   osmVegetation,
   railStructures: drivingNetwork.railStructures ?? [],
   elevations: drivingNetwork.structures ?? [],

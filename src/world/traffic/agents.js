@@ -245,7 +245,7 @@ export function createTrafficAgents(scene, path, runtime, events = {}, signalsAp
     z: busPos[1],
     y: busPos[2] ?? elevationAt(busS) + 1.35,
     heading: busHeading,
-    halfLength: 5.66,
+    halfLength: CFG.bus.length * 0.5,
     halfWidth: 1.19,
     height: 3,
     speed: busV,
@@ -547,7 +547,7 @@ export function createTrafficAgents(scene, path, runtime, events = {}, signalsAp
             { pt: [bus.x + fwd[0] * 4.8, bus.z + fwd[1] * 4.8], predictive: false },
             { pt: [bus.x - fwd[0] * 4.8, bus.z - fwd[1] * 4.8], predictive: false },
           ];
-          if (!inConnector && bus.speed > 2.0) {
+          if (bus.speed > 2.0) {
             busPts.push(
               { pt: [bus.x + fwd[0] * (4.8 + bus.speed * 1.0), bus.z + fwd[1] * (4.8 + bus.speed * 1.0)], predictive: true },
               { pt: [bus.x + fwd[0] * (4.8 + bus.speed * 2.0), bus.z + fwd[1] * (4.8 + bus.speed * 2.0)], predictive: true },
@@ -570,8 +570,9 @@ export function createTrafficAgents(scene, path, runtime, events = {}, signalsAp
                 }
               }
             } else if (inConnector) {
-              if (busProj.arcAhead > 0.2 && busProj.arcAhead < agent.length * 0.5 + 3.5 && busProj.lateral < 2.6) {
-                const busGap = Math.max(0, busProj.arcAhead - agent.length * 0.5 - 1.5);
+              const connLookahead = Math.max(agent.length * 0.5 + 6.0, speed * 2.2 + agent.length * 0.5 + 3.0);
+              if (busProj.arcAhead > 0.2 && busProj.arcAhead < connLookahead && busProj.lateral < (predictive ? 3.4 : 3.0)) {
+                const busGap = Math.max(0, busProj.arcAhead - agent.length * 0.5 - 2.0);
                 if (busGap < gap) {
                   gap = busGap;
                   leadSpeed = 0;
@@ -581,7 +582,7 @@ export function createTrafficAgents(scene, path, runtime, events = {}, signalsAp
               }
             } else if (!predictive && dot < -0.7) {
               if (busProj.arcAhead > 0.5 && busProj.arcAhead < 28 && busProj.lateral < oppClearance) {
-                const busGap = Math.max(0, busProj.arcAhead - agent.length * 0.5 - 2.0);
+                const busGap = Math.max(0, busProj.arcAhead - agent.length * 0.5 - 5.0);
                 if (busGap < gap) {
                   gap = busGap;
                   leadSpeed = 0;
@@ -590,7 +591,7 @@ export function createTrafficAgents(scene, path, runtime, events = {}, signalsAp
                 }
               }
             } else if (Math.abs(dot) <= 0.7 && busProj.arcAhead > 0.5 && busProj.arcAhead < 32 && busProj.lateral < 3.6) {
-              const busGap = Math.max(0, busProj.arcAhead - agent.length * 0.5 - 2.0);
+              const busGap = Math.max(0, busProj.arcAhead - agent.length * 0.5 - 3.6);
               if (busGap < gap) {
                 gap = busGap;
                 leadSpeed = 0;
@@ -613,7 +614,7 @@ export function createTrafficAgents(scene, path, runtime, events = {}, signalsAp
               const busDistToNode = Math.hypot(bus.x - rightNode.point[0], bus.z - rightNode.point[1]);
               const busAheadTowardNode = (rightNode.point[0] - bus.x) * fwd[0]
                 + (rightNode.point[1] - bus.z) * fwd[1];
-              const busYieldDist = Math.max(36, bus.speed * 4.0 + 16);
+              const busYieldDist = bus.speed < 0.3 ? 14 : Math.max(36, bus.speed * 4.0 + 16);
               if (oppDot < -0.5 && busDistToNode < busYieldDist && busAheadTowardNode > -6) {
                 const yieldGap = Math.max(0, busRightTurn.distToEntry - agent.length * 0.5 - 1.5);
                 if (yieldGap < gap) {
@@ -628,12 +629,14 @@ export function createTrafficAgents(scene, path, runtime, events = {}, signalsAp
         }
 
         // 赤信号は先読み経路(最大55m先)まで確認し、停止線通過済みなら交差点内で急停止しない。
+        // 分離帯内の短い接続辺(停止線未満の長さ)や右左折コネクタの先の直交信号では停止しない。
         let distAccum = 0;
         for (let ei = 0; ei < agent.cursor.entries.length && distAccum < 55; ei++) {
           const entryItem = agent.cursor.entries[ei].item;
+          if (entryItem.connector?.turn) break;
           const itemRem = ei === 0 ? agent.cursor.remainingOnCurrent() : entryItem.length;
           const distToEnd = distAccum + itemRem;
-          if (entryItem.edge && distToEnd < 55) {
+          if (entryItem.edge && entryItem.edge.length >= SIGNAL_STOP_LINE_OFFSET + 3 && distToEnd < 55) {
             const sigNode = runtime.nodeById.get(entryItem.edge.to);
             if (sigNode?.signal) {
               const approachHeading = runtime.edgeEndHeading.get(entryItem.edge.id) ?? 0;
@@ -666,6 +669,26 @@ export function createTrafficAgents(scene, path, runtime, events = {}, signalsAp
             leadIsNpc = false;
           }
         }
+        if (!current.connector && node && !node.signal && node.point && remaining < 18
+          && Math.abs(agent.outer.position.y - (bus.y - 1.5)) < 3.0) {
+          const ownApproachH = runtime.edgeEndHeading.get(current.edge.id) ?? agent.outer.rotation.y;
+          const busFwdX = Math.sin(bus.heading), busFwdZ = Math.cos(bus.heading);
+          const crossDot = Math.abs(busFwdX * Math.sin(ownApproachH) + busFwdZ * Math.cos(ownApproachH));
+          if (crossDot < 0.72) {
+            const nodeDistToBus = Math.hypot(node.point[0] - bus.x, node.point[1] - bus.z);
+            const busAheadTowardNode = (node.point[0] - bus.x) * busFwdX + (node.point[1] - bus.z) * busFwdZ;
+            const holdDist = Math.max(28, bus.speed * 3.0 + 14);
+            if (nodeDistToBus < holdDist && busAheadTowardNode > -8) {
+              const holdGap = Math.max(0, remaining - agent.length * 0.5 - 1.5);
+              if (holdGap < gap) {
+                gap = holdGap;
+                leadSpeed = 0;
+                leadIsNpc = false;
+                stoppedForSignalOrBus = true;
+              }
+            }
+          }
+        }
 
         // 他NPCとの交差点内交差回避・右直譲り合い
         const ownPose = agent.cursor.pose();
@@ -693,7 +716,7 @@ export function createTrafficAgents(scene, path, runtime, events = {}, signalsAp
                 gap = crossGap;
                 leadSpeed = dot > 0.5 ? other.v : 0;
                 leadIsNpc = true;
-                if (dot <= 0.5) {
+                if (dot <= 0.5 || (other.cursor?.current?.id !== current.id && crossGap < 4.0)) {
                   yieldingToCrossNpc = true;
                   blockingNpc = other;
                 }
@@ -880,7 +903,7 @@ export function createTrafficAgents(scene, path, runtime, events = {}, signalsAp
           busS,
           Math.max(150, maxDist + 50),
         );
-        if (projection.s <= busS || projection.s - busS > maxDist || projection.dist > 9) continue;
+        if (projection.s <= busS || projection.s - busS > maxDist || projection.dist > Math.max(9, Math.abs(busLat) + 5)) continue;
         const tangent = path.getTangent(projection.s);
         const heading = agent.outer.rotation.y;
         const forward = [Math.sin(heading), Math.cos(heading)];
@@ -894,8 +917,11 @@ export function createTrafficAgents(scene, path, runtime, events = {}, signalsAp
           && !(dot < -0.75 && latDiff > 2.25);
         if (!sameLaneMatch && !corridorOccupy) continue;
         const npcHalfAlong = Math.abs(dot) * (agent.length * 0.5) + sinCross * (agent.width * 0.5);
-        const gap = projection.s - busS - (11.4 * 0.5 + npcHalfAlong);
-        if (gap > 0 && gap < maxDist && (best == null || gap < best)) best = gap;
+        const rawGap = projection.s - busS - ((CFG.bus.length - CFG.bus.rearOverhang) + npcHalfAlong);
+        if (rawGap > -2.5 && rawGap < maxDist) {
+          const gap = Math.max(0, rawGap);
+          if (best == null || gap < best) best = gap;
+        }
       }
       return best;
     },

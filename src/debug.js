@@ -58,10 +58,10 @@ export function autoDriveInput(
     if (k > 1e-4) {
       // 横G 2.2m/s^2 上限と、車速に応じた最大舵角制限の両方を満たす安全速度
       const deltaReq = Math.atan(k * B.wheelbase);
-      const steerCap = deltaReq >= maxSteerRad * 0.90
-        ? 0.72
-        : Math.max(0.72, B.steerSpeedFactor * (maxSteerRad / Math.max(1e-4, deltaReq) - 1) * 0.80);
-      const latGCat = Math.max(2.5, Math.sqrt(2.2 / k));
+      const steerCap = deltaReq >= maxSteerRad * 0.94
+        ? 1.5
+        : Math.max(1.5, B.steerSpeedFactor * (maxSteerRad / Math.max(1e-4, deltaReq) - 1) * 0.88);
+      const latGCat = Math.max(2.5, Math.sqrt(2.4 / k));
       const apexV = Math.min(latGCat, steerCap);
       const vReach = Math.sqrt(apexV * apexV + 2 * 0.75 * Math.max(0, ahead - 6));
       vTarget = Math.min(vTarget, vReach);
@@ -85,8 +85,8 @@ export function autoDriveInput(
   if (vTarget < 0.05 && Math.abs(bus.v) < 0.15) {
     // 完全停止: ブレーキも離す(踏み続けると後退アームの誤発動につながる)
   } else if (vTarget < 0.05 && bus.v < 0.6) brake = 1;
-  else if (dv > 0.3) throttle = Math.min(1, dv * 0.8);
-  else if (dv < -0.3) brake = Math.min(0.85, -dv * 0.45); // フル制動を避け急ブレーキ減点を防ぐ
+  else if (vTarget > 0.1 && dv > 0.04) throttle = Math.min(1, 0.25 + dv * 0.85);
+  else if (dv < -0.25) brake = Math.min(0.85, -dv * 0.45); // フル制動を避け急ブレーキ減点を防ぐ
   return { throttle, brake, steer };
 }
 
