@@ -4,7 +4,7 @@ const repoRoot = new URL("..", import.meta.url);
 
 const requiredFiles = [
   "src/data/route18.json",
-  "src/data/generated/driving-network.json",
+  "public/world/generated/driving-network.json",
   "src/world/declarative/generated/terrain-grid.json",
   "src/world/declarative/generated/route-elevation.json",
   "data/osm/route18-corridor.json",

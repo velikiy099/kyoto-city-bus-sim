@@ -3232,5 +3232,5 @@ const network = {
 
 // The bus path and both lateral corners must be covered by selected PLATEAU
 // traffic surfaces.  This is intentionally a build failure, never a runtime fallback.
-writeJson(outputFile, network);
+writeJson(outputFile, network, { compact: true });
 console.log(JSON.stringify({ status: "driving-network-ok", output: outputFile, nodes: nodes.length, stops: stops.length, surfaces: network.selectedSurfaceIds.length, surfacePatches: surfacePatches.length }, null, 2));

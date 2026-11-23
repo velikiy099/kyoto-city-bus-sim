@@ -100,7 +100,7 @@
     "osmVisualSource": "data/osm/route18-corridor.json",
     "osmOverlays": "public/world/generated/osm-road-overlays.json",
     "routeElevation": "src/world/declarative/generated/route-elevation.json",
-    "drivingNetwork": "src/data/generated/driving-network.json",
+    "drivingNetwork": "public/world/generated/driving-network.json",
     "worldManifest": "public/world/world-manifest.json",
     "report": "data/work/plateau/build-report.json"
   }

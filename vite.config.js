@@ -5,4 +5,14 @@ export default defineConfig({
     port: Number(process.env.PORT) || 5173,
     strictPort: true,
   },
+  build: {
+    target: "es2022",
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          three: ["three"],
+        },
+      },
+    },
+  },
 });

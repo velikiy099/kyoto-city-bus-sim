@@ -1,7 +1,13 @@
 import raw from "../data/route18.json";
-import drivingNetwork from "../data/generated/driving-network.json";
 import ROUTE_SEMANTICS from "../data/definitions/route-semantics.json" with { type: "json" };
 import { RoutePath } from "./path.js";
+
+const drivingNetworkUrl = `${import.meta.env.BASE_URL}world/generated/driving-network.json`;
+const drivingNetworkResponse = await fetch(drivingNetworkUrl);
+if (!drivingNetworkResponse.ok) {
+  throw new Error(`Failed to load compiled driving network (${drivingNetworkResponse.status}): ${drivingNetworkUrl}`);
+}
+const drivingNetwork = await drivingNetworkResponse.json();
 
 /**
  * Runtime reads only this compiled network for driving geometry, road height,

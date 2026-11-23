@@ -19,7 +19,7 @@ import { fileURLToPath } from "node:url";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const readJson = (relative) => JSON.parse(readFileSync(join(ROOT, relative), "utf8"));
 const raw = readJson("src/data/route18.json");
-const network = readJson("src/data/generated/driving-network.json");
+const network = readJson("public/world/generated/driving-network.json");
 const transportation = readJson("public/world/generated/plateau-transportation.json");
 const roadOverlays = readJson("public/world/generated/osm-road-overlays.json");
 const osmCorridor = readJson("data/osm/route18-corridor.json");

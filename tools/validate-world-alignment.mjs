@@ -14,7 +14,7 @@ const terrain = read("src/world/declarative/generated/terrain-grid.json");
 const transportation = read("public/world/generated/plateau-transportation.json");
 const buildings = read("public/world/generated/plateau-buildings.json");
 const manifest = read("public/world/world-manifest.json");
-const drivingNetwork = read("src/data/generated/driving-network.json");
+const drivingNetwork = read("public/world/generated/driving-network.json");
 
 const nijoStop = route.stops.find((stop) => stop.name === "二条駅西口");
 const nijoStationAheadStop = route.stops.find((stop) => stop.name === "二条駅前");
@@ -212,7 +212,7 @@ for (const marker of ["idmAcceleration", "orientedBoxesOverlap", "junctionBusy",
 }
 assert(railways.includes("terrainHeightAtWorld"), "Railway/viaduct ground structures are not PLATEAU-ground-aware");
 assert(traffic.includes("agent.cursor.pose()"), "NPC pose is not sampled from compiled lane geometry");
-assert(routeDataSource.includes('import drivingNetwork from "../data/generated/driving-network.json"'), "Runtime does not use the compiled driving network");
+assert(routeDataSource.includes("world/generated/driving-network.json"), "Runtime does not use the compiled driving network");
 assert(routeDataSource.includes("return networkNodeAt(s).y;"), "Road height is not read from the compiled PLATEAU driving network");
 assert(routeDataSource.includes("export function surfaceElevationAt(s)"), "Vehicles do not use the compiled PLATEAU road surface");
 assert(!routeDataSource.includes("route-elevation.json"), "A stale route elevation profile is still imported at runtime");

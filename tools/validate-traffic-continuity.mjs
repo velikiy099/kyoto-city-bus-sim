@@ -5,7 +5,7 @@ import { createGraphRuntime, RouteCursor } from "../src/world/traffic/graph.js";
 import { createSpawner } from "../src/world/traffic/spawner.js";
 
 const assert = (value, message) => { if (!value) throw new Error(message); };
-const network = JSON.parse(fs.readFileSync("src/data/generated/driving-network.json", "utf8"));
+const network = JSON.parse(fs.readFileSync("public/world/generated/driving-network.json", "utf8"));
 const runtime = createGraphRuntime(network.trafficGraph);
 const spawner = createSpawner(runtime);
 const midpoint = network.nodes[Math.floor(network.nodes.length / 2)];

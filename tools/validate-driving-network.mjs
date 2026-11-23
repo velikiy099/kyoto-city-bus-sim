@@ -4,7 +4,7 @@ import { createGraphRuntime, RouteCursor } from "../src/world/traffic/graph.js";
 
 const read = (file) => JSON.parse(fs.readFileSync(file, "utf8"));
 const assert = (value, message) => { if (!value) throw new Error(message); };
-const network = read("src/data/generated/driving-network.json");
+const network = read("public/world/generated/driving-network.json");
 const transport = read("public/world/generated/plateau-transportation.json");
 const omiyaOverpassSideRoadWayIds = new Set([
   27574722, 27574729, 27574731,
@@ -503,7 +503,7 @@ const traffic = [
   fs.readFileSync("src/world/traffic/npcDriver.js", "utf8"),
 ].join("\n");
 const plateauRenderer = fs.readFileSync("src/world/declarative/PlateauWorldRenderer.js", "utf8");
-assert(routeData.includes('import drivingNetwork from "../data/generated/driving-network.json"'), "Runtime does not load the compiled network");
+assert(routeData.includes("world/generated/driving-network.json"), "Runtime does not load the compiled network");
 assert(!routeData.includes("KOEDA_"), "Bridge-specific runtime coordinates remain");
 assert(routeData.includes("export function laneCenterAt() { return 0; }"), "Runtime still computes the auto-driving lane offset");
 assert(!debug.includes("laneCenterAt"), "Autopilot still imports a runtime lane model");

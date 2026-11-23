@@ -43,9 +43,14 @@ def read_json(path: Path):
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def write_json(path: Path, value) -> None:
+def write_json(path: Path, value, compact: bool = False) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    text = (
+        json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        if compact
+        else json.dumps(value, ensure_ascii=False, indent=2)
+    )
+    path.write_text(text + "\n", encoding="utf-8")
 
 
 def first_text(element: ET.Element, names: set[str]) -> str | None:
@@ -1286,9 +1291,9 @@ def convert(args) -> dict:
         "vegetation": args.vegetation,
     }
     for key, output in outputs.items():
-        write_json(output_paths[key], output)
-    write_json(args.route_elevation, route_profile)
-    write_json(args.osm_overlays, osm_overlay_document)
+        write_json(output_paths[key], output, compact=True)
+    write_json(args.route_elevation, route_profile, compact=True)
+    write_json(args.osm_overlays, osm_overlay_document, compact=True)
 
     counts = {key: len(value.get("features", [])) for key, value in outputs.items()}
     if terrain_grid:
@@ -1339,7 +1344,7 @@ def convert_overlays_only(args) -> dict:
         "features": osm_overlays,
         "stats": osm_overlay_stats,
     }
-    write_json(args.osm_overlays, osm_overlay_document)
+    write_json(args.osm_overlays, osm_overlay_document, compact=True)
     if args.manifest and args.manifest.exists():
         manifest = read_json(args.manifest)
         public_root = args.manifest.resolve().parent.parent
@@ -1350,7 +1355,7 @@ def convert_overlays_only(args) -> dict:
                 if layer_url.startswith("/"):
                     layer_target = public_root / layer_url.lstrip("/")
                     if layer_target.resolve() != args.osm_overlays.resolve() and layer_target.parent.exists():
-                        write_json(layer_target, osm_overlay_document)
+                        write_json(layer_target, osm_overlay_document, compact=True)
                     if layer_target.exists():
                         raw_bytes = layer_target.read_bytes()
                         digest = hashlib.sha256(raw_bytes).hexdigest()
