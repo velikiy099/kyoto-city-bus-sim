@@ -1,6 +1,6 @@
 # Kyoto City Bus PDG-AA273KAN Specification & 3-View Geometry Reference
 
-> **Purpose**: Authoritative vehicle specification and 3-view coordinate reference for **Kyoto City Bus (京都市営バス) Mitsubishi Fuso Aero Star-S (`PDG-AA273KAN`)**, mapped into the game coordinate system used by [`tools/bus-model.blend`](file:///Users/basalt/work/cc_sample_game/tools/bus-model.blend), [`src/bus/busModel.js`](file:///Users/basalt/work/cc_sample_game/src/bus/busModel.js), and [`src/config.js`](file:///Users/basalt/work/cc_sample_game/src/config.js).
+> **Purpose**: Authoritative vehicle specification and 3-view coordinate reference for **Kyoto City Bus (京都市営バス) Mitsubishi Fuso Aero Star-S (`PDG-AA273KAN`)**, mapped into the game coordinate system used by [`tools/bus-model.blend`](../tools/bus-model.blend), [`src/bus/busModel.js`](../src/bus/busModel.js), and [`src/config.js`](../src/config.js).
 >
 > **Data Provenance Note**: Manufacturer/MLIT dimensions (overall length, width, total height by HVAC vendor, wheelbase, engine output, curb weight, passenger capacity, tire outer diameter) and Kyoto City Bus fleet records are verified from Japanese bus registries and manufacturer specifications. Individual body-panel millimeter coordinates (e.g., exact window bay splits, lamp housings, and overhang split) are not publicly released by Nishinippon Shatai Kogyo (西工); where exact factory CAD drawings are unavailable, values are derived from verified K-shaku chassis dimensions, MLIT non-step bus standards, and 96MC B-I proportions (marked as *derived/approx.*).
 
@@ -66,7 +66,7 @@
 ## 3. 3-View Geometry Tables in Game Coordinate System
 
 ### Coordinate System & Baseline
-Matches [`src/bus/busModel.js`](file:///Users/basalt/work/cc_sample_game/src/bus/busModel.js) and [`tools/bus-model.blend`](file:///Users/basalt/work/cc_sample_game/tools/bus-model.blend):
+Matches [`src/bus/busModel.js`](../src/bus/busModel.js) and [`tools/bus-model.blend`](../tools/bus-model.blend):
 - **Origin `(0, 0, 0)`**: Ground plane (`Y = 0`) directly beneath the **REAR AXLE CENTER**.
 - **`+X`**: Left / Curb / Passenger Door side (`公式側`). Outer body wall at `X = +1.245 m`.
 - **`-X`**: Right / Driver side (`非公式側`). Outer body wall at `X = -1.245 m`.
@@ -74,7 +74,7 @@ Matches [`src/bus/busModel.js`](file:///Users/basalt/work/cc_sample_game/src/bus
 - **`+Z`**: Forward. Front axle center at `Z = +4.800 m`; Front bumper tip at `Z = +7.010 m` (`FOH = 2.210 m`); Front body panel at `Z = +6.950 m`.
 - **`-Z`**: Rear. Rear bumper tip at `Z = -3.480 m` (`ROH = 3.480 m`); Rear body panel at `Z = -3.420 m`.
 
-> **Note on Current `bus.glb` Baseline**: The existing [`public/models/bus.glb`](file:///Users/basalt/work/cc_sample_game/public/models/bus.glb) models a `10.29 m` body (`Z = -3.15 .. +7.14 m`, bumpers `-3.27 .. +7.26 m`, `Roof` `2.94 .. 3.00 m`, `RoofAC` `3.14 m`) with a glide-slide-like flat front door, no safety window, and `SignSideL` mounted over the front door (`Z = +5.90 .. +7.10 m`). The tables below define the **target `PDG-AA273KAN` geometry** for updating `tools/bus-model.blend` and `src/config.js`.
+> **Note on Current `bus.glb` Baseline**: The existing [`public/models/bus.glb`](../public/models/bus.glb) models a `10.29 m` body (`Z = -3.15 .. +7.14 m`, bumpers `-3.27 .. +7.26 m`, `Roof` `2.94 .. 3.00 m`, `RoofAC` `3.14 m`) with a glide-slide-like flat front door, no safety window, and `SignSideL` mounted over the front door (`Z = +5.90 .. +7.10 m`). The tables below define the **target `PDG-AA273KAN` geometry** for updating `tools/bus-model.blend` and `src/config.js`.
 
 ---
 

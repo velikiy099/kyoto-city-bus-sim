@@ -1,7 +1,7 @@
 """Build script for Kyoto City Bus PDG-AA273KAN (96MC B-I, fleet #1771, Yokooji / Route 18).
 
 Run via:
-    /opt/homebrew/bin/blender --background --python tools/build-bus-model.py
+    blender --background --python tools/build-bus-model.py [-- --render-dir <dir>]
 
 Workflow:
 1. Loads `tools/bus-model.blend`.
@@ -18,8 +18,9 @@ Workflow:
 6. Renders all 10 Cycles CPU verification PNGs (orthographic front/rear/left/right/top, 3/4 front-left,
    3/4 rear-right, interior front/rear, cockpit driver POV at `spec.COCKPIT_ANCHOR`).
 """
+import argparse
 import math
-import shutil
+import os
 import sys
 from pathlib import Path
 
@@ -37,10 +38,7 @@ from bus_model.geom import new_empty, yup_to_blender_pos, yup_to_blender_vec
 BLEND_MAIN_PATH = TOOLS_DIR / "bus-model.blend"
 BLEND_PDG_PATH = TOOLS_DIR / "bus-pdg-aa273kan.blend"
 GLB_OUT_PATH = ROOT_DIR / "public" / "models" / "bus.glb"
-
-RENDER_DIR_COORD = Path("/Users/basalt/.gemini/antigravity/brain/ad98b72e-bdcc-4235-9623-488df8879754/renders")
-RENDER_DIR_LOCAL = Path("/Users/basalt/.gemini/antigravity/brain/50baac00-8e8a-4c75-bf64-db17083cd0e7/renders")
-RENDER_DIR_V2 = Path("/Users/basalt/.gemini/antigravity/brain/ba31878e-4580-4240-925a-63a27b1aff5d/renders")
+DEFAULT_RENDER_DIR = TOOLS_DIR / "cache" / "bus-renders"
 
 KEEP_OBJECTS = frozenset({"Passenger", "Sedan", "TreeA", "TreeB", "Truck"})
 
@@ -158,22 +156,27 @@ def _aim_camera_from_yup(cam_obj, eye_yup, target_yup, up_yup=(0.0, 1.0, 0.0)):
     cam_obj.matrix_world = M
 
 
-def _render_verification_views():
-    """Render all 10 Cycles CPU verification PNGs into the writable render folder(s)."""
-    writable_dirs = []
-    for cand in (RENDER_DIR_COORD, RENDER_DIR_LOCAL, RENDER_DIR_V2):
-        try:
-            cand.mkdir(parents=True, exist_ok=True)
-            probe = cand / ".write_test"
-            probe.write_text("ok")
-            probe.unlink()
-            writable_dirs.append(cand)
-        except OSError:
-            pass
-    if not writable_dirs:
-        raise RuntimeError("No writable render output directory available")
-    primary_dir = writable_dirs[0]
-    extra_dirs = writable_dirs[1:]
+def _parse_cli_args():
+    """Parse script options passed after `--` to Blender."""
+    argv = sys.argv[sys.argv.index("--") + 1 :] if "--" in sys.argv else []
+    parser = argparse.ArgumentParser(description="Build PDG-AA273KAN bus model and verification renders.")
+    parser.add_argument(
+        "--render-dir",
+        type=Path,
+        default=Path(os.environ.get("BUS_RENDER_DIR") or DEFAULT_RENDER_DIR),
+        help="Output directory for Cycles verification PNGs (default: tools/cache/bus-renders or $BUS_RENDER_DIR).",
+    )
+    parser.add_argument(
+        "--skip-renders",
+        action="store_true",
+        help="Skip Cycles verification PNG rendering.",
+    )
+    return parser.parse_args(argv)
+
+
+def _render_verification_views(render_dir: Path):
+    """Render all 10 Cycles CPU verification PNGs into `render_dir`."""
+    render_dir.mkdir(parents=True, exist_ok=True)
 
     sc = bpy.context.scene
     sc.render.engine = "CYCLES"
@@ -286,15 +289,10 @@ def _render_verification_views():
             cam_data.lens = param
             cam_data.sensor_width = 36.0
         _aim_camera_from_yup(cam_obj, eye, tgt, up)
-        out_primary = primary_dir / fname
-        sc.render.filepath = str(out_primary)
+        out_path = render_dir / fname
+        sc.render.filepath = str(out_path)
         bpy.ops.render.render(write_still=True)
-        for extra_dir in extra_dirs:
-            try:
-                shutil.copy2(out_primary, extra_dir / fname)
-            except OSError:
-                pass
-        print(f"Rendered {out_primary}")
+        print(f"Rendered {out_path}")
 
     # Clean up temporary render objects
     gnd_mesh = gnd_obj.data
@@ -312,6 +310,7 @@ def _render_verification_views():
 
 
 def main():
+    args = _parse_cli_args()
     print(f"Loading {BLEND_MAIN_PATH} ...")
     bpy.ops.wm.open_mainfile(filepath=str(BLEND_MAIN_PATH))
 
@@ -343,7 +342,8 @@ def main():
     print(f"Exported {GLB_OUT_PATH} ({GLB_OUT_PATH.stat().st_size / 1024:.1f} KB)")
 
     # Render verification suite
-    _render_verification_views()
+    if not args.skip_renders:
+        _render_verification_views(args.render_dir.resolve())
     print("All builds, exports, and verification renders complete.")
 
 
