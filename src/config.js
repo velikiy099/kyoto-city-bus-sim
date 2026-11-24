@@ -1,11 +1,11 @@
 /** 全チューニング定数 */
 export const CFG = {
-  // --- 車両(いすゞエルガ級 大型路線車) ---
+  // --- 車両(京都市バス PDG-AA273KAN: 西工96MC B-I / 三菱ふそうエアロスターS) ---
   bus: {
-    length: 10.29,
+    length: 10.49,
     width: 2.49,
     wheelbase: 4.8,
-    rearOverhang: 3.15, // 後軸から車体後端まで
+    rearOverhang: 3.48, // 後軸から車体後端まで
     maxAccel: 1.2, // [m/s^2]
     throttleTau: 0.3, // アクセル一次遅れ [s]
     maxBrake: 3.5, // 常用ブレーキ最大 [m/s^2]

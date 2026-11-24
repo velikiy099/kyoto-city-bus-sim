@@ -12,7 +12,7 @@ export const DOOR = {
 /**
  * 停車業務の中枢: ドア開閉・正着判定・乗降・発車条件・通過違反
  * ctx: { bus, path, route, state, scoring, pax, stopsView, events }
- * events(任意): onDoorOpen/onDoorClose/onDepart(i)/onArrive(i)/onFare/onBuzzer/onComplete
+ * events(任意): onDoorOpen/onDoorClose/onDepart(i)/onArrive(i)/onFare/onBoard/onBuzzer/onComplete
  */
 export function createOps(ctx) {
   const {
@@ -199,16 +199,16 @@ export function createOps(ctx) {
           const inZone =
             Math.abs(dS - stop.s) <= O.stopWindow * 2 &&
             curbGap() <= O.curbWindow + 1.2;
-          if (Math.abs(bus.v) < 0.1 && inZone) {
+          if (Math.abs(bus.v) < 0.14 && inZone) {
             const err = dS - stop.s;
             if (Math.abs(err) <= O.stopWindow * 2) {
-              prompt = "E : ドア開(乗降)";
+              prompt = "F : ドア開(乗降)";
               if (Math.abs(err) > 3)
                 prompt += `  [停止線まで ${err > 0 ? "下がる" : "進む"} ${Math.abs(err).toFixed(1)}m]`;
               if (ePressed) openDoor();
             }
           } else if (
-            Math.abs(bus.v) < 0.1 &&
+            Math.abs(bus.v) < 0.14 &&
             Math.abs(dS - stop.s) <= O.stopWindow * 2 &&
             curbGap() > O.curbWindow + 1.2
           ) {
@@ -251,6 +251,7 @@ export function createOps(ctx) {
               b.bTimer = O.boardInterval;
               pax.boardOne();
               stopsView.setWaiting(i, b.boardLeft);
+              events.onBoard?.();
             }
           }
           const busy = b.alightLeft > 0 || b.boardLeft > 0;
@@ -269,7 +270,7 @@ export function createOps(ctx) {
             } else if (isAutoDrive() || ePressed) {
               closeDoor();
             } else {
-              prompt = "E : ドア閉";
+              prompt = "F : ドア閉";
             }
           }
           break;

@@ -52,12 +52,17 @@ import {
   announceStopping,
   announceTerminal,
   announceStart,
+  announceDoorClose,
 } from "./audio/announcements.js";
 
 const STEP = 1 / 60;
 const DOOR_OFFSET = CFG.bus.wheelbase + 1.3; // 後軸→前扉
 const path = route.path;
-const kujoOmiyaS = route.stops.find((stop) => stop.name === ROUTE_SEMANTICS.headsignPhaseSwitchStop)?.s ?? Infinity;
+const kujoOmiyaIndex = route.stops.findIndex(
+  (stop) => stop.name === ROUTE_SEMANTICS.headsignPhaseSwitchStop,
+);
+const kujoOmiyaS =
+  kujoOmiyaIndex >= 0 ? route.stops[kujoOmiyaIndex].s : Infinity;
 configureWorldHeightSamplers(
   path,
   terrainElevationAt,
@@ -114,6 +119,10 @@ const state = {
   nextStopIndex: 0,
   doorState: "CLOSED",
   buzzer: false,
+  turnSignal: 0, // -1=左(Q), 0=消灯, +1=右(E)
+  hazard: false, // ハザード(T)
+  blinkTimer: 0,
+  blinkOn: false,
   promptText: null,
   camMode: "chase",
   completed: false,
@@ -145,9 +154,17 @@ const ops = createOps({
   pax,
   stopsView,
   events: {
-    onDoorOpen: () => sfx.doorAir(),
-    onDoorClose: () => sfx.doorAir(),
+    onDoorOpen: () => {
+      sfx.doorAir();
+      sfx.doorBuzzer();
+    },
+    onDoorClose: () => {
+      sfx.doorAir();
+      sfx.doorBuzzer();
+      announceDoorClose();
+    },
     onFare: () => sfx.coin(),
+    onBoard: () => sfx.middleDoorSensorBuzzer(1.5),
     onBuzzer: () => {
       sfx.buzzer();
       announceStopping();
@@ -164,6 +181,13 @@ const ops = createOps({
       bus.latAccel = 0;
       bus.throttleLocked = true;
       dbg.autoDrive = false;
+      state.turnSignal = 0;
+      state.hazard = false;
+      state.blinkTimer = 0;
+      state.blinkOn = false;
+      pendingDoorToggle = false;
+      sfx.setLeftTurnVoice(false);
+      sfx.setReverseBuzzer(false);
       const summary = scoring.resultSummary();
       const arrivalClock = state.clock;
       const carried = pax.totalCarried;
@@ -199,6 +223,8 @@ function placeBusAtS(s) {
   bus.heading = Math.atan2(tx, tz);
   bus.v = 0;
   bus.delta = 0;
+  bus.gear = 1;
+  bus.rpm = 600;
   state.s = s;
 }
 
@@ -368,8 +394,8 @@ function tick(dt, ePressed) {
       targetLat,
       vCap,
     );
-    // ドア操作の自動化: プロンプトが出たら即 E
-    if (state.promptText?.startsWith("E :")) ePressed = true;
+    // ドア操作の自動化: プロンプトが出たら即 F
+    if (state.promptText?.startsWith("F :")) ePressed = true;
   } else {
     axes = input.axes();
   }
@@ -433,6 +459,7 @@ let pauseOverlay = null;
 
 function setPaused(on) {
   state.paused = on;
+  pendingDoorToggle = false;
   if (!pauseOverlay) pauseOverlay = createPauseOverlay();
   pauseOverlay.style.display = on ? "flex" : "none";
 }
@@ -463,6 +490,10 @@ function returnToTitle() {
   bus.reverseArmed = false;
   bus.reverseHold = 0;
   bus.brakeWasDown = false;
+  bus.brakeLamp = false;
+  bus.reversing = false;
+  bus.gear = 1;
+  bus.rpm = 600;
   camInit = false;
   // 乗客・スコア・停留所・NPC交通・時計を全て初期化
   pax.reset();
@@ -475,9 +506,14 @@ function returnToTitle() {
   state.nextStopIndex = 0;
   state.doorState = "CLOSED";
   state.buzzer = false;
+  state.turnSignal = 0;
+  state.hazard = false;
+  state.blinkTimer = 0;
+  state.blinkOn = false;
   state.promptText = null;
   state.waitingDepart = false;
   state.completed = false;
+  pendingDoorToggle = false;
   state.collisionLog = [];
   state.clock = firstDepartTime - 45;
   ops.resetForNewRun();
@@ -503,6 +539,7 @@ let minimap = null; // initHud() 後に生成
 let last = performance.now();
 let acc = 0;
 let hudTimer = 0;
+let pendingDoorToggle = false;
 
 function frame(now) {
   requestAnimationFrame(frame);
@@ -529,18 +566,52 @@ function frame(now) {
         camInit = false;
       }
 
+      // Q / E / T キーでウインカー(左 / 右) / ハザードをトグル
+      if (input.pressed("KeyT")) {
+        state.hazard = !state.hazard;
+        state.turnSignal = 0;
+        state.blinkTimer = 0;
+        state.blinkOn = state.hazard;
+        if (state.blinkOn) sfx.blinkerClick(true);
+      } else if (input.pressed("KeyQ")) {
+        state.hazard = false;
+        state.turnSignal = state.turnSignal === -1 ? 0 : -1;
+        state.blinkTimer = 0;
+        state.blinkOn = state.turnSignal !== 0;
+        if (state.blinkOn) sfx.blinkerClick(true);
+      } else if (input.pressed("KeyE")) {
+        state.hazard = false;
+        state.turnSignal = state.turnSignal === 1 ? 0 : 1;
+        state.blinkTimer = 0;
+        state.blinkOn = state.turnSignal !== 0;
+        if (state.blinkOn) sfx.blinkerClick(true);
+      }
+      if (state.hazard || state.turnSignal !== 0) {
+        state.blinkTimer += dt;
+        let phaseDur = state.blinkOn ? 0.354 : 0.332;
+        while (state.blinkTimer >= phaseDur) {
+          state.blinkTimer -= phaseDur;
+          state.blinkOn = !state.blinkOn;
+          sfx.blinkerClick(state.blinkOn);
+          phaseDur = state.blinkOn ? 0.354 : 0.332;
+        }
+      } else {
+        state.blinkTimer = 0;
+        state.blinkOn = false;
+      }
+
       // . キー長押し中、停留所停車中のみ時間4倍速
       const dotHeld = input.held("Period");
       const atStop = state.doorState !== "CLOSED" || state.waitingDepart;
       const timeMultiplier = dotHeld && atStop ? 4 : 1;
 
-      let ePressed = input.pressed("KeyE");
+      if (input.pressed("KeyF")) pendingDoorToggle = true;
       acc += dt * dbg.timeScale * timeMultiplier;
       let steps = 0;
       const maxSteps = Math.ceil(6 * dbg.timeScale * timeMultiplier);
       while (acc >= STEP && steps < maxSteps) {
-        tick(STEP, ePressed);
-        ePressed = false;
+        tick(STEP, pendingDoorToggle);
+        pendingDoorToggle = false;
         acc -= STEP;
         steps++;
       }
@@ -555,10 +626,25 @@ function frame(now) {
     gradeAt(state.s),
     state.s,
     kujoOmiyaS,
+    {
+      afterKujo:
+        (kujoOmiyaIndex >= 0 && state.nextStopIndex > kujoOmiyaIndex) ||
+        state.s >= kujoOmiyaS,
+      buzzer: Boolean(state.buzzer && state.doorState === "CLOSED"),
+      doorOpen: state.doorState !== "CLOSED",
+      braking: bus.brakeLamp,
+      reversing: bus.reversing,
+      turnLeft: state.blinkOn && (state.hazard || state.turnSignal === -1),
+      turnRight: state.blinkOn && (state.hazard || state.turnSignal === 1),
+    },
   );
   updateCamera(dt);
   if (state.phase === "RUNNING" && !state.paused && !state.completed) {
     sfx.updateEngine(bus.speedKmh, bus.throttleState);
+    sfx.setLeftTurnVoice(
+      !state.hazard && state.turnSignal === -1 && state.doorState === "CLOSED",
+    );
+    sfx.setReverseBuzzer(Boolean(bus.reversing));
   } else {
     sfx.stopEngine();
   }
@@ -620,6 +706,12 @@ setupDebug({
     z: +bus.z.toFixed(1),
     lateral: +state.lateral.toFixed(2),
     vKmh: +bus.speedKmh.toFixed(1),
+    rpm: Math.round(bus.rpm),
+    gear: bus.gear,
+    turnSignal: state.turnSignal,
+    hazard: state.hazard,
+    brakeLamp: bus.brakeLamp,
+    reversing: bus.reversing,
     doorState: state.doorState,
     waitingDepart: !!state.waitingDepart,
     nextStopIndex: state.nextStopIndex,

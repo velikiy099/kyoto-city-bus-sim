@@ -17,6 +17,10 @@ export class BusPhysics {
     this.latAccel = 0; // 横加速度
     this.throttleLocked = false; // ドア開放中インターロック
     this.reverseHold = 0; // 停止中のブレーキ長押し時間(後退開始の判定)
+    this.brakeLamp = false; // ブレーキランプ点灯状態
+    this.reversing = false; // 後退灯・後退状態
+    this.gear = 1; // 5速AT段位 (-1=R, 1..5)
+    this.rpm = 600; // 模擬ディーゼルエンジン回転数 [rpm]
   }
 
   get maxSteer() {
@@ -95,6 +99,45 @@ export class BusPhysics {
     this.x += fx * this.v * dt;
     this.z += fz * this.v * dt;
     this.brakeWasDown = brake > 0.1;
+
+    const revActive =
+      this.v < -0.05 ||
+      (this.reverseArmed && this.reverseHold > 0.35 && brake > 0.1);
+    this.reversing = revActive;
+    this.brakeLamp =
+      this.v < -0.05 ? throttle > 0.05 : brake > 0.05 && !revActive;
+
+    // --- エンジン回転数・5速トランスミッション模擬 (PDG-AA273KAN) ---
+    const absKmh = Math.abs(this.v) * 3.6;
+    const ratios = [120, 76, 50, 36, 27];
+    const upThresholds = [13, 25, 38, 51];
+    const downThresholds = [9, 19, 30, 43];
+    let ratio;
+    if (this.v < -0.05) {
+      this.gear = -1;
+      ratio = 140;
+    } else {
+      if (this.gear < 1) this.gear = 1;
+      while (
+        this.gear < 5 &&
+        absKmh > upThresholds[this.gear - 1] + throttle * 3
+      ) {
+        this.gear++;
+      }
+      while (this.gear > 1 && absKmh < downThresholds[this.gear - 2]) {
+        this.gear--;
+      }
+      ratio = ratios[this.gear - 1];
+    }
+    const slip =
+      absKmh < 18
+        ? throttle * 420 * (1 - absKmh / 22)
+        : throttle * 140;
+    const targetRpm = Math.max(
+      600,
+      Math.min(2850, absKmh * ratio + slip),
+    );
+    this.rpm += (targetRpm - this.rpm) * Math.min(1, dt * 8);
   }
 
   get speedKmh() {
