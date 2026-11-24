@@ -12,7 +12,7 @@ export const DOOR = {
 /**
  * 停車業務の中枢: ドア開閉・正着判定・乗降・発車条件・通過違反
  * ctx: { bus, path, route, state, scoring, pax, stopsView, events }
- * events(任意): onDoorOpen/onDoorClose/onDepart(i)/onArrive(i)/onFare/onBuzzer/onComplete
+ * events(任意): onDoorOpen/onDoorClose/onDepart(i)/onArrive(i)/onFare/onBoard/onBuzzer/onComplete
  */
 export function createOps(ctx) {
   const {
@@ -251,6 +251,7 @@ export function createOps(ctx) {
               b.bTimer = O.boardInterval;
               pax.boardOne();
               stopsView.setWaiting(i, b.boardLeft);
+              events.onBoard?.();
             }
           }
           const busy = b.alightLeft > 0 || b.boardLeft > 0;

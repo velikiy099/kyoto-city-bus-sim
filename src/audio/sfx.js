@@ -109,6 +109,8 @@ export function stopEngine() {
   }
   setLeftTurnVoice(false);
   setReverseBuzzer(false);
+  stopDoorBuzzer();
+  stopMiddleDoorSensorBuzzer();
 }
 
 function blip(freq, dur, type = "sine", gain = 0.12, when = 0) {
@@ -142,6 +144,151 @@ export function doorAir() {
   g.gain.value = 0.16;
   src.connect(f).connect(g).connect(ctx.destination);
   src.start();
+}
+
+let doorBuzzerWave = null;
+let doorBuzzerNodes = null;
+let midDoorSensorWave = null;
+let midDoorSensorNodes = null;
+
+function getDoorBuzzerWave() {
+  if (doorBuzzerWave || !ctx) return doorBuzzerWave;
+  const real = new Float32Array(9);
+  const imag = new Float32Array([0, 0.26, 1.0, 0.62, 0.18, 0.85, 0.33, 0.34, 0.12]);
+  doorBuzzerWave = ctx.createPeriodicWave(real, imag);
+  return doorBuzzerWave;
+}
+
+function stopDoorBuzzer() {
+  if (!doorBuzzerNodes || !ctx) return;
+  const { osc, gain } = doorBuzzerNodes;
+  doorBuzzerNodes = null;
+  try {
+    const t = ctx.currentTime;
+    gain.gain.cancelScheduledValues(t);
+    gain.gain.setValueAtTime(Math.max(0.0001, gain.gain.value), t);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.015);
+    osc.stop(t + 0.02);
+  } catch {
+    // ignore
+  }
+}
+
+/** ドア開閉ブザー (C5 よりやや低い 498.1 Hz・第2/3/5倍音強調) */
+export function doorBuzzer(durationSec = 0.85) {
+  if (!ctx) return;
+  stopDoorBuzzer();
+  const dur = Math.max(0.1, durationSec);
+  const t = ctx.currentTime;
+  const osc = ctx.createOscillator();
+  const wave = getDoorBuzzerWave();
+  if (wave) osc.setPeriodicWave(wave);
+  else osc.type = "sawtooth";
+  osc.frequency.value = 498.1;
+  const highpass = ctx.createBiquadFilter();
+  highpass.type = "highpass";
+  highpass.frequency.value = 380;
+  const lowpass = ctx.createBiquadFilter();
+  lowpass.type = "lowpass";
+  lowpass.frequency.value = 4500;
+  const gain = ctx.createGain();
+  gain.gain.setValueAtTime(0.0001, t);
+  gain.gain.linearRampToValueAtTime(0.11, t + 0.008);
+  gain.gain.setValueAtTime(0.11, t + dur - 0.018);
+  gain.gain.linearRampToValueAtTime(0.0001, t + dur);
+  osc.connect(highpass).connect(lowpass).connect(gain).connect(ctx.destination);
+  const nodes = { osc, gain };
+  doorBuzzerNodes = nodes;
+  osc.onended = () => {
+    if (doorBuzzerNodes === nodes) doorBuzzerNodes = null;
+  };
+  osc.start(t);
+  osc.stop(t + dur + 0.015);
+}
+
+function getMidDoorSensorWave() {
+  if (midDoorSensorWave || !ctx) return midDoorSensorWave;
+  const real = new Float32Array(13);
+  const imag = new Float32Array([
+    0, 0.66, 0.22, 1.0, 0.47, 0.37, 0.11, 0.15, 0.05, 0.04, 0.07, 0.21, 0.20,
+  ]);
+  midDoorSensorWave = ctx.createPeriodicWave(real, imag);
+  return midDoorSensorWave;
+}
+
+function stopMiddleDoorSensorBuzzer() {
+  if (!midDoorSensorNodes || !ctx) return;
+  const { osc, gain, stopTimer } = midDoorSensorNodes;
+  midDoorSensorNodes = null;
+  if (stopTimer) clearTimeout(stopTimer);
+  try {
+    const t = ctx.currentTime;
+    gain.gain.cancelScheduledValues(t);
+    gain.gain.setValueAtTime(Math.max(0.0001, gain.gain.value), t);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.015);
+    osc.stop(t + 0.02);
+  } catch {
+    // ignore
+  }
+}
+
+/** 中扉ステップセンサーブザー (低い A / 225.6 Hz、乗車ごとに 1.5 秒) */
+export function middleDoorSensorBuzzer(durationSec = 1.5) {
+  if (!ctx) return;
+  const t = ctx.currentTime;
+  const dur = Math.max(0.1, durationSec);
+  if (midDoorSensorNodes) {
+    const active = midDoorSensorNodes;
+    if (active.stopTimer) clearTimeout(active.stopTimer);
+    try {
+      active.gain.gain.cancelScheduledValues(t);
+      active.gain.gain.setValueAtTime(Math.max(0.0001, active.gain.gain.value), t);
+      active.gain.gain.linearRampToValueAtTime(0.068, t + 0.01);
+      active.gain.gain.setValueAtTime(0.068, t + dur - 0.025);
+      active.gain.gain.linearRampToValueAtTime(0.0001, t + dur);
+      active.stopTimer = setTimeout(() => {
+        if (midDoorSensorNodes !== active) return;
+        midDoorSensorNodes = null;
+        try {
+          active.osc.stop();
+        } catch {
+          // ignore
+        }
+      }, Math.ceil((dur + 0.05) * 1000));
+      return;
+    } catch {
+      stopMiddleDoorSensorBuzzer();
+    }
+  }
+  const osc = ctx.createOscillator();
+  const wave = getMidDoorSensorWave();
+  if (wave) osc.setPeriodicWave(wave);
+  else osc.type = "sawtooth";
+  osc.frequency.value = 225.6;
+  const highpass = ctx.createBiquadFilter();
+  highpass.type = "highpass";
+  highpass.frequency.value = 160;
+  const lowpass = ctx.createBiquadFilter();
+  lowpass.type = "lowpass";
+  lowpass.frequency.value = 3200;
+  const gain = ctx.createGain();
+  gain.gain.setValueAtTime(0.0001, t);
+  gain.gain.linearRampToValueAtTime(0.068, t + 0.01);
+  gain.gain.setValueAtTime(0.068, t + dur - 0.025);
+  gain.gain.linearRampToValueAtTime(0.0001, t + dur);
+  osc.connect(highpass).connect(lowpass).connect(gain).connect(ctx.destination);
+  const nodes = { osc, gain, stopTimer: null };
+  nodes.stopTimer = setTimeout(() => {
+    if (midDoorSensorNodes !== nodes) return;
+    midDoorSensorNodes = null;
+    try {
+      osc.stop();
+    } catch {
+      // ignore
+    }
+  }, Math.ceil((dur + 0.05) * 1000));
+  midDoorSensorNodes = nodes;
+  osc.start(t);
 }
 
 /** 降車ボタン「ピンポーン」 */
@@ -334,4 +481,101 @@ export function setReverseBuzzer(active) {
     return;
   }
   playReverseBeepCycle();
+}
+
+/** 車内放送冒頭電子音 (D7 / 2352.5 Hz + 第2倍音 4705 Hz) */
+export function announceIntroBeep() {
+  if (!ctx) return;
+  const t = ctx.currentTime;
+  const master = ctx.createGain();
+  master.gain.setValueAtTime(0.0001, t);
+  master.gain.linearRampToValueAtTime(0.085, t + 0.008);
+  master.gain.setValueAtTime(0.085, t + 0.095);
+  master.gain.exponentialRampToValueAtTime(0.0001, t + 0.21);
+  master.connect(ctx.destination);
+
+  for (const [freq, ratio] of [
+    [2352.5, 1.0],
+    [4705.0, 0.47],
+  ]) {
+    const osc = ctx.createOscillator();
+    osc.type = "sine";
+    osc.frequency.value = freq;
+    const g = ctx.createGain();
+    g.gain.value = ratio;
+    osc.connect(g).connect(master);
+    osc.start(t);
+    osc.stop(t + 0.22);
+  }
+}
+
+/** 車内放送チャイムA (F#5 チューブラーベル / 732.0 Hz) */
+export function announceChimeA() {
+  if (!ctx) return;
+  const t = ctx.currentTime;
+  const f0 = 732.0;
+  const partials = [
+    [f0, 0.13, 0.003, 2.4],
+    [f0 * 2.0, 0.006, 0.003, 1.2],
+    [f0 * 3.02, 0.026, 0.002, 0.35],
+    [f0 * 5.76, 0.019, 0.002, 0.22],
+  ];
+  for (const [freq, peak, attack, decayEnd] of partials) {
+    const osc = ctx.createOscillator();
+    osc.type = "sine";
+    osc.frequency.value = freq;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(peak, t + attack);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + decayEnd);
+    osc.connect(g).connect(ctx.destination);
+    osc.start(t);
+    osc.stop(t + decayEnd + 0.03);
+  }
+}
+
+/** 車内放送チャイムB (E5 → C#5 ビブラフォン 11.2 Hz トレモロ) */
+export function announceChimeB() {
+  if (!ctx) return;
+  const t = ctx.currentTime;
+  const tremGain = ctx.createGain();
+  tremGain.gain.value = 0.72;
+  tremGain.connect(ctx.destination);
+
+  const lfo = ctx.createOscillator();
+  lfo.type = "sine";
+  lfo.frequency.value = 11.2;
+  const lfoDepth = ctx.createGain();
+  lfoDepth.gain.value = 0.28;
+  lfo.connect(lfoDepth).connect(tremGain.gain);
+  lfo.start(t);
+  lfo.stop(t + 2.6);
+
+  const playBar = (f0, offsetSec, peak, decay1Sec, decay4Sec) => {
+    const t0 = t + offsetSec;
+    const osc1 = ctx.createOscillator();
+    osc1.type = "sine";
+    osc1.frequency.value = f0;
+    const g1 = ctx.createGain();
+    g1.gain.setValueAtTime(0.0001, t0);
+    g1.gain.linearRampToValueAtTime(peak, t0 + 0.004);
+    g1.gain.exponentialRampToValueAtTime(0.0001, t0 + decay1Sec);
+    osc1.connect(g1).connect(tremGain);
+    osc1.start(t0);
+    osc1.stop(t0 + decay1Sec + 0.03);
+
+    const osc4 = ctx.createOscillator();
+    osc4.type = "sine";
+    osc4.frequency.value = f0 * 4.0;
+    const g4 = ctx.createGain();
+    g4.gain.setValueAtTime(0.0001, t0);
+    g4.gain.linearRampToValueAtTime(peak * 0.18, t0 + 0.003);
+    g4.gain.exponentialRampToValueAtTime(0.0001, t0 + decay4Sec);
+    osc4.connect(g4).connect(tremGain);
+    osc4.start(t0);
+    osc4.stop(t0 + decay4Sec + 0.03);
+  };
+
+  playBar(659.25, 0, 0.14, 1.5, 0.85);
+  playBar(554.37, 0.77, 0.14, 1.75, 0.95);
 }

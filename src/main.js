@@ -52,6 +52,7 @@ import {
   announceStopping,
   announceTerminal,
   announceStart,
+  announceDoorClose,
 } from "./audio/announcements.js";
 
 const STEP = 1 / 60;
@@ -149,9 +150,17 @@ const ops = createOps({
   pax,
   stopsView,
   events: {
-    onDoorOpen: () => sfx.doorAir(),
-    onDoorClose: () => sfx.doorAir(),
+    onDoorOpen: () => {
+      sfx.doorAir();
+      sfx.doorBuzzer();
+    },
+    onDoorClose: () => {
+      sfx.doorAir();
+      sfx.doorBuzzer();
+      announceDoorClose();
+    },
     onFare: () => sfx.coin(),
+    onBoard: () => sfx.middleDoorSensorBuzzer(1.5),
     onBuzzer: () => {
       sfx.buzzer();
       announceStopping();

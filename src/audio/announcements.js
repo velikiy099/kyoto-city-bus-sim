@@ -1,16 +1,55 @@
-/** 車内アナウンス(Web Speech API・ja-JP がなければ既定音声で読み上げ) */
+/** 車内アナウンス(Web Speech API・チャイム/英語/男声対応シーケンサ) */
 import ANNOUNCEMENT_COPY from "../data/definitions/announcements.json" with { type: "json" };
+import {
+  announceIntroBeep,
+  announceChimeA,
+  announceChimeB,
+} from "./sfx.js";
+
+const MALE_VOICE_PRIORITY = [
+  /otoya/i,
+  /keita/i,
+  /ichiro/i,
+  /hattori/i,
+  /takumi/i,
+  /daichi/i,
+  /naoki/i,
+  /shinji/i,
+  /show/i,
+  /eddy|reed|rocko/i,
+  /\bmale\b/i,
+];
+
+const EN_VOICE_PRIORITY = [
+  /samantha|victoria|allison|ava|karen|zira|aria|jenny|google us english/i,
+];
+
+const CHIME_DURATIONS_MS = {
+  intro: 280,
+  chimeA: 1050,
+  chimeB: 1550,
+};
 
 let jaVoice = null;
+let jaMaleVoice = null;
+let enVoice = null;
 let available = false;
 let currentUtterance = null;
+let currentTag = null;
+let activeSequence = false;
+let seqToken = 0;
 let pendingTimer = null;
+let stepTimer = null;
+let retryTimer = null;
 let lastCancelAt = -Infinity;
-let queued = null; // 発話中に来た「割り込まず後で流す」アナウンス(最新の1件のみ保持)
+let queuedSequence = null; // 発話中に来た「割り込まず後で流す」シーケンス(最新1件のみ保持)
 
 // Chrome では cancel() の処理が非同期で、直後(同一タスク内)に speak() すると
 // その発話ごと破棄される。cancel 後はこの時間だけ speak を遅延させる。
 const CANCEL_SETTLE_MS = 80;
+
+const isMaleVoiceName = (voice) =>
+  MALE_VOICE_PRIORITY.some((re) => re.test(voice?.name ?? ""));
 
 export function initAnnouncements() {
   if (!("speechSynthesis" in window)) {
@@ -23,7 +62,32 @@ export function initAnnouncements() {
   lastCancelAt = performance.now();
   const pick = () => {
     const voices = speechSynthesis.getVoices();
-    jaVoice = voices.find((v) => v.lang?.startsWith("ja")) ?? null;
+    const jaVoices = voices.filter((v) => v.lang?.startsWith("ja"));
+    jaVoice =
+      jaVoices.find((v) => !isMaleVoiceName(v)) ?? jaVoices[0] ?? null;
+    jaMaleVoice = null;
+    for (const re of MALE_VOICE_PRIORITY) {
+      const hit = jaVoices.find((v) => re.test(v.name ?? ""));
+      if (hit) {
+        jaMaleVoice = hit;
+        break;
+      }
+    }
+    const enVoices = voices.filter((v) => v.lang?.startsWith("en"));
+    enVoice = null;
+    for (const re of EN_VOICE_PRIORITY) {
+      const hit = enVoices.find((v) => re.test(v.name ?? ""));
+      if (hit) {
+        enVoice = hit;
+        break;
+      }
+    }
+    if (!enVoice) {
+      enVoice =
+        enVoices.find((v) => v.lang?.startsWith("en-US")) ??
+        enVoices[0] ??
+        null;
+    }
     if (!jaVoice) console.info("[announce] no ja voice — using default");
   };
   pick();
@@ -32,91 +96,217 @@ export function initAnnouncements() {
   setTimeout(pick, 1000);
 }
 
-function utter(text, retried = false) {
+function triggerChime(kind) {
+  if (kind === "intro") announceIntroBeep();
+  else if (kind === "chimeA") announceChimeA();
+  else if (kind === "chimeB") announceChimeB();
+}
+
+function runSequenceStep(steps, idx, token, retried = false) {
+  if (token !== seqToken) return;
+  if (idx >= steps.length) {
+    activeSequence = false;
+    currentTag = null;
+    currentUtterance = null;
+    if (queuedSequence != null) {
+      const next = queuedSequence;
+      queuedSequence = null;
+      playSequence(next.steps, { tag: next.tag });
+    }
+    return;
+  }
+
+  const step = steps[idx];
+  if (step.type === "chime") {
+    triggerChime(step.kind);
+    const waitMs = CHIME_DURATIONS_MS[step.kind] ?? 300;
+    stepTimer = setTimeout(() => {
+      stepTimer = null;
+      runSequenceStep(steps, idx + 1, token);
+    }, waitMs);
+    return;
+  }
+
+  if (!available) {
+    runSequenceStep(steps, idx + 1, token);
+    return;
+  }
+
   try {
     speechSynthesis.resume?.();
-    const u = new SpeechSynthesisUtterance(text);
-    if (jaVoice) u.voice = jaVoice;
-    u.lang = "ja-JP";
-    u.rate = 1.02;
-    u.pitch = 1.05;
-    u.volume = 0.9;
+    const u = new SpeechSynthesisUtterance(step.text);
+    if (step.lang === "en") {
+      u.lang = "en-US";
+      if (enVoice) u.voice = enVoice;
+      u.rate = step.rate ?? 0.96;
+      u.pitch = step.pitch ?? 1.02;
+      u.volume = step.volume ?? 0.9;
+    } else if (step.male) {
+      u.lang = "ja-JP";
+      const chosen = jaMaleVoice ?? jaVoice;
+      if (chosen) u.voice = chosen;
+      u.rate = step.rate ?? 1.02;
+      u.pitch = jaMaleVoice ? (step.pitch ?? 0.95) : 0.72;
+      u.volume = step.volume ?? 0.92;
+    } else {
+      u.lang = "ja-JP";
+      if (jaVoice) u.voice = jaVoice;
+      u.rate = step.rate ?? 1.02;
+      u.pitch = step.pitch ?? 1.05;
+      u.volume = step.volume ?? 0.9;
+    }
+
     const onDone = () => {
-      if (currentUtterance !== u) return;
+      if (token !== seqToken || currentUtterance !== u) return;
       currentUtterance = null;
-      if (queued != null) {
-        const next = queued;
-        queued = null;
-        utter(next);
+      clearTimeout(retryTimer);
+      retryTimer = null;
+      const nextStep = steps[idx + 1];
+      if (nextStep?.type === "speak") {
+        stepTimer = setTimeout(() => {
+          stepTimer = null;
+          runSequenceStep(steps, idx + 1, token);
+        }, 180);
+      } else {
+        runSequenceStep(steps, idx + 1, token);
       }
     };
     u.onend = onDone;
     u.onerror = onDone;
     currentUtterance = u; // GC で発話が途切れないよう参照を保持
     speechSynthesis.speak(u);
+
     if (!retried) {
       // それでも発話が始まらなかった場合の保険(一度だけ再試行)
-      setTimeout(() => {
-        if (currentUtterance !== u) return;
-        if (!speechSynthesis.speaking && !speechSynthesis.pending)
-          utter(text, true);
+      retryTimer = setTimeout(() => {
+        retryTimer = null;
+        if (token !== seqToken || currentUtterance !== u) return;
+        if (!speechSynthesis.speaking && !speechSynthesis.pending) {
+          currentUtterance = null;
+          runSequenceStep(steps, idx, token, true);
+        }
       }, 600);
     }
   } catch {
     currentUtterance = null;
+    runSequenceStep(steps, idx + 1, token);
   }
 }
 
-function speak(text, { queueIfBusy = false } = {}) {
-  if (!available) return;
+function playSequence(
+  steps,
+  { tag = null, queueIfBusy = false, queueIfDoorClose = false } = {},
+) {
+  if (!steps?.length) return;
+  if (!available && !steps.some((s) => s.type === "chime")) return;
   try {
-    // 発話中/待機中で、割り込ませたくない場合はキューに積んで終了を待つ(最新の1件のみ保持)
+    const busy = Boolean(
+      activeSequence ||
+        currentUtterance ||
+        (available && (speechSynthesis.speaking || speechSynthesis.pending)),
+    );
     if (
-      queueIfBusy &&
-      (currentUtterance || speechSynthesis.speaking || speechSynthesis.pending)
+      busy &&
+      (queueIfBusy || (queueIfDoorClose && currentTag === "doorClose"))
     ) {
-      queued = text;
+      queuedSequence = { steps, tag };
       return;
     }
-    queued = null;
+    seqToken++;
+    const token = seqToken;
+    queuedSequence = null;
+    currentUtterance = null;
     clearTimeout(pendingTimer);
     pendingTimer = null;
-    if (speechSynthesis.speaking || speechSynthesis.pending) {
+    clearTimeout(stepTimer);
+    stepTimer = null;
+    clearTimeout(retryTimer);
+    retryTimer = null;
+
+    if (available && (speechSynthesis.speaking || speechSynthesis.pending)) {
       speechSynthesis.cancel(); // 新しい案内を優先(読み上げ中のものは打ち切り)
       lastCancelAt = performance.now();
     }
-    const wait = CANCEL_SETTLE_MS - (performance.now() - lastCancelAt);
+
+    activeSequence = true;
+    currentTag = tag;
+    const hasSpeak = steps.some((s) => s.type === "speak");
+    const wait =
+      available && hasSpeak
+        ? CANCEL_SETTLE_MS - (performance.now() - lastCancelAt)
+        : 0;
     if (wait > 0) {
       pendingTimer = setTimeout(() => {
         pendingTimer = null;
-        utter(text);
+        runSequenceStep(steps, 0, token);
       }, wait);
     } else {
-      utter(text);
+      runSequenceStep(steps, 0, token);
     }
   } catch {
+    activeSequence = false;
+    currentTag = null;
     currentUtterance = null;
   }
 }
 
 export function announceNext(stopName) {
-  speak(ANNOUNCEMENT_COPY.next.replaceAll("{stop}", stopName));
+  const normalized = stopName?.replaceAll("ヶ", "ケ");
+  const script =
+    ANNOUNCEMENT_COPY.stops?.[stopName] ??
+    ANNOUNCEMENT_COPY.stops?.[normalized] ?? [
+      {
+        type: "speak",
+        text: ANNOUNCEMENT_COPY.next.replaceAll("{stop}", stopName),
+      },
+    ];
+  playSequence([{ type: "chime", kind: "intro" }, ...script], {
+    tag: "next",
+    queueIfDoorClose: true,
+  });
 }
 
 /** 降車ボタン押下相当(次停に降車客がいて接近した)時のアナウンス。
  * 「次は、〇〇です」発話中に鳴った場合は、その発話が終わるまで割り込まず待つ。 */
 export function announceStopping() {
-  speak(ANNOUNCEMENT_COPY.stopping, {
+  playSequence([{ type: "speak", text: ANNOUNCEMENT_COPY.stopping }], {
+    tag: "stopping",
     queueIfBusy: true,
   });
 }
 
 export function announceTerminal() {
-  speak(
-    ANNOUNCEMENT_COPY.terminal,
+  playSequence(
+    [
+      { type: "chime", kind: "intro" },
+      { type: "speak", text: ANNOUNCEMENT_COPY.terminal },
+    ],
+    { tag: "terminal" },
   );
 }
 
 export function announceStart() {
-  speak(ANNOUNCEMENT_COPY.start);
+  playSequence(
+    [
+      { type: "chime", kind: "intro" },
+      { type: "speak", text: ANNOUNCEMENT_COPY.start },
+    ],
+    { tag: "start" },
+  );
+}
+
+/** 閉扉時の自動アナウンス(男声ボイス優先・1.5倍速、未導入環境では低ピッチで代用) */
+export function announceDoorClose() {
+  playSequence(
+    [
+      {
+        type: "speak",
+        text: ANNOUNCEMENT_COPY.doorClose,
+        male: true,
+        rate: 1.5,
+        volume: 0.95,
+      },
+    ],
+    { tag: "doorClose" },
+  );
 }
