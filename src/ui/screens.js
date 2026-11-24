@@ -14,7 +14,7 @@ export function showTitle(onStart) {
         <div><b>W / ↑</b> アクセル</div>
         <div><b>S / ↓</b> ブレーキ(停止中は長押しで後退)</div>
         <div><b>A・D / ←・→</b> ハンドル</div>
-        <div><b>Q / E</b> ウインカー(左 / 右)</div>
+        <div><b>Q / E / T</b> ウインカー(左 / 右) / ハザード</div>
         <div><b>F</b> ドア開閉(停留所で停車中)</div>
         <div><b>C</b> カメラ切替(追従 / 運転席)</div>
         <div><b>M</b> ミニマップ表示切替</div>

@@ -108,6 +108,7 @@ export function stopEngine() {
     engine.noiseGain.gain.value = 0;
   }
   setLeftTurnVoice(false);
+  setReverseBuzzer(false);
 }
 
 function blip(freq, dur, type = "sine", gain = 0.12, when = 0) {
@@ -155,11 +156,75 @@ export function coin() {
   blip(3400, 0.16, "sine", 0.07, 0.05);
 }
 
-/** ウインカーリレー作動音「カチッ/カッ」 */
+let blinkerNoiseBuffer = null;
+
+function getBlinkerNoiseBuffer() {
+  if (!ctx) return null;
+  const len = Math.ceil(ctx.sampleRate * 0.02);
+  if (blinkerNoiseBuffer && blinkerNoiseBuffer.length === len && blinkerNoiseBuffer.sampleRate === ctx.sampleRate) {
+    return blinkerNoiseBuffer;
+  }
+  const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+  const d = buf.getChannelData(0);
+  for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+  blinkerNoiseBuffer = buf;
+  return buf;
+}
+
+/**
+ * ウインカーリレー作動音 (PDG-AA273KAN 実車録音準拠:
+ * ON 約 1090 Hz 筐体共鳴 + +3.8ms 微バウンス + 6.5 kHz 接点スナップ /
+ * OFF 約 960 Hz + 350 Hz リリース thud)
+ */
 export function blinkerClick(on) {
   if (!ctx) return;
-  blip(on ? 1250 : 920, 0.018, "triangle", on ? 0.09 : 0.065);
-  blip(on ? 420 : 320, 0.014, "square", 0.03);
+  const t = ctx.currentTime;
+
+  const triggerKnock = (freqStart, freqEnd, tau, peakGain, delay = 0) => {
+    const t0 = t + delay;
+    const osc = ctx.createOscillator();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(freqStart, t0);
+    if (freqEnd !== freqStart) {
+      osc.frequency.exponentialRampToValueAtTime(freqEnd, t0 + Math.max(0.004, tau * 2.5));
+    }
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.0001, t0);
+    gain.gain.linearRampToValueAtTime(peakGain, t0 + 0.0004);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + tau * 6.5);
+    osc.connect(gain).connect(ctx.destination);
+    osc.start(t0);
+    osc.stop(t0 + tau * 6.5 + 0.005);
+  };
+
+  const triggerSnap = (centerHz, q, tau, peakGain) => {
+    const buf = getBlinkerNoiseBuffer();
+    if (!buf) return;
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    const bp = ctx.createBiquadFilter();
+    bp.type = "bandpass";
+    bp.frequency.value = centerHz;
+    bp.Q.value = q;
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.0001, t);
+    gain.gain.linearRampToValueAtTime(peakGain, t + 0.0003);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + tau * 6.0);
+    src.connect(bp).connect(gain).connect(ctx.destination);
+    src.start(t);
+    src.stop(t + tau * 6.0 + 0.005);
+  };
+
+  if (on) {
+    triggerKnock(1090, 980, 0.0022, 0.16);
+    triggerKnock(360, 360, 0.0032, 0.075);
+    triggerKnock(1160, 1120, 0.0014, 0.042, 0.0038);
+    triggerSnap(6500, 1.4, 0.0012, 0.11);
+  } else {
+    triggerKnock(960, 860, 0.0018, 0.105);
+    triggerKnock(350, 340, 0.0035, 0.115);
+    triggerSnap(8000, 1.6, 0.0010, 0.07);
+  }
 }
 
 /** 左ウインカー音声「左に寄ります、ご注意ください」を次停放送とは独立して繰り返す */
@@ -187,4 +252,86 @@ export function setLeftTurnVoice(active) {
   if (turnLeftBuffer && !leftVoiceSource && !leftVoiceTimer) {
     scheduleLeftTurnClip();
   }
+}
+
+let revBuzzerActive = false;
+let revBuzzerTimer = null;
+let revBuzzerNodes = null;
+let revBuzzerWave = null;
+
+function getReverseBuzzerWave() {
+  if (revBuzzerWave || !ctx) return revBuzzerWave;
+  const real = new Float32Array(10);
+  const imag = new Float32Array([0, 1.0, 0.47, 1.15, 0.23, 0.35, 0.14, 0.14, 0.10, 0.07]);
+  revBuzzerWave = ctx.createPeriodicWave(real, imag);
+  return revBuzzerWave;
+}
+
+function stopActiveReverseTone() {
+  if (!revBuzzerNodes || !ctx) return;
+  const { osc, gain } = revBuzzerNodes;
+  revBuzzerNodes = null;
+  try {
+    const t = ctx.currentTime;
+    gain.gain.cancelScheduledValues(t);
+    gain.gain.setValueAtTime(Math.max(0.0001, gain.gain.value), t);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.015);
+    osc.stop(t + 0.02);
+  } catch {
+    // ignore
+  }
+}
+
+function playReverseBeepCycle() {
+  if (!ctx || !revBuzzerActive) return;
+  const t = ctx.currentTime;
+  const osc = ctx.createOscillator();
+  const wave = getReverseBuzzerWave();
+  if (wave) {
+    osc.setPeriodicWave(wave);
+  } else {
+    osc.type = "sawtooth";
+  }
+  osc.frequency.value = 466.16; // B♭4 (466.16 Hz)
+  const highpass = ctx.createBiquadFilter();
+  highpass.type = "highpass";
+  highpass.frequency.value = 320;
+  const peak = ctx.createBiquadFilter();
+  peak.type = "peaking";
+  peak.frequency.value = 1398;
+  peak.Q.value = 2.0;
+  peak.gain.value = 3.0;
+  const lowpass = ctx.createBiquadFilter();
+  lowpass.type = "lowpass";
+  lowpass.frequency.value = 3800;
+  const gain = ctx.createGain();
+  gain.gain.setValueAtTime(0.0001, t);
+  gain.gain.linearRampToValueAtTime(0.095, t + 0.006);
+  gain.gain.setValueAtTime(0.095, t + 0.246);
+  gain.gain.linearRampToValueAtTime(0.0001, t + 0.260);
+  osc.connect(highpass).connect(peak).connect(lowpass).connect(gain).connect(ctx.destination);
+  osc.start(t);
+  osc.stop(t + 0.27);
+  revBuzzerNodes = { osc, gain };
+  revBuzzerTimer = setTimeout(() => {
+    revBuzzerTimer = null;
+    if (revBuzzerNodes?.osc === osc) revBuzzerNodes = null;
+    if (revBuzzerActive) playReverseBeepCycle();
+  }, 700);
+}
+
+/** 後退ブザー (B♭4 / 466.16 Hz のリードホーン系断続音: 260ms ON / 700ms 周期) */
+export function setReverseBuzzer(active) {
+  const next = Boolean(active);
+  if (next === revBuzzerActive) return;
+  revBuzzerActive = next;
+  if (!next) {
+    if (revBuzzerTimer) {
+      clearTimeout(revBuzzerTimer);
+      revBuzzerTimer = null;
+    }
+    stopActiveReverseTone();
+    return;
+  }
+  playReverseBeepCycle();
 }

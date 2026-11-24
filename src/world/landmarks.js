@@ -15,6 +15,14 @@ let busLib = null;
 const pendingBus = [];
 gltfLoader.load("models/bus.glb", (gltf) => {
   lambertize(gltf.scene);
+  const blankSignMat = new THREE.MeshLambertMaterial({ color: 0x0e1217 });
+  gltf.scene.traverse((o) => {
+    if (!o.isMesh || !o.material) return;
+    const blank = (m) => (m.name === "BusSignDisplay" ? blankSignMat : m);
+    o.material = Array.isArray(o.material)
+      ? o.material.map(blank)
+      : blank(o.material);
+  });
   busLib = gltf.scene;
   for (const fill of pendingBus.splice(0)) fill();
 });
@@ -398,17 +406,21 @@ function buildTerminus(scene, path) {
 }
 
 /**
- * みぶ操車場前バス停の反対側(進行方向右)にある京都市交通局・壬生操車場。
- * 斜め駐車ベイ2列×4区画+事務所小屋を敷地内に置き、うち数区画にバスを駐機させる。
+ * みぶ操車場前バス停の反対側(進行方向右・後院通南西側)にある京都市交通局・壬生操車場。
+ * Google Map / ストリートビューの実配置に合わせ、北西道路際に2階建事務所、
+ * 南東塀(中京警察署側)沿いに北西向き直角駐車6区画(道路側1区画空き＋バス5台)、
+ * 北西側(事務所奥)に南東向き直角駐車3区画(バス3台)、北東半分を転回用エプロンとして配置する。
  */
 function buildMibuDepot(scene, path) {
-  const stop = route.stops.find((st) => st.name === LANDMARK_DEFS.MIBU_DEPOT.stopName);
+  const def = LANDMARK_DEFS.MIBU_DEPOT;
+  const stop = route.stops.find((st) => st.name === def.stopName);
   if (!stop) return { x: 0, z: 0, r: 0 };
   const s = stop.s;
-  const HW = rightWidthAt(s);
-  const lotW = LANDMARK_DEFS.MIBU_DEPOT.lotW,
-    lotD = LANDMARK_DEFS.MIBU_DEPOT.lotD; // lotW: 道路からの奥行き, lotD: 道路沿いの長さ
-  const a = anchor(path, s, HW + LANDMARK_DEFS.MIBU_DEPOT.roadSetbackM + lotW / 2);
+  const sCenter = s + (def.sOffsetM ?? 0);
+  const HW = rightWidthAt(sCenter);
+  const lotW = def.lotW,
+    lotD = def.lotD; // lotW: 道路からの奥行き(+X=後院通側, -X=南西奥), lotD: 道路沿い(+Z=南東/警察署側, -Z=北西/事務所側)
+  const a = anchor(path, sCenter, HW + def.roadSetbackM + lotW / 2);
   const g = new THREE.Group();
   g.position.set(a.x, 0, a.z);
   g.rotation.y = a.ry;
@@ -421,62 +433,129 @@ function buildMibuDepot(scene, path) {
   pavement.position.y = 0.035;
   g.add(pavement);
 
-  // 事務所・車庫(道路から一番遠い奥側)
+  // 1. 2階建てクリーム色の操車場事務所 (北西道路際: x=-0.5..+19.5, z=-17.7..-7.1)
+  const officeW = 20.0,
+    officeH = 6.2,
+    officeD = 10.6;
+  const officeX = 9.5,
+    officeZ = -12.4;
   const office = new THREE.Mesh(
-    new THREE.BoxGeometry(16, 5.5, 9),
-    mat(0xd7d2c4),
+    new THREE.BoxGeometry(officeW, officeH, officeD),
+    mat(0xdcd7c6),
   );
-  office.position.set(-lotW / 2 + 9, 2.75, -lotD / 2 + 5.5);
+  office.position.set(officeX, officeH / 2, officeZ);
   g.add(office);
   const officeRoof = new THREE.Mesh(
-    new THREE.BoxGeometry(17, 0.5, 10),
+    new THREE.BoxGeometry(officeW + 0.5, 0.35, officeD + 0.5),
+    mat(0xeceee8),
+  );
+  officeRoof.position.set(officeX, officeH + 0.17, officeZ);
+  g.add(officeRoof);
+  const officeRoofTrim = new THREE.Mesh(
+    new THREE.BoxGeometry(officeW + 0.6, 0.16, officeD + 0.6),
     mat(0x4a4f55),
   );
-  officeRoof.position.set(-lotW / 2 + 9, 5.75, -lotD / 2 + 5.5);
-  g.add(officeRoof);
+  officeRoofTrim.position.set(officeX, officeH + 0.05, officeZ);
+  g.add(officeRoofTrim);
+
+  // 事務所の1F・2F窓帯(南東向き正面＋北東向き道路面)と1F庇
+  const winMat = mat(0x28323c);
+  for (const wy of [1.8, 4.5]) {
+    const winSE = new THREE.Mesh(new THREE.PlaneGeometry(16.5, 1.3), winMat);
+    winSE.position.set(officeX, wy, officeZ + officeD / 2 + 0.03);
+    g.add(winSE);
+    const winNE = new THREE.Mesh(new THREE.PlaneGeometry(8.2, 1.3), winMat);
+    winNE.rotation.y = Math.PI / 2;
+    winNE.position.set(officeX + officeW / 2 + 0.03, wy, officeZ);
+    g.add(winNE);
+  }
+  const canopy = new THREE.Mesh(
+    new THREE.BoxGeometry(17.5, 0.18, 1.1),
+    mat(0x3a3e42),
+  );
+  canopy.position.set(officeX, 2.95, officeZ + officeD / 2 + 0.55);
+  g.add(canopy);
   const sign = new THREE.Mesh(
-    new THREE.PlaneGeometry(7, 1.5),
+    new THREE.PlaneGeometry(7.2, 1.4),
     new THREE.MeshBasicMaterial({
       map: makeLabelTexture("京都市交通局 壬生操車場"),
       side: THREE.DoubleSide,
     }),
   );
-  sign.position.set(-lotW / 2 + 9, 6.8, -lotD / 2 + 5.5 + 5.05);
+  sign.position.set(officeX, officeH + 1.0, officeZ + officeD / 2 + 0.05);
   g.add(sign);
 
-  // 斜め駐車ベイ(2列×4区画。列ごとに逆向きの角度をつけて向かい合わせに配置)
+  // 白線区画ヘルパー (1区画 3.8m幅 × 11.5m長)
   const lineMat = new THREE.MeshBasicMaterial({ color: 0xe8e8e8 });
-  const SKEW = (24 * Math.PI) / 180;
-  const bays = [];
-  for (const row of [-1, 1]) {
-    const rowX = row * (lotW / 4 + 2);
-    for (let i = 0; i < 4; i++) {
-      bays.push({ x: rowX, z: -lotD / 2 + 12 + i * 11.2, ry: row * SKEW });
-    }
-  }
-  for (const bay of bays) {
+  const addBayGroup = (bx, bz, bry) => {
     const grp = new THREE.Group();
-    grp.position.set(bay.x, 0, bay.z);
-    grp.rotation.y = bay.ry;
+    grp.position.set(bx, 0, bz);
+    grp.rotation.y = bry;
     for (const side of [-1, 1]) {
-      const stripe = new THREE.Mesh(new THREE.PlaneGeometry(0.15, 12), lineMat);
+      const stripe = new THREE.Mesh(new THREE.PlaneGeometry(0.14, 11.5), lineMat);
       stripe.rotation.x = -Math.PI / 2;
-      stripe.position.set(side * 1.7, 0.03, 0);
+      stripe.position.set(side * 1.9, 0.045, 0);
       grp.add(stripe);
     }
+    const backLine = new THREE.Mesh(new THREE.PlaneGeometry(3.8, 0.14), lineMat);
+    backLine.rotation.x = -Math.PI / 2;
+    backLine.position.set(0, 0.045, -5.75);
+    grp.add(backLine);
     g.add(grp);
+  };
+
+  // 2. 南東塀沿い(中京警察署側)の直角駐車6区画: 前面は北西(-Z, 向き Math.PI)
+  // 道路側(x=+9.5)の1区画は空きとし、残り5区画(x=+5.7..-9.5)にバスを駐機
+  const seXs = [9.5, 5.7, 1.9, -1.9, -5.7, -9.5];
+  for (let i = 0; i < seXs.length; i++) {
+    const bx = seXs[i];
+    addBayGroup(bx, 12.25, Math.PI);
+    if (i >= 1) {
+      const bus = makeParkedBus();
+      bus.position.set(bx, 0, 12.25);
+      bus.rotation.y = Math.PI;
+      g.add(bus);
+    }
   }
 
-  // 駐機バス(各列2台ずつ、計4台)
-  for (const bay of [bays[0], bays[1], bays[4], bays[5]]) {
+  // 道路際・南東隅の黄色ゼブラ帯(ストリートビュー相当)
+  const yellowMat = new THREE.MeshBasicMaterial({ color: 0xeab308 });
+  for (let k = 0; k < 5; k++) {
+    const bar = new THREE.Mesh(new THREE.PlaneGeometry(5.6, 0.25), yellowMat);
+    bar.rotation.x = -Math.PI / 2;
+    bar.rotation.z = Math.PI / 6;
+    bar.position.set(15.5, 0.044, 11.0 + k * 1.45);
+    g.add(bar);
+  }
+
+  // 3. 北西側(事務所南西隣)の直角駐車3区画: 前面は南東(+Z, 向き 0)
+  for (const bx of [-3.8, -7.6, -11.4]) {
+    addBayGroup(bx, -12.25, 0);
     const bus = makeParkedBus();
-    bus.position.set(bay.x, 0, bay.z);
-    bus.rotation.y = bay.ry;
+    bus.position.set(bx, 0, -12.25);
+    bus.rotation.y = 0;
     g.add(bus);
   }
 
+  // 4. 敷地南東・南西の低い境界ブロック塀＋フェンス(北東・後院通側は出入口として開放)
+  const wallBaseMat = mat(0xb8b8b0);
+  const fenceTopMat = mat(0x2d2420);
+  for (const [fw, fd, fx, fz] of [
+    [39.3, 0.35, -0.15, 18.35], // 南東塀(中京警察署境界)
+    [0.35, 36.7, -19.8, 0.0], // 南西奥フェンス
+  ]) {
+    const base = new THREE.Mesh(new THREE.BoxGeometry(fw, 0.7, fd), wallBaseMat);
+    base.position.set(fx, 0.35, fz);
+    g.add(base);
+    const top = new THREE.Mesh(new THREE.BoxGeometry(fw, 0.9, fd * 0.7), fenceTopMat);
+    top.position.set(fx, 1.15, fz);
+    g.add(top);
+  }
+
   scene.add(g);
-  return { x: a.x, z: a.z, r: Math.hypot(lotW, lotD) / 2 + 6 };
+  // PLATEAU側は事務所建物(bldg_3e50bbcd)のみを除外し、隣接する中京警察署や後背建物は残す
+  const officeWorld = anchor(path, s - 30.8, 19.5);
+  return { x: officeWorld.x, z: officeWorld.z, r: 10 };
 }
 
 /** すべてのランドマークを配置し、建物生成の除外域リストを返す */

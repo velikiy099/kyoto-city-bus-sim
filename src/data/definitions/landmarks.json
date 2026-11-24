@@ -21,5 +21,5 @@
   },
   "AQUARIUM": { "stopName": "七条大宮・京都水族館前", "sOffsetM": 20, "parkHalfWidthM": 75, "exclusionRadiusM": 95 },
   "KYOTO_TOWER": { "stopName": "七条大宮・京都水族館前", "lateralM": -620, "exclusionRadiusM": 60 },
-  "MIBU_DEPOT": { "stopName": "みぶ操車場前", "lotW": 50, "lotD": 56, "roadSetbackM": 8 }
+  "MIBU_DEPOT": { "stopName": "みぶ操車場前", "sOffsetM": -18.5, "lotW": 40, "lotD": 37, "roadSetbackM": 5 }
 }

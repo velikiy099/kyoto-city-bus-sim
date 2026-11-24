@@ -199,7 +199,7 @@ export function createOps(ctx) {
           const inZone =
             Math.abs(dS - stop.s) <= O.stopWindow * 2 &&
             curbGap() <= O.curbWindow + 1.2;
-          if (Math.abs(bus.v) < 0.1 && inZone) {
+          if (Math.abs(bus.v) < 0.14 && inZone) {
             const err = dS - stop.s;
             if (Math.abs(err) <= O.stopWindow * 2) {
               prompt = "F : ドア開(乗降)";
@@ -208,7 +208,7 @@ export function createOps(ctx) {
               if (ePressed) openDoor();
             }
           } else if (
-            Math.abs(bus.v) < 0.1 &&
+            Math.abs(bus.v) < 0.14 &&
             Math.abs(dS - stop.s) <= O.stopWindow * 2 &&
             curbGap() > O.curbWindow + 1.2
           ) {
