@@ -291,10 +291,60 @@ export function middleDoorSensorBuzzer(durationSec = 1.5) {
   osc.start(t);
 }
 
-/** 降車ボタン「ピンポーン」 */
+let stopChimeWaveLo = null;
+let stopChimeWaveHi = null;
+
+function getStopChimeWaves() {
+  if (!ctx) return null;
+  if (!stopChimeWaveLo) {
+    stopChimeWaveLo = ctx.createPeriodicWave(
+      new Float32Array(8),
+      new Float32Array([0, 1.0, 0, 0.052, 0, 0.095, 0, 0.095]),
+    );
+  }
+  if (!stopChimeWaveHi) {
+    stopChimeWaveHi = ctx.createPeriodicWave(
+      new Float32Array(6),
+      new Float32Array([0, 1.0, 0, 0.13, 0, 0.235]),
+    );
+  }
+  return [stopChimeWaveLo, stopChimeWaveHi];
+}
+
+/** 降車ボタン「ピンポーン」 (PDG-AA273KAN 24:16.28 準拠: 916.3 Hz → 684.1 Hz 2点チャイム×2回) */
 export function buzzer() {
-  blip(988, 0.28, "sine", 0.14);
-  blip(784, 0.5, "sine", 0.14, 0.22);
+  if (!ctx) return;
+  const waves = getStopChimeWaves();
+  if (!waves) return;
+  const [waveLo, waveHi] = waves;
+  const now = ctx.currentTime;
+
+  const playNote = (freq, wave, offsetSec, dur, tau, peak) => {
+    const t0 = now + offsetSec;
+    const gateT = dur - 0.035;
+    const decayVal = Math.max(0.0001, peak * Math.exp(-gateT / tau));
+
+    const envGain = ctx.createGain();
+    envGain.gain.setValueAtTime(0.0001, t0);
+    envGain.gain.linearRampToValueAtTime(peak, t0 + 0.004);
+    envGain.gain.exponentialRampToValueAtTime(decayVal, t0 + gateT);
+    envGain.gain.linearRampToValueAtTime(0.0001, t0 + dur);
+    envGain.connect(ctx.destination);
+
+    const osc = ctx.createOscillator();
+    osc.setPeriodicWave(wave);
+    osc.frequency.value = freq;
+    osc.connect(envGain);
+    osc.start(t0);
+    osc.stop(t0 + dur + 0.02);
+  };
+
+  // 1回目: ピン (916.3 Hz) → +0.215s で ポーン (684.1 Hz)
+  playNote(916.3, waveHi, 0.0, 0.8, 0.45, 0.075);
+  playNote(684.1, waveLo, 0.215, 0.75, 0.42, 0.115);
+  // 2回目 (0.865s 後)
+  playNote(916.3, waveHi, 0.865, 0.8, 0.42, 0.075);
+  playNote(684.1, waveLo, 1.08, 0.7, 0.38, 0.115);
 }
 
 /** 運賃箱「チャリン」 */

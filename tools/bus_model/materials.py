@@ -578,34 +578,34 @@ def _build_stop_request_sign():
 
 
 def _build_dash_stop_lamp_texture():
-    """Dashboard cowling hooded stalk-mounted '停車' stop-request indicator lens (`tex_dash_stop_lamp`, unlit default)."""
-    cv = Canvas(128, 96, bg_hex="#240D10")
-    cv.border(0.03, 0.04, 0.97, 0.96, 0.04, "#14080A")
-    cv.text("停車", 0.50, 0.50, 0.72, 0.62, "#582026", bold=True)
+    """Dashboard cylindrical barrel-mounted '停車' round stop indicator lens (`tex_dash_stop_lamp`, unlit default)."""
+    cv = Canvas(128, 128, bg_hex="#220B0E")
+    cv.arc(0.50, 0.50, 0.50, 0.45, 0, 360, "#120608")
+    cv.text("停車", 0.50, 0.50, 0.68, 0.42, "#4A181E", bold=True)
     return cv.to_image("tex_dash_stop_lamp")
 
 
 def _build_dash_wheelchair_lamp_texture():
-    """Dashboard cowling hooded stalk-mounted wheelchair stop indicator lens (`tex_dash_wheelchair_lamp`, unlit default)."""
-    cv = Canvas(128, 96, bg_hex="#241A0B")
-    cv.border(0.03, 0.04, 0.97, 0.96, 0.04, "#141008")
-    # Stylized unlit wheelchair icon facing right (bottom-up Canvas Y in [0..1])
-    c = "#584018"
-    cv.circle(0.54, 0.74, 0.075, c)
-    cv.line(0.49, 0.63, 0.49, 0.43, 0.065, c)
-    cv.line(0.49, 0.43, 0.64, 0.43, 0.065, c)
-    cv.line(0.64, 0.43, 0.69, 0.23, 0.065, c)
-    cv.arc(0.47, 0.36, 0.19, 0.125, 115, 345, c)
+    """Dashboard cylindrical barrel-mounted wheelchair round stop indicator lens (`tex_dash_wheelchair_lamp`, unlit default)."""
+    cv = Canvas(128, 128, bg_hex="#22170A")
+    cv.arc(0.50, 0.50, 0.50, 0.45, 0, 360, "#120D06")
+    # Stylized unlit wheelchair icon facing right (bottom-up Canvas Y in [0..1], kept within r < 0.36)
+    c = "#4E3714"
+    cv.circle(0.53, 0.70, 0.065, c)
+    cv.line(0.49, 0.60, 0.49, 0.43, 0.055, c)
+    cv.line(0.49, 0.43, 0.62, 0.43, 0.055, c)
+    cv.line(0.62, 0.43, 0.67, 0.27, 0.055, c)
+    cv.arc(0.46, 0.37, 0.16, 0.105, 115, 345, c)
     return cv.to_image("tex_dash_wheelchair_lamp")
 
 
 def _build_rear_boarding_lamp_texture():
-    """Rear vertical '乗降中' (door-open boarding) indicator lamp (`tex_rear_boarding_lamp`, unlit default)."""
-    cv = Canvas(96, 256, bg_hex="#1A0A0C")
-    cv.border(0.04, 0.02, 0.96, 0.98, 0.03, "#0E0607")
-    cv.text("乗", 0.50, 0.78, 0.76, 0.24, "#4A181C", bold=True)
-    cv.text("降", 0.50, 0.50, 0.76, 0.24, "#4A181C", bold=True)
-    cv.text("中", 0.50, 0.22, 0.76, 0.24, "#4A181C", bold=True)
+    """Rear vertical '乗降中' (black panel, dark-green unlit LED) indicator lamp (`tex_rear_boarding_lamp`, unlit default)."""
+    cv = Canvas(96, 256, bg_hex="#070A09")
+    cv.border(0.04, 0.02, 0.96, 0.98, 0.03, "#151B18")
+    cv.text("乗", 0.50, 0.78, 0.76, 0.24, "#13261A", bold=True)
+    cv.text("降", 0.50, 0.50, 0.76, 0.24, "#13261A", bold=True)
+    cv.text("中", 0.50, 0.22, 0.76, 0.24, "#13261A", bold=True)
     return cv.to_image("tex_rear_boarding_lamp")
 
 
@@ -773,7 +773,7 @@ def build_materials():
     mats["BusBrakeLamp"] = _make_mat("BusBrakeLamp", "#7A1212", roughness=0.20)
     mats["BusReverseLamp"] = _make_mat("BusReverseLamp", "#949EA8", roughness=0.20)
     mats["BusRearBoardingLamp"] = _make_mat(
-        "BusRearBoardingLamp", "#1A0A0C", roughness=0.22, image=img_rear_boarding
+        "BusRearBoardingLamp", "#070A09", roughness=0.22, image=img_rear_boarding
     )
 
     # --- Wheels & Tires (Body-color pale sage-green steel rims #BAC8AC!) ---

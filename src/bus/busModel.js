@@ -21,7 +21,6 @@ export function createBusModel() {
   root.add(body);
   const destinationDisplay = createDestinationDisplay();
   const cockpitDisplays = createCockpitDisplays();
-  let signsReady = false;
 
   const turnLMat = new THREE.MeshLambertMaterial({
     color: 0x9a5b06,
@@ -74,6 +73,10 @@ export function createBusModel() {
             return new THREE.MeshBasicMaterial({
               map: cockpitDisplays.stopIndicatorTexture,
             });
+          if (m.name === "BusSignDisplay")
+            return new THREE.MeshBasicMaterial({
+              map: destinationDisplay.texture,
+            });
           if (m.name === "BusTurnL") return turnLMat;
           if (m.name === "BusTurnR") return turnRMat;
           if (m.name === "BusBrakeLamp") return brakeMat;
@@ -98,64 +101,10 @@ export function createBusModel() {
         root.add(pivot);
         wheels.push({ pivot, tire: pivot.children[0], steered });
       }
-      addSigns(body);
     },
     undefined,
     (err) => console.error("bus.glb の読み込みに失敗", err),
   );
-
-  // 方向幕(前面・後面のみ動的表示、側面 SignSideL は無表示)。表示内容は九条大宮通過時に切り替える。
-  function addSigns(parent) {
-    // 幕ハウジングメッシュのバウンディングボックス(バスルート座標系)
-    const signBox = (name) => {
-      const mesh = parent.getObjectByName(name);
-      if (!mesh?.geometry) return null;
-      mesh.geometry.computeBoundingBox();
-      return mesh.geometry.boundingBox;
-    };
-    const signTex = destinationDisplay.texture;
-    const fb = signBox("SignFront");
-    const headsign = new THREE.Mesh(
-      new THREE.PlaneGeometry(
-        fb ? fb.max.x - fb.min.x : 1.46,
-        fb ? fb.max.y - fb.min.y : 0.25,
-      ),
-      new THREE.MeshBasicMaterial({ map: signTex }),
-    );
-    if (fb) {
-      headsign.position.set(
-        (fb.min.x + fb.max.x) / 2,
-        (fb.min.y + fb.max.y) / 2,
-        fb.max.z + 0.003,
-      );
-    } else {
-      headsign.position.set(-0.09, 2.375, B.length - B.rearOverhang - 0.14);
-    }
-    parent.add(headsign);
-
-    const rb = signBox("SignRear");
-    const rearSign = new THREE.Mesh(
-      new THREE.PlaneGeometry(
-        rb ? rb.max.x - rb.min.x : 1.2,
-        rb ? rb.max.y - rb.min.y : 0.29,
-      ),
-      new THREE.MeshBasicMaterial({ map: signTex }),
-    );
-    if (rb) {
-      rearSign.position.set(
-        (rb.min.x + rb.max.x) / 2,
-        (rb.min.y + rb.max.y) / 2,
-        rb.min.z - 0.003,
-      );
-    } else {
-      rearSign.position.set(0, 2.205, -(B.rearOverhang - 0.06));
-    }
-    rearSign.rotation.y = Math.PI; // 後方(-z)を向ける
-    parent.add(rearSign);
-
-    // 側面(左・中扉直後の窓全体を占める SignSideL)は無表示のまま維持
-    signsReady = true;
-  }
 
   let wheelSpin = 0;
   return {
@@ -171,8 +120,11 @@ export function createBusModel() {
       kujoOmiyaS = Infinity,
       cockpitState = null,
     ) {
-      if (signsReady)
-        destinationDisplay.setPhase(progressS >= kujoOmiyaS ? "afterKujo" : "beforeKujo");
+      const afterKujo =
+        cockpitState?.afterKujo !== undefined
+          ? Boolean(cockpitState.afterKujo)
+          : progressS >= kujoOmiyaS;
+      destinationDisplay.setPhase(afterKujo ? "afterKujo" : "beforeKujo");
       const tl = Boolean(cockpitState?.turnLeft);
       const tr = Boolean(cockpitState?.turnRight);
       const brk = Boolean(cockpitState?.braking);

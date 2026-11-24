@@ -285,14 +285,19 @@ class MeshBuilder:
             self.add_face(list(reversed(rings[0])), mat)
             self.add_face(list(rings[-1]), mat)
 
-    def disc(self, center, normal, r, seg, mat, uv=True, r_in=0.0):
+    def disc(self, center, normal, r, seg, mat, uv=True, r_in=0.0, u_axis=None, v_axis=None):
         """Flat disc (or annulus if r_in>0) facing `normal`, UV 0..1 over its bounding square."""
         c = _v(center)
-        n = _v(normal).normalized()
-        u, v = orthonormal(n)
-        # make u x v == n
-        if u.cross(v).dot(n) < 0:
-            u, v = v, u
+        if u_axis is not None and v_axis is not None:
+            u = _v(u_axis).normalized()
+            v = _v(v_axis).normalized()
+            n = u.cross(v).normalized()
+        else:
+            n = _v(normal).normalized()
+            u, v = orthonormal(n)
+            # make u x v == n
+            if u.cross(v).dot(n) < 0:
+                u, v = v, u
         if r_in <= 0:
             idx, uvs = [], []
             for i in range(seg):
@@ -310,6 +315,30 @@ class MeshBuilder:
             for i in range(seg):
                 j = (i + 1) % seg
                 self.add_face([inner[i], outer[i], outer[j], inner[j]], mat)
+
+    def hollow_cylinder(self, p0, p1, r_out, r_in, seg, mat, smooth=True):
+        """Watertight open-ended cylindrical tube from p0 to p1 (e.g., lamp glare hood)."""
+        a, b = _v(p0), _v(p1)
+        ax = b - a
+        if ax.length < 1e-9:
+            return
+        u, v = orthonormal(ax)
+        if u.cross(v).dot(ax) < 0:
+            u, v = v, u
+        o0, o1, i0, i1 = [], [], [], []
+        for k in range(seg):
+            t = 2 * math.pi * k / seg
+            d = u * math.cos(t) + v * math.sin(t)
+            o0.append(self.add_vert(a + d * r_out))
+            o1.append(self.add_vert(b + d * r_out))
+            i0.append(self.add_vert(a + d * r_in))
+            i1.append(self.add_vert(b + d * r_in))
+        for k in range(seg):
+            j = (k + 1) % seg
+            self.add_face([o0[k], o0[j], o1[j], o1[k]], mat, None, smooth)
+            self.add_face([i0[k], i1[k], i1[j], i0[j]], mat, None, smooth)
+            self.add_face([i1[k], o1[k], o1[j], i1[j]], mat)
+            self.add_face([i0[k], i0[j], o0[j], o0[k]], mat)
 
     def torus(self, center, normal, R, r, seg, seg2, mat):
         c = _v(center)

@@ -3,7 +3,7 @@ import * as THREE from "three";
 const GAUGE_W = 512;
 const GAUGE_H = 256;
 const STOP_W = 128;
-const STOP_H = 96;
+const STOP_H = 128;
 const BOARDING_W = 96;
 const BOARDING_H = 256;
 
@@ -184,85 +184,116 @@ function drawTelltales(ctx, { speedKmh, doorOpen, braking, turnLeft, turnRight }
   }
 }
 
-function drawBoardingLamp(ctx, doorOpen) {
+function buildBoardingLedDots() {
+  const off = document.createElement("canvas");
+  off.width = BOARDING_W;
+  off.height = BOARDING_H;
+  const octx = off.getContext("2d");
+  octx.clearRect(0, 0, BOARDING_W, BOARDING_H);
+  octx.fillStyle = "#ffffff";
+  octx.textAlign = "center";
+  octx.textBaseline = "middle";
+  octx.font = "bold 54px sans-serif";
+  octx.fillText("乗", BOARDING_W / 2, 54);
+  octx.fillText("降", BOARDING_W / 2, 128);
+  octx.fillText("中", BOARDING_W / 2, 202);
+  const { data } = octx.getImageData(0, 0, BOARDING_W, BOARDING_H);
+  const allDots = [];
+  const litDots = [];
+  for (let y = 10; y <= BOARDING_H - 10; y += 4) {
+    for (let x = 10; x <= BOARDING_W - 10; x += 4) {
+      const pt = { x, y };
+      allDots.push(pt);
+      const a = data[(y * BOARDING_W + x) * 4 + 3];
+      if (a > 90) litDots.push(pt);
+    }
+  }
+  return { allDots, litDots };
+}
+
+function drawBoardingLamp(ctx, doorOpen, ledGrid) {
   ctx.clearRect(0, 0, BOARDING_W, BOARDING_H);
+  ctx.fillStyle = doorOpen ? "#050807" : "#070a09";
+  ctx.fillRect(0, 0, BOARDING_W, BOARDING_H);
+
+  ctx.strokeStyle = "#18201b";
+  ctx.lineWidth = 4;
+  ctx.strokeRect(2, 2, BOARDING_W - 4, BOARDING_H - 4);
+
+  const { allDots, litDots } = ledGrid;
+  ctx.fillStyle = "#0e1511";
+  for (const d of allDots) {
+    ctx.beginPath();
+    ctx.arc(d.x, d.y, 1.1, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
   if (doorOpen) {
-    const grad = ctx.createLinearGradient(0, 0, 0, BOARDING_H);
-    grad.addColorStop(0, "#d61f15");
-    grad.addColorStop(0.5, "#ff5c26");
-    grad.addColorStop(1, "#d61f15");
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, BOARDING_W, BOARDING_H);
-
-    ctx.strokeStyle = "#ff9a76";
-    ctx.lineWidth = 4;
-    ctx.strokeRect(3, 3, BOARDING_W - 6, BOARDING_H - 6);
-
-    ctx.save();
-    ctx.shadowColor = "rgba(255, 220, 180, 0.9)";
-    ctx.shadowBlur = 10;
-    ctx.fillStyle = "#fff7d6";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.font = "bold 48px sans-serif";
-    ctx.fillText("乗", BOARDING_W / 2, 56);
-    ctx.fillText("降", BOARDING_W / 2, 128);
-    ctx.fillText("中", BOARDING_W / 2, 200);
-    ctx.restore();
+    ctx.fillStyle = "rgba(20, 255, 115, 0.34)";
+    for (const d of litDots) {
+      ctx.beginPath();
+      ctx.arc(d.x, d.y, 2.7, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.fillStyle = "#22ff6a";
+    for (const d of litDots) {
+      ctx.beginPath();
+      ctx.arc(d.x, d.y, 1.55, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.fillStyle = "#caffdc";
+    for (const d of litDots) {
+      ctx.beginPath();
+      ctx.arc(d.x, d.y, 0.7, 0, Math.PI * 2);
+      ctx.fill();
+    }
   } else {
-    ctx.fillStyle = "#1a0a0c";
-    ctx.fillRect(0, 0, BOARDING_W, BOARDING_H);
-    ctx.strokeStyle = "#0e0607";
-    ctx.lineWidth = 4;
-    ctx.strokeRect(3, 3, BOARDING_W - 6, BOARDING_H - 6);
-
-    ctx.fillStyle = "#46181c";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.font = "bold 48px sans-serif";
-    ctx.fillText("乗", BOARDING_W / 2, 56);
-    ctx.fillText("降", BOARDING_W / 2, 128);
-    ctx.fillText("中", BOARDING_W / 2, 200);
+    ctx.fillStyle = "#132218";
+    for (const d of litDots) {
+      ctx.beginPath();
+      ctx.arc(d.x, d.y, 1.15, 0, Math.PI * 2);
+      ctx.fill();
+    }
   }
 }
 
 function drawStopIndicator(ctx, buzzer) {
   ctx.clearRect(0, 0, STOP_W, STOP_H);
+  const cx = STOP_W / 2;
+  const cy = STOP_H / 2;
+  const r = 62;
+
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
   if (buzzer) {
-    const grad = ctx.createRadialGradient(
-      STOP_W * 0.5,
-      STOP_H * 0.5,
-      6,
-      STOP_W * 0.5,
-      STOP_H * 0.5,
-      STOP_W * 0.58,
-    );
-    grad.addColorStop(0, "#ff5a36");
-    grad.addColorStop(1, "#dc1a1a");
+    const grad = ctx.createRadialGradient(cx, cy, 4, cx, cy, r);
+    grad.addColorStop(0, "#ff4d2e");
+    grad.addColorStop(1, "#d41414");
     ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, STOP_W, STOP_H);
+    ctx.fill();
 
+    ctx.lineWidth = 4;
     ctx.strokeStyle = "#ff8a70";
-    ctx.lineWidth = 4;
-    ctx.strokeRect(3, 3, STOP_W - 6, STOP_H - 6);
+    ctx.stroke();
 
-    ctx.fillStyle = "#140606";
+    ctx.fillStyle = "#140404";
     ctx.textBaseline = "middle";
     ctx.textAlign = "center";
-    ctx.font = "bold 44px sans-serif";
-    ctx.fillText("停車", STOP_W / 2, STOP_H / 2 + 2);
+    ctx.font = "bold 38px sans-serif";
+    ctx.fillText("停車", cx, cy + 2);
   } else {
-    ctx.fillStyle = "#240d10";
-    ctx.fillRect(0, 0, STOP_W, STOP_H);
-    ctx.strokeStyle = "#14080a";
-    ctx.lineWidth = 4;
-    ctx.strokeRect(3, 3, STOP_W - 6, STOP_H - 6);
+    ctx.fillStyle = "#220b0e";
+    ctx.fill();
 
-    ctx.fillStyle = "#521d24";
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = "#120608";
+    ctx.stroke();
+
+    ctx.fillStyle = "#48181e";
     ctx.textBaseline = "middle";
     ctx.textAlign = "center";
-    ctx.font = "bold 44px sans-serif";
-    ctx.fillText("停車", STOP_W / 2, STOP_H / 2 + 2);
+    ctx.font = "bold 38px sans-serif";
+    ctx.fillText("停車", cx, cy + 2);
   }
 }
 
@@ -298,6 +329,7 @@ export function createCockpitDisplays() {
   const boardingLampTexture = new THREE.CanvasTexture(boardingCanvas);
   boardingLampTexture.colorSpace = THREE.SRGBColorSpace;
   boardingLampTexture.flipY = false;
+  const boardingLedGrid = buildBoardingLedDots();
 
   let lastSpeed = -999;
   let lastRpm = -999;
@@ -330,7 +362,7 @@ export function createCockpitDisplays() {
       tr !== lastTurnRight
     ) {
       if (door !== lastDoor) {
-        drawBoardingLamp(bCtx, door);
+        drawBoardingLamp(bCtx, door, boardingLedGrid);
         boardingLampTexture.needsUpdate = true;
       }
       lastSpeed = speedKmh;

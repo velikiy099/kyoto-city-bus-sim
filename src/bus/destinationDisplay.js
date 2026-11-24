@@ -115,6 +115,7 @@ export function createDestinationDisplay(direction = "self") {
   const context = canvas.getContext("2d");
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
+  texture.flipY = false;
 
   let phase = direction === "oncoming" ? "oncoming" : "beforeKujo";
   const render = () => {

@@ -1043,25 +1043,39 @@ def _build_cockpit(body_empty, mats):
     mb.box((-1.030, 1.225, 6.395), (-1.010, 1.265, 6.435), mats["BusTrim"])
 
     # 3. Left Dash Switch Panel, Top Stop-Request Indicator Pods, Shift Lever with Boot & Parking Brake Knob
-    # Two stalk-mounted hooded stop-request pods on top-left of dashboard cowling (left = '停車', right = wheelchair)
+    # Two stalk-mounted cylindrical round stop-request barrels (Oji DS-501 / DS-501OK)
+    # on top-left of dashboard cowling (right = '停車', left = wheelchair from driver POV)
     pod_rot = Euler((0.34, 0.32, 0.0), "XYZ")
     pod_R = pod_rot.to_matrix()
     u_pod = pod_R @ Vector((-1.0, 0.0, 0.0))
     v_pod = pod_R @ Vector((0.0, 1.0, 0.0))
     n_pod = u_pod.cross(v_pod).normalized()
-    pw, ph, pt = 0.084, 0.056, 0.044
-    hood_t, hood_d = 0.006, 0.010
-    for px, mat_key in ((-0.50, "BusDashStopLamp"), (-0.40, "BusDashWheelchairLamp")):
-        mb.cylinder((px, 1.465, 6.41), (px, 1.473, 6.41), 0.022, 10, mats["BusTrim"])
-        mb.cylinder((px, 1.470, 6.41), (px, 1.502, 6.40), 0.0085, 8, mats["BusTrim"])
-        pod_c = Vector((px, 1.526, 6.40))
-        mb.obox(pod_c, (pw, ph, pt), mats["BusTrim"], rot=pod_rot)
-        rim_c = pod_c + n_pod * (pt * 0.5 + hood_d * 0.5)
-        mb.obox(rim_c + v_pod * ((ph - hood_t) * 0.5), (pw, hood_t, hood_d), mats["BusTrim"], rot=pod_rot)
-        mb.obox(rim_c - v_pod * ((ph - hood_t) * 0.5), (pw, hood_t, hood_d), mats["BusTrim"], rot=pod_rot)
-        mb.obox(rim_c + u_pod * ((pw - hood_t) * 0.5), (hood_t, ph - 2 * hood_t, hood_d), mats["BusTrim"], rot=pod_rot)
-        mb.obox(rim_c - u_pod * ((pw - hood_t) * 0.5), (hood_t, ph - 2 * hood_t, hood_d), mats["BusTrim"], rot=pod_rot)
-        mb.rect(pod_c + n_pod * 0.023, u_pod, v_pod, 0.072, 0.044, mats[mat_key])
+    for px, mat_key in ((-0.495, "BusDashStopLamp"), (-0.410, "BusDashWheelchairLamp")):
+        mb.cylinder((px, 1.465, 6.41), (px, 1.472, 6.41), 0.020, 16, mats["BusTrim"])
+        mb.cylinder((px, 1.470, 6.41), (px, 1.500, 6.404), 0.009, 12, mats["BusTrim"])
+        pod_c = Vector((px, 1.524, 6.404))
+        p_back = pod_c - n_pod * 0.056
+        p_front = pod_c + n_pod * 0.004
+        mb.cylinder(p_back, p_front, 0.028, 24, mats["BusTrim"], r1=0.0355, caps=True)
+        mb.torus(pod_c - n_pod * 0.022, n_pod, 0.0335, 0.0022, 24, 8, mats["BusTrim"])
+        mb.hollow_cylinder(
+            p_front - n_pod * 0.002,
+            p_front + n_pod * 0.022,
+            0.0355,
+            0.0305,
+            24,
+            mats["BusTrim"],
+        )
+        mb.disc(
+            p_front + n_pod * 0.001,
+            n_pod,
+            0.0305,
+            24,
+            mats[mat_key],
+            uv=True,
+            u_axis=u_pod,
+            v_axis=v_pod,
+        )
     # Upper-left white route/safety instruction card plaque & green/amber LEDs (proud of Z=6.435 back wall)
     mb.box((-0.50, 1.32, 6.395), (-0.40, 1.435, 6.435), mats["BusPureWhite"])
     mb.box((-0.49, 1.37, 6.390), (-0.41, 1.41, 6.398), mats["BusRed"])

@@ -58,7 +58,11 @@ import {
 const STEP = 1 / 60;
 const DOOR_OFFSET = CFG.bus.wheelbase + 1.3; // 後軸→前扉
 const path = route.path;
-const kujoOmiyaS = route.stops.find((stop) => stop.name === ROUTE_SEMANTICS.headsignPhaseSwitchStop)?.s ?? Infinity;
+const kujoOmiyaIndex = route.stops.findIndex(
+  (stop) => stop.name === ROUTE_SEMANTICS.headsignPhaseSwitchStop,
+);
+const kujoOmiyaS =
+  kujoOmiyaIndex >= 0 ? route.stops[kujoOmiyaIndex].s : Infinity;
 configureWorldHeightSamplers(
   path,
   terrainElevationAt,
@@ -623,6 +627,9 @@ function frame(now) {
     state.s,
     kujoOmiyaS,
     {
+      afterKujo:
+        (kujoOmiyaIndex >= 0 && state.nextStopIndex > kujoOmiyaIndex) ||
+        state.s >= kujoOmiyaS,
       buzzer: Boolean(state.buzzer && state.doorState === "CLOSED"),
       doorOpen: state.doorState !== "CLOSED",
       braking: bus.brakeLamp,
