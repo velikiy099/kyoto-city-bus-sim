@@ -114,6 +114,9 @@ const state = {
   nextStopIndex: 0,
   doorState: "CLOSED",
   buzzer: false,
+  turnSignal: 0, // -1=左(Q), 0=消灯, +1=右(E)
+  blinkTimer: 0,
+  blinkOn: false,
   promptText: null,
   camMode: "chase",
   completed: false,
@@ -164,6 +167,10 @@ const ops = createOps({
       bus.latAccel = 0;
       bus.throttleLocked = true;
       dbg.autoDrive = false;
+      state.turnSignal = 0;
+      state.blinkTimer = 0;
+      state.blinkOn = false;
+      sfx.setLeftTurnVoice(false);
       const summary = scoring.resultSummary();
       const arrivalClock = state.clock;
       const carried = pax.totalCarried;
@@ -199,6 +206,8 @@ function placeBusAtS(s) {
   bus.heading = Math.atan2(tx, tz);
   bus.v = 0;
   bus.delta = 0;
+  bus.gear = 1;
+  bus.rpm = 600;
   state.s = s;
 }
 
@@ -368,8 +377,8 @@ function tick(dt, ePressed) {
       targetLat,
       vCap,
     );
-    // ドア操作の自動化: プロンプトが出たら即 E
-    if (state.promptText?.startsWith("E :")) ePressed = true;
+    // ドア操作の自動化: プロンプトが出たら即 F
+    if (state.promptText?.startsWith("F :")) ePressed = true;
   } else {
     axes = input.axes();
   }
@@ -463,6 +472,10 @@ function returnToTitle() {
   bus.reverseArmed = false;
   bus.reverseHold = 0;
   bus.brakeWasDown = false;
+  bus.brakeLamp = false;
+  bus.reversing = false;
+  bus.gear = 1;
+  bus.rpm = 600;
   camInit = false;
   // 乗客・スコア・停留所・NPC交通・時計を全て初期化
   pax.reset();
@@ -475,6 +488,9 @@ function returnToTitle() {
   state.nextStopIndex = 0;
   state.doorState = "CLOSED";
   state.buzzer = false;
+  state.turnSignal = 0;
+  state.blinkTimer = 0;
+  state.blinkOn = false;
   state.promptText = null;
   state.waitingDepart = false;
   state.completed = false;
@@ -529,18 +545,42 @@ function frame(now) {
         camInit = false;
       }
 
+      // Q / E キーでウインカー(左 / 右)をトグル
+      if (input.pressed("KeyQ")) {
+        state.turnSignal = state.turnSignal === -1 ? 0 : -1;
+        state.blinkTimer = 0;
+        state.blinkOn = state.turnSignal !== 0;
+        if (state.blinkOn) sfx.blinkerClick(true);
+      } else if (input.pressed("KeyE")) {
+        state.turnSignal = state.turnSignal === 1 ? 0 : 1;
+        state.blinkTimer = 0;
+        state.blinkOn = state.turnSignal !== 0;
+        if (state.blinkOn) sfx.blinkerClick(true);
+      }
+      if (state.turnSignal !== 0) {
+        state.blinkTimer += dt;
+        while (state.blinkTimer >= 0.36) {
+          state.blinkTimer -= 0.36;
+          state.blinkOn = !state.blinkOn;
+          sfx.blinkerClick(state.blinkOn);
+        }
+      } else {
+        state.blinkTimer = 0;
+        state.blinkOn = false;
+      }
+
       // . キー長押し中、停留所停車中のみ時間4倍速
       const dotHeld = input.held("Period");
       const atStop = state.doorState !== "CLOSED" || state.waitingDepart;
       const timeMultiplier = dotHeld && atStop ? 4 : 1;
 
-      let ePressed = input.pressed("KeyE");
+      let fPressed = input.pressed("KeyF");
       acc += dt * dbg.timeScale * timeMultiplier;
       let steps = 0;
       const maxSteps = Math.ceil(6 * dbg.timeScale * timeMultiplier);
       while (acc >= STEP && steps < maxSteps) {
-        tick(STEP, ePressed);
-        ePressed = false;
+        tick(STEP, fPressed);
+        fPressed = false;
         acc -= STEP;
         steps++;
       }
@@ -555,10 +595,21 @@ function frame(now) {
     gradeAt(state.s),
     state.s,
     kujoOmiyaS,
+    {
+      buzzer: Boolean(state.buzzer && state.doorState === "CLOSED"),
+      doorOpen: state.doorState !== "CLOSED",
+      braking: bus.brakeLamp,
+      reversing: bus.reversing,
+      turnLeft: state.turnSignal === -1 && state.blinkOn,
+      turnRight: state.turnSignal === 1 && state.blinkOn,
+    },
   );
   updateCamera(dt);
   if (state.phase === "RUNNING" && !state.paused && !state.completed) {
     sfx.updateEngine(bus.speedKmh, bus.throttleState);
+    sfx.setLeftTurnVoice(
+      state.turnSignal === -1 && state.doorState === "CLOSED",
+    );
   } else {
     sfx.stopEngine();
   }
@@ -620,6 +671,11 @@ setupDebug({
     z: +bus.z.toFixed(1),
     lateral: +state.lateral.toFixed(2),
     vKmh: +bus.speedKmh.toFixed(1),
+    rpm: Math.round(bus.rpm),
+    gear: bus.gear,
+    turnSignal: state.turnSignal,
+    brakeLamp: bus.brakeLamp,
+    reversing: bus.reversing,
     doorState: state.doorState,
     waitingDepart: !!state.waitingDepart,
     nextStopIndex: state.nextStopIndex,

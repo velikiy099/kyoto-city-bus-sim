@@ -23,7 +23,7 @@ function makeParkedBus() {
   const holder = new THREE.Group();
   const fill = () => {
     const node = busLib.clone(true);
-    node.position.set(0, 0, -3.15); // bus.glb は原点=後軸中心なので車体中心を holder 原点へ
+    node.position.set(0, 0, -1.765); // bus.glb は原点=後軸中心(Z=-3.48..+7.01, 中点+1.765)なので車体中心を holder 原点へ
     holder.add(node);
   };
   if (busLib) fill();

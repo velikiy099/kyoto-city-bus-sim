@@ -1,16 +1,63 @@
-/** WebAudio 生成 SFX(外部音源なし) */
+/** WebAudio 生成 SFX(外部音源なし + 左折音声クリップ) */
 let ctx = null;
 let engine = null;
+let turnLeftBuffer = null;
+let turnLeftLoading = false;
+let leftVoiceActive = false;
+let leftVoiceSource = null;
+let leftVoiceTimer = null;
+
+function loadTurnLeftAudio() {
+  if (!ctx || turnLeftBuffer || turnLeftLoading) return;
+  turnLeftLoading = true;
+  fetch("audio/turn-left.wav")
+    .then((res) => (res.ok ? res.arrayBuffer() : null))
+    .then((buf) => (buf && ctx ? ctx.decodeAudioData(buf) : null))
+    .then((decoded) => {
+      turnLeftBuffer = decoded;
+      turnLeftLoading = false;
+      if (leftVoiceActive && !leftVoiceSource && !leftVoiceTimer) {
+        scheduleLeftTurnClip();
+      }
+    })
+    .catch(() => {
+      turnLeftLoading = false;
+    });
+}
+
+function scheduleLeftTurnClip() {
+  if (!ctx || !turnLeftBuffer || !leftVoiceActive || leftVoiceSource) return;
+  const src = ctx.createBufferSource();
+  src.buffer = turnLeftBuffer;
+  const g = ctx.createGain();
+  g.gain.value = 0.65;
+  src.connect(g).connect(ctx.destination);
+  leftVoiceSource = src;
+  src.onended = () => {
+    if (leftVoiceSource !== src) return;
+    leftVoiceSource = null;
+    if (!leftVoiceActive) return;
+    leftVoiceTimer = setTimeout(() => {
+      leftVoiceTimer = null;
+      scheduleLeftTurnClip();
+    }, 950);
+  };
+  src.start();
+}
 
 /** ユーザー操作後に呼ぶ(スタートボタン) */
 export function initAudio() {
-  if (ctx) return;
+  if (ctx) {
+    loadTurnLeftAudio();
+    return;
+  }
   try {
     ctx = new (window.AudioContext || window.webkitAudioContext)();
   } catch {
     console.info("[sfx] AudioContext unavailable — silent mode");
     return;
   }
+  loadTurnLeftAudio();
 
   // エンジン音: ローパスノイズ + 低音のこぎり波
   const bufLen = ctx.sampleRate * 2;
@@ -54,11 +101,13 @@ export function updateEngine(vKmh, throttle) {
   engine.noiseFilter.frequency.value = 100 + load * 420;
 }
 
-/** タイトル画面・結果画面ではエンジン音を止める */
+/** タイトル画面・結果画面ではエンジン音と警戒放送を止める */
 export function stopEngine() {
-  if (!engine) return;
-  engine.oscGain.gain.value = 0;
-  engine.noiseGain.gain.value = 0;
+  if (engine) {
+    engine.oscGain.gain.value = 0;
+    engine.noiseGain.gain.value = 0;
+  }
+  setLeftTurnVoice(false);
 }
 
 function blip(freq, dur, type = "sine", gain = 0.12, when = 0) {
@@ -104,4 +153,38 @@ export function buzzer() {
 export function coin() {
   blip(2600, 0.09, "square", 0.05);
   blip(3400, 0.16, "sine", 0.07, 0.05);
+}
+
+/** ウインカーリレー作動音「カチッ/カッ」 */
+export function blinkerClick(on) {
+  if (!ctx) return;
+  blip(on ? 1250 : 920, 0.018, "triangle", on ? 0.09 : 0.065);
+  blip(on ? 420 : 320, 0.014, "square", 0.03);
+}
+
+/** 左ウインカー音声「左に寄ります、ご注意ください」を次停放送とは独立して繰り返す */
+export function setLeftTurnVoice(active) {
+  const next = Boolean(active);
+  if (next === leftVoiceActive) return;
+  leftVoiceActive = next;
+  if (!next) {
+    if (leftVoiceTimer) {
+      clearTimeout(leftVoiceTimer);
+      leftVoiceTimer = null;
+    }
+    if (leftVoiceSource) {
+      const src = leftVoiceSource;
+      leftVoiceSource = null;
+      try {
+        src.stop();
+      } catch {
+        // ignore
+      }
+    }
+    return;
+  }
+  loadTurnLeftAudio();
+  if (turnLeftBuffer && !leftVoiceSource && !leftVoiceTimer) {
+    scheduleLeftTurnClip();
+  }
 }

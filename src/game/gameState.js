@@ -202,7 +202,7 @@ export function createOps(ctx) {
           if (Math.abs(bus.v) < 0.1 && inZone) {
             const err = dS - stop.s;
             if (Math.abs(err) <= O.stopWindow * 2) {
-              prompt = "E : ドア開(乗降)";
+              prompt = "F : ドア開(乗降)";
               if (Math.abs(err) > 3)
                 prompt += `  [停止線まで ${err > 0 ? "下がる" : "進む"} ${Math.abs(err).toFixed(1)}m]`;
               if (ePressed) openDoor();
@@ -269,7 +269,7 @@ export function createOps(ctx) {
             } else if (isAutoDrive() || ePressed) {
               closeDoor();
             } else {
-              prompt = "E : ドア閉";
+              prompt = "F : ドア閉";
             }
           }
           break;
