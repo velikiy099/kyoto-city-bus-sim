@@ -1,5 +1,5 @@
 {
-  "note": "ランドマーク配置のOSM(ODbL)/PLATEAU実測データ。座標は route18.json と同じ projOrigin [34.9746902, 135.7422893] の equirectangular 投影によるゲーム座標。",
+  "note": "京都市域ランドマーク配置のOSM(ODbL)/PLATEAU実測データ。座標は regionRegistry.projOrigin [34.9746902, 135.7422893] の equirectangular 投影による地域共通ワールド座標。",
   "TOJI_POS": {
     "pagoda": { "x": 590.22, "z": -578.63, "note": "PLATEAU measuredHeight=55.0 の建物中心" },
     "kondo": { "x": 496.62, "z": -632.03, "note": "PLATEAU 金堂(高さ24.9m)の建物中心" },
@@ -8,18 +8,38 @@
     "keigamon": { "x": 618.51, "z": -799.26, "halfGap": 9.4, "note": "慶賀門(同15.65m)" }
   },
   "TOJI_REFS": {
-    "northIntersection": "東寺道",
-    "westIntersection": "京阪国道口(国道1号)",
-    "turnCrossName": "大宮通",
+    "bounds": { "northRefZ": -792.8, "westX": 361.04 },
+    "corridorRadiusM": 450,
     "keigamonExclusion": { "radius": 10, "note": "PLATEAU側の門建物 bldg_b170a8f2(高さ8.3m)をGLBと重ならないよう個別除外" }
   },
-  "TERMINUS": {
-    "stopName": "久我石原町",
-    "LOT": { "w": 22.5, "d": 24.7, "note": "OSM landuse=garages の実測範囲" },
-    "STOP_INSET": { "x": 1.8, "z": 2.0 },
-    "legacyFallback": { "sBackM": 9.5, "lateralM": -16.6 }
+  "TERMINUS_LOTS": [
+    {
+      "id": "kuga-ishiharacho",
+      "stopName": "久我石原町",
+      "stopWorldPos": { "x": -1594.23, "z": 3005.94 },
+      "heading": 3.141592653589793,
+      "LOT": { "w": 22.5, "d": 24.7, "note": "OSM landuse=garages の実測範囲" },
+      "STOP_INSET": { "x": 1.8, "z": 2.0 },
+      "corridorRadiusM": 250
+    }
+  ],
+  "AQUARIUM": {
+    "worldPos": { "x": 537.95, "z": -1520.06, "ry": 0.0085 },
+    "parkHalfWidthM": 75,
+    "exclusionRadiusM": 95,
+    "corridorRadiusM": 450
   },
-  "AQUARIUM": { "stopName": "七条大宮・京都水族館前", "sOffsetM": 20, "parkHalfWidthM": 75, "exclusionRadiusM": 95 },
-  "KYOTO_TOWER": { "stopName": "七条大宮・京都水族館前", "lateralM": -620, "exclusionRadiusM": 60 },
-  "MIBU_DEPOT": { "stopName": "みぶ操車場前", "sOffsetM": -18.5, "lotW": 40, "lotD": 37, "roadSetbackM": 5 }
+  "KYOTO_TOWER": {
+    "worldPos": { "x": 1251.28, "z": -1541.78 },
+    "exclusionRadiusM": 60,
+    "corridorRadiusM": 1200
+  },
+  "MIBU_DEPOT": {
+    "worldPos": { "x": 332.26, "z": -3454.37, "ry": 0.8183 },
+    "lotW": 40,
+    "lotD": 37,
+    "label": "京都市交通局 壬生操車場",
+    "officeExclusion": { "x": 330.31, "z": -3470.32, "r": 10 },
+    "corridorRadiusM": 350
+  }
 }

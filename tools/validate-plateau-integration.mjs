@@ -21,7 +21,7 @@ for (const relative of required) {
 }
 const main = fs.readFileSync(path.join(root, "src/main.js"), "utf8");
 if (!main.includes('import { buildWorldScenery } from "./world/declarative/buildWorldScenery.js";')) throw new Error("main.js does not import buildWorldScenery");
-if (!main.includes("void buildWorldScenery(scene, path, route")) throw new Error("main.js does not start declarative world initialization");
+if (!main.includes("void buildWorldScenery(scene, path, world")) throw new Error("main.js does not start declarative world initialization");
 for (const preservedImport of [
   './bus/busPhysics.js', './game/stops.js', './game/passengers.js', './game/scoring.js',
   './game/gameState.js', './world/traffic/index.js', './audio/sfx.js', './audio/announcements.js',

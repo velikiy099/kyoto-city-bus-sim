@@ -1,19 +1,18 @@
 import * as THREE from "three";
 import {
-  route,
-  elevationAt,
-  laneCenterAt,
-  halfWidthAt,
-} from "../../route/routeData.js";
-import SIGNAL_DEFS from "../../data/definitions/signals.json" with { type: "json" };
-import {
   BUS_FRONT_OFFSET,
   SIGNAL_STOP_GAP,
   signalStopLineS,
   busSignalStopTargetS,
 } from "./dynamics.js";
 
-const SIGNAL_TIMING = SIGNAL_DEFS.TIMING;
+const DEFAULT_SIGNAL_TIMING = {
+  cycleS: 42,
+  greenS: 22,
+  yellowS: 3,
+  crossAllRedLeadS: 1,
+  crossYellowS: 2,
+};
 const mat = (color) => new THREE.MeshLambertMaterial({ color });
 const signalMat = (color) => new THREE.MeshBasicMaterial({ color });
 
@@ -33,47 +32,52 @@ function makeCylinderBetween(a, b, radius, color) {
   return mesh;
 }
 
-const stopS = (name) => route.stops.find((st) => st.name === name)?.s ?? null;
-
-export const nodePhase = (id) =>
+export const nodePhase = (id, cycleS = DEFAULT_SIGNAL_TIMING.cycleS) =>
   [...String(id ?? "")].reduce(
-    (hash, character) => (hash * 33 + character.charCodeAt(0)) % SIGNAL_TIMING.cycleS,
+    (hash, character) => (hash * 33 + character.charCodeAt(0)) % cycleS,
     0,
   );
 
-export const isNpcStopPhase = (nodeId, simulationTime) =>
-  ((simulationTime + nodePhase(nodeId)) % SIGNAL_TIMING.cycleS) >= SIGNAL_TIMING.greenS;
+export const isNpcStopPhase = (nodeId, simulationTime, timing = DEFAULT_SIGNAL_TIMING) =>
+  ((simulationTime + nodePhase(nodeId, timing.cycleS)) % timing.cycleS) >= timing.greenS;
 
-const mainStateAtPhase = (ph) =>
-  ph < SIGNAL_TIMING.greenS
+const mainStateAtPhase = (ph, timing) =>
+  ph < timing.greenS
     ? "green"
-    : ph < SIGNAL_TIMING.greenS + SIGNAL_TIMING.yellowS
+    : ph < timing.greenS + timing.yellowS
       ? "yellow"
       : "red";
 
-const crossStateAtPhase = (ph) =>
-  ph >= SIGNAL_TIMING.greenS + SIGNAL_TIMING.yellowS + SIGNAL_TIMING.crossAllRedLeadS
-    && ph < SIGNAL_TIMING.cycleS - SIGNAL_TIMING.crossYellowS
+const crossStateAtPhase = (ph, timing) =>
+  ph >= timing.greenS + timing.yellowS + timing.crossAllRedLeadS
+    && ph < timing.cycleS - timing.crossYellowS
     ? "green"
-    : ph >= SIGNAL_TIMING.cycleS - SIGNAL_TIMING.crossYellowS
+    : ph >= timing.cycleS - timing.crossYellowS
       ? "yellow"
       : "red";
 
-function fallbackSignalPositions(path) {
-  return SIGNAL_DEFS.FALLBACK.stops.map((name) => {
-    const s0 = stopS(name);
-    return s0 == null ? null : { s: s0 + SIGNAL_DEFS.FALLBACK.offsetM, name };
-  }).filter((sig) => sig && sig.s <= path.length - SIGNAL_DEFS.FALLBACK.endMarginM);
+function fallbackSignalPositions(path, stops, fallbackDef) {
+  if (!fallbackDef?.stops?.length) return [];
+  return fallbackDef.stops.map((name) => {
+    const s0 = stops.find((st) => st.name === name)?.s ?? null;
+    return s0 == null ? null : { s: s0 + (fallbackDef.offsetM ?? 32), name };
+  }).filter((sig) => sig && sig.s <= path.length - (fallbackDef.endMarginM ?? 30));
 }
 
-export function buildSignals(group, path) {
+export function buildSignals(group, path, options = {}) {
+  const world = options?.world ?? {};
+  const signalCfg = options?.signalDefs ?? world.definitions?.signals ?? {};
+  const timing = { ...DEFAULT_SIGNAL_TIMING, ...(signalCfg.TIMING ?? {}) };
+  const elevationAt = world.elevationAt ?? (() => 0);
+  const laneCenterAt = world.laneCenterAt ?? (() => 0);
+  const halfWidthAt = world.halfWidthAt ?? (() => 4);
+  const stops = options?.stops ?? [];
+  const compiledSignals = options?.signals ?? world.signals ?? [];
+
   // ================= 信号 =================
-  // 位相: 自道 青22→黄3→赤17 / 交差道は自道が赤の間に 全赤1→青14→黄2(交差点内で連動)
-  const CYCLE = SIGNAL_TIMING.cycleS,
-    GREEN = SIGNAL_TIMING.greenS,
-    YELLOW = SIGNAL_TIMING.yellowS;
-  const mainStateOf = mainStateAtPhase;
-  const crossStateOf = crossStateAtPhase;
+  const CYCLE = timing.cycleS;
+  const mainStateOf = (ph) => mainStateAtPhase(ph, timing);
+  const crossStateOf = (ph) => crossStateAtPhase(ph, timing);
 
   const OFF = { green: 0x1c3a24, yellow: 0x4a3d14, red: 0x451818 };
   const ON = { green: 0x2ee86a, yellow: 0xffd23c, red: 0xff4433 };
@@ -120,9 +124,9 @@ export function buildSignals(group, path) {
   }
 
   const signals = [];
-  const signalDefs = route.signals?.length
-    ? route.signals
-    : fallbackSignalPositions(path);
+  const signalDefs = compiledSignals.length
+    ? compiledSignals
+    : fallbackSignalPositions(path, stops, signalCfg.FALLBACK);
   /** 柱を立て、必要ならアームを渡し、灯器を付ける */
   let activeSignalElevation = 0;
   function buildHead(h) {
@@ -149,7 +153,7 @@ export function buildSignals(group, path) {
     const crossHeads = [];
 
     if (def.heads?.length) {
-      // 設置座標はビルド時に計算済み(route18.json)。ここでは置くだけ
+      // 設置座標はビルド時に計算済み。ここでは置くだけ
       for (const h of def.heads)
         (h.kind === "cross" ? crossHeads : mainHeads).push(buildHead(h));
     } else {
@@ -241,7 +245,7 @@ export function buildSignals(group, path) {
   const shouldNpcStop = (nodeId, approachHeading, simulationTime) => {
     const mapping = nodeSignalMap.get(nodeId);
     if (!mapping) {
-      const ph = (simulationTime + nodePhase(nodeId)) % CYCLE;
+      const ph = (simulationTime + nodePhase(nodeId, CYCLE)) % CYCLE;
       const isMainAxis = Math.abs(Math.cos(approachHeading ?? 0)) > 0.7;
       return (isMainAxis ? mainStateOf(ph) : crossStateOf(ph)) !== "green";
     }
@@ -300,7 +304,7 @@ export function buildSignals(group, path) {
     signals,
     paintHead,
     update,
-    isNpcStopPhase,
+    isNpcStopPhase: (nodeId, simulationTime) => isNpcStopPhase(nodeId, simulationTime, timing),
     attachNodes,
     shouldNpcStop,
     nextSignal,

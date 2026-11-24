@@ -1,8 +1,6 @@
 import * as THREE from "three";
 import { CFG } from "../../config.js";
-import { elevationAt, laneCenterAt } from "../../route/routeData.js";
 import { makeCar, makeTruck } from "./vehicleModels.js";
-import NPC_VEHICLE_DEFS from "../../data/definitions/npc-vehicles.json" with { type: "json" };
 import {
   clamp,
   idmAcceleration,
@@ -15,11 +13,23 @@ import { NpcPhysics } from "./npcPhysics.js";
 import { curveSpeedLimit, pedalsForAccel, steerInput } from "./npcDriver.js";
 import { createSpawner } from "./spawner.js";
 
+const DEFAULT_NPC_VEHICLES = [
+  { kind: "car", color: "#d8dde2", length: 4.5, width: 1.82, height: 1.8, vMax: 11, physics: "car" },
+];
+
 /**
  * コンパイル済みグラフ上を走る NPC エージェント群。
  * 遠方の車両はパスへスナップし、近傍の車両はキネマティック自転車で走行する。
  */
 export function createTrafficAgents(scene, path, runtime, events = {}, signalsApi, spawner) {
+  const world = events?.world ?? {};
+  const elevationAt = world.elevationAt ?? (() => 0);
+  const laneCenterAt = world.laneCenterAt ?? (() => 0);
+  const vehicleSpecs =
+    events?.npcVehicleDefs?.VEHICLES ??
+    world.definitions?.npcVehicles?.VEHICLES ??
+    DEFAULT_NPC_VEHICLES;
+
   const PHYSICS_CONNECTOR_APPROACH = 6;
   const wrapAngle = (angle) => {
     while (angle > Math.PI) angle -= Math.PI * 2;
@@ -30,7 +40,7 @@ export function createTrafficAgents(scene, path, runtime, events = {}, signalsAp
   scene.add(group);
 
   const vehicleFactories = { car: makeCar, truck: makeTruck };
-  const defs = NPC_VEHICLE_DEFS.VEHICLES.map(({ kind, color, ...spec }) => ({
+  const defs = vehicleSpecs.map(({ kind, color, ...spec }) => ({
     make: () => vehicleFactories[kind](parseInt(color.slice(1), 16)),
     ...spec,
   }));

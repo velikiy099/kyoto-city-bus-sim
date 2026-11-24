@@ -195,7 +195,10 @@ const traffic = [
   fs.readFileSync("src/world/traffic/npcPhysics.js", "utf8"),
   fs.readFileSync("src/world/traffic/npcDriver.js", "utf8"),
 ].join("\n");
-const routeDataSource = fs.readFileSync("src/route/routeData.js", "utf8");
+const routeDataSource = [
+  fs.readFileSync("src/route/routeData.js", "utf8"),
+  fs.readFileSync("src/route/routeRegistry.js", "utf8"),
+].join("\n");
 const heightSampler = fs.readFileSync("src/world/declarative/continuousTerrain.js", "utf8");
 const railways = fs.readFileSync("src/world/railways.js", "utf8");
 const nature = fs.readFileSync("src/world/nature.js", "utf8");
@@ -223,15 +226,15 @@ assert(heightSampler.includes("roadAttachmentHalfWidthAtS"), "Elevated PLATEAU r
 assert(!heightSampler.includes("roadRoute.distance >= 24"), "The obsolete 24m elevation radius still lifts nearby grey surfaces");
 assert(nature.includes("const bridgeRoadHeightAt = (_x, _z, s) => elevationAt(s)"), "Bridge rails are not pinned to the single road height");
 assert(nature.includes("roadY + BRIDGE_RAIL_HEIGHT / 2"), "River bridge rails are not based at road-surface height");
-assert(nature.includes("route.osmVegetation"), "OSM vegetation is not wired into the nature renderer");
+assert(nature.includes("osmVegetation"), "OSM vegetation is not wired into the nature renderer");
 assert(nature.includes("osm-planted-green-areas"), "OSM green areas are not rendered");
 assert(nature.includes("FOREST_TREE_AREA_M2"), "OSM forest density is not configured");
 assert(nature.includes("osm-scrub-stands"), "OSM scrub is not rendered as low vegetation");
 assert((drivingNetwork.overlays?.nijoRotary?.stationRoads ?? []).length > 0, "OSM station-road topology is missing");
 assert(!nature.includes("const deck = new THREE.Mesh"), "A duplicate river bridge grey deck still covers the road");
-assert(railways.includes("function addOmiyaParapets"), "Omiya overpass parapets are missing");
-assert(railways.includes("const OMIYA_PARAPET_HEIGHT = 1.0"), "Omiya parapets are not approximately one metre high");
-assert(railways.includes("elevationAt(midS) + OMIYA_PARAPET_HEIGHT / 2"), "Omiya parapets are not based at the single road height");
+assert(railways.includes("function addOverpassParapets"), "Overpass parapets are missing");
+assert(railways.includes("const OVERPASS_PARAPET_HEIGHT = 1.0"), "Overpass parapets are not approximately one metre high");
+assert(railways.includes("elevationAt(midS) + OVERPASS_PARAPET_HEIGHT / 2"), "Overpass parapets are not based at the single road height");
 assert(!railways.includes("alongPitchBox"), "Grey Omiya deck/retaining boxes are still generated");
 assert(!railways.includes("makeRibbon(\n        path,\n        -(deckHalf + 0.1)"), "Flat grey Omiya railing ribbons are still generated");
 assert(!railways.includes("高架下の舗装"), "A hand-authored grey pavement plate still remains at Omiya overpass");

@@ -1,13 +1,5 @@
 import * as THREE from "three";
-import NATURE_DEFS from "../data/definitions/nature.json" with { type: "json" };
-import {
-  route,
-  leftWidthAt,
-  rightWidthAt,
-  driveBoundsAt,
-  turnExclusions,
-  elevationAt,
-} from "../route/routeData.js";
+import { isNearRouteCorridor } from "../route/corridor.js";
 import { loadProps } from "../util/propsLib.js";
 import { clippedRiverPoints, riverWidthMeters } from "./riverGeometry.js";
 import { terrainHeightAtWorld } from "./declarative/continuousTerrain.js";
@@ -15,28 +7,41 @@ import { terrainHeightAtWorld } from "./declarative/continuousTerrain.js";
 const mat = (color, opts = {}) =>
   new THREE.MeshLambertMaterial({ color, ...opts });
 
-// 川底を地表(y=0)より低く見せる深さ[m]。橋は road.js のデッキ(elevationAt)がそのまま
-// 川の上を跨ぐので、川岸ぶんだけ相対的に「道路が高く・川が低く」見える。
-const RIVER_DEPTH = NATURE_DEFS.RIVER_DEPTH;
-const BANK_TIERS = [
-  { h: 1.2, w: 6, color: 0x7ba15e }, // 上段: 芝の土手
-  { h: RIVER_DEPTH - 1.2, w: 4.5, color: 0x9c9178 }, // 下段: 護岸(土)
-];
-const BRIDGE_RAIL_CLEARANCE = NATURE_DEFS.BRIDGE_RAIL.clearanceM; // 車道端から欄干中心まで [m]
-const BRIDGE_RAIL_HEIGHT = NATURE_DEFS.BRIDGE_RAIL.heightM;
-const BRIDGE_RAIL_WIDTH = NATURE_DEFS.BRIDGE_RAIL.widthM;
-const RAIL_SEGMENT_LENGTH = NATURE_DEFS.BRIDGE_RAIL.segmentLengthM; // 曲線・勾配へ追従するため短く分割 [m]
-// 梅小路公園・鳥羽離宮跡で使ってきた樹林配置(area/60)を基準に、
-// OSMの森林は約4倍、低木林は森林の半分の密度にする。
-const FOREST_TREE_AREA_M2 = NATURE_DEFS.TREE_DENSITY.forestAreaM2PerTree;
-const SCRUB_AREA_M2 = NATURE_DEFS.TREE_DENSITY.scrubAreaM2PerTree;
+const DEFAULT_NATURE_DEFS = {
+  RIVER_DEPTH: 3.2,
+  BRIDGE_RAIL: { clearanceM: 1.1, heightM: 1.0, widthM: 0.32, segmentLengthM: 6 },
+  TREE_DENSITY: { forestAreaM2PerTree: 15, scrubAreaM2PerTree: 30 },
+  STREET_TREES: { startS: 40, routeFraction: 0.62, stepM: 42, sidewalkOffsetM: 2.4 },
+  BRIDGE_SPAN: { paddingM: 10, exactWidthBridges: [] },
+  PARKS: [],
+};
 
 /**
- * 川(鴨川・桂川・西高瀬川)・橋・遠景の山・街路樹
+ * 川・橋・遠景の山・街路樹・公園植生
  * 川は bridges の s 位置で経路と直交する帯として描く。川底は RIVER_DEPTH ぶん低く、
  * 土手は段状(芝→護岸)に地表から水面まで下る。
  */
 export function buildNature(scene, path, options = {}) {
+  const world = options?.world ?? {};
+  const defs = { ...DEFAULT_NATURE_DEFS, ...(options?.defs ?? {}) };
+  const elevationAt = world.elevationAt ?? (() => 0);
+  const leftWidthAt = world.leftWidthAt ?? (() => 4);
+  const rightWidthAt = world.rightWidthAt ?? (() => 4);
+  const driveBoundsAt = world.driveBoundsAt ?? (() => ({ left: 4, right: 4 }));
+  const turnExclusions = world.turnExclusions ?? (() => []);
+
+  const RIVER_DEPTH = defs.RIVER_DEPTH;
+  const BANK_TIERS = [
+    { h: 1.2, w: 6, color: 0x7ba15e }, // 上段: 芝の土手
+    { h: RIVER_DEPTH - 1.2, w: 4.5, color: 0x9c9178 }, // 下段: 護岸(土)
+  ];
+  const BRIDGE_RAIL_CLEARANCE = defs.BRIDGE_RAIL.clearanceM;
+  const BRIDGE_RAIL_HEIGHT = defs.BRIDGE_RAIL.heightM;
+  const BRIDGE_RAIL_WIDTH = defs.BRIDGE_RAIL.widthM;
+  const RAIL_SEGMENT_LENGTH = defs.BRIDGE_RAIL.segmentLengthM;
+  const FOREST_TREE_AREA_M2 = defs.TREE_DENSITY.forestAreaM2PerTree;
+  const SCRUB_AREA_M2 = defs.TREE_DENSITY.scrubAreaM2PerTree;
+
   const g = new THREE.Group();
   scene.add(g);
   const exclusions = [];
@@ -187,9 +192,9 @@ export function buildNature(scene, path, options = {}) {
   }
 
   const waterPolygonsByName = new Set(
-    (route.waterPolygons ?? []).map((polygon) => polygon.name).filter(Boolean),
+    (world.waterPolygons ?? []).map((polygon) => polygon.name).filter(Boolean),
   );
-  for (const polygon of route.waterPolygons ?? []) {
+  for (const polygon of world.waterPolygons ?? []) {
     if (polygon.polygon?.length < 3) continue;
     g.add(new THREE.Mesh(
       waterPolygonGeometry(polygon.polygon),
@@ -197,23 +202,15 @@ export function buildNature(scene, path, options = {}) {
     ));
   }
 
-  for (const br of route.bridges) {
-    const riverLine = (route.rivers ?? []).find((river) => river.bridgeName === br.name);
+  for (const br of world.bridges ?? []) {
+    const riverLine = (world.rivers ?? []).find((river) => river.bridgeName === br.name);
     const w = riverWidthMeters(br, riverLine);
     const halfW = w / 2;
-    // 久我橋・天神橋は従来の「川幅+10m」を橋桁にも流用していたため、
-    // 端部の欄干が接続道路まで伸びていた。橋桁と欄干は実際の川幅相当の
-    // スパンに揃え、その他の橋の見た目は従来値を維持する。
-    const bridgeSpan = NATURE_DEFS.BRIDGE_SPAN.exactWidthBridges.includes(br.name)
+    const bridgeSpan = defs.BRIDGE_SPAN.exactWidthBridges.includes(br.name)
       ? w
-      : w + NATURE_DEFS.BRIDGE_SPAN.paddingM;
+      : w + defs.BRIDGE_SPAN.paddingM;
 
-    // 実測ポリライン(同一河川の隣接橋まで届く分は road.js の clippedRiverPoints で
-    // 橋の直近だけに切り詰め済み)。buildGround(road.js)の地面沈み込みと必ず
-    // 同じ範囲を使うことで、水面・土手の見た目と地面の沈み込みを一致させる
-    // (切り詰めを両者で別々に行うと、一方だけ範囲が違って橋が実際より短く/
-    // 浮いて見える不整合が出ていた)。
-    const points = clippedRiverPoints(path, br, route.rivers);
+    const points = clippedRiverPoints(path, br, world.rivers);
 
     const hasSourceWaterPolygon = waterPolygonsByName.has(br.river);
     // A riverbank/natural=water polygon is the authoritative water surface.
@@ -303,7 +300,7 @@ export function buildNature(scene, path, options = {}) {
     m.position.set(x, terrainHeightAtWorld(x, z), z);
     g.add(m);
   };
-  // 北山(二条駅の北)
+  // 北山(遠景・北側)
   for (let i = 0; i < 6; i++)
     mk(
       cx - 900 + i * 420,
@@ -330,13 +327,13 @@ export function buildNature(scene, path, options = {}) {
 
   // ---- 街路樹(Blender製2種を InstancedMesh で量産) ----
   const turnZones = turnExclusions(); // 右左折交差点のスタブ道路上には植えない
-  // 線路の下(JR在来線・新幹線の桁が路側を大きく覆う区間)には植えない
-  const railZones = (route.railStructures ?? []).map((r) => ({
+  // 線路の下(桁が路側を大きく覆う区間)には植えない
+  const railZones = (world.railStructures ?? []).map((r) => ({
     from: r.s - (r.width ?? 20) / 2 - 6,
     to: r.s + (r.width ?? 20) / 2 + 6,
   }));
-  // 歩道が無い区間(旧千本通など)には街路樹を植えない
-  const noSidewalkZones = (route.roadSections ?? [])
+  // 歩道が無い区間には街路樹を植えない
+  const noSidewalkZones = (world.roadSections ?? [])
     .filter((sec) => sec.sidewalk === "none")
     .map((sec) => ({ from: sec.from, to: sec.to }));
   const items = [];
@@ -398,10 +395,10 @@ export function buildNature(scene, path, options = {}) {
 
   // OSM green areas remain visible even when the selected PLATEAU vegetation
   // layer is empty. In particular, these polygons form the islands and
-  // planted edges of the Nijo Station rotary.
+  // planted edges of station rotaries.
   const greenPositions = [];
   const greenIndices = [];
-  for (const area of route.osmVegetation?.greenAreas ?? []) {
+  for (const area of world.osmVegetation?.greenAreas ?? []) {
     const polygon = cleanPolygon(area.polygon);
     if (!polygon) continue;
     const faces = THREE.ShapeUtils.triangulateShape(
@@ -430,13 +427,13 @@ export function buildNature(scene, path, options = {}) {
   // Exact OSM tree nodes, tree rows, woodland polygons, and scrub polygons.
   // Point trees are placed at their mapped coordinates; areas are sampled only
   // inside the mapped polygon so they do not become generic roadside scatter.
-  if (route.osmVegetation) {
-    for (const tree of route.osmVegetation.trees ?? []) {
+  if (world.osmVegetation) {
+    for (const tree of world.osmVegetation.trees ?? []) {
       if (tree.point?.length >= 2 && isValidTreePos(tree.point[0], tree.point[1]))
         addTree(tree.point[0], tree.point[1]);
     }
     let areaSeed = 24001;
-    for (const areaData of route.osmVegetation.treeAreas ?? []) {
+    for (const areaData of world.osmVegetation.treeAreas ?? []) {
       const polygon = cleanPolygon(areaData.polygon);
       if (!polygon) continue;
       const bounds = polygon.reduce(
@@ -468,7 +465,7 @@ export function buildNature(scene, path, options = {}) {
         }
       }
     }
-    for (const row of route.osmVegetation.treeRows ?? []) {
+    for (const row of world.osmVegetation.treeRows ?? []) {
       const points = row.points ?? row;
       for (let i = 0; i < points.length - 1; i++) {
         const a = points[i];
@@ -486,20 +483,20 @@ export function buildNature(scene, path, options = {}) {
   }
 
   const bridgeRanges = [
-    ...(route.bridges ?? []).map((b) => ({ from: b.s - (b.length ?? 0) / 2 - 4, to: b.s + (b.length ?? 0) / 2 + 4 })),
-    ...(route.elevations ?? [])
+    ...(world.bridges ?? []).map((b) => ({ from: b.s - (b.length ?? 0) / 2 - 4, to: b.s + (b.length ?? 0) / 2 + 4 })),
+    ...(world.elevations ?? [])
       .filter((e) => e.profile === "flat-deck" || Number(e.height) > 0)
       .map((e) => ({ from: Number(e.from) - 4, to: Number(e.to) + 4 })),
   ];
-  for (let s = NATURE_DEFS.STREET_TREES.startS; s < path.length * NATURE_DEFS.STREET_TREES.routeFraction; s += NATURE_DEFS.STREET_TREES.stepM) {
+  for (let s = defs.STREET_TREES.startS; s < path.length * defs.STREET_TREES.routeFraction; s += defs.STREET_TREES.stepM) {
     if (railZones.some((z) => s > z.from && s < z.to)) continue;
     if (noSidewalkZones.some((z) => s > z.from && s < z.to)) continue;
     if (bridgeRanges.some((z) => s >= z.from && s <= z.to)) continue;
     for (const side of [-1, 1]) {
-      if (((s / NATURE_DEFS.STREET_TREES.stepM) | 0) % 2 === (side === -1 ? 0 : 1)) continue; // 互い違い
+      if (((s / defs.STREET_TREES.stepM) | 0) % 2 === (side === -1 ? 0 : 1)) continue; // 互い違い
       const [px, pz] = path.getPoint(s);
       const [tx, tz] = path.getTangent(s);
-      const lat = side * ((side < 0 ? leftWidthAt(s) : rightWidthAt(s)) + NATURE_DEFS.STREET_TREES.sidewalkOffsetM); // 道路幅に合わせて外側へ
+      const lat = side * ((side < 0 ? leftWidthAt(s) : rightWidthAt(s)) + defs.STREET_TREES.sidewalkOffsetM); // 道路幅に合わせて外側へ
       const x = px + -tz * lat,
         z = pz + tx * lat;
       if (turnZones.some((e) => (x - e.x) ** 2 + (z - e.z) ** 2 < e.r * e.r))
@@ -507,33 +504,25 @@ export function buildNature(scene, path, options = {}) {
       if (isValidTreePos(x, z)) addTree(x, z);
     }
   }
-  // ---- 鳥羽離宮跡公園(OSM実測: way 341709499「鳥羽離宮跡公園」の敷地形状に合わせて木を配置) ----
-  // 実測ポリゴン(約130m×154mの矩形)の重心を経路へ投影した結果: 城南宮道停留所の67m先・
-  // 進行方向左へ71mの位置。以前は停留所+90m・半径190mの粗い円で過大に除外していたため、
-  // 実際の公園より外側の区画にも建物が置けないままになっていた。
-  const tobaStop = route.stops.find((st) => st.name === NATURE_DEFS.TOBA_PARK.stopName);
-  if (tobaStop) {
-    const anchorS = Math.min(path.length, tobaStop.s + NATURE_DEFS.TOBA_PARK.sOffsetM);
-    const [apx, apz] = path.getPoint(anchorS);
-    const [atx, atz] = path.getTangent(anchorS);
-    const anx = -atz,
-      anz = atx;
-    const [cx, cz] = [apx + anx * NATURE_DEFS.TOBA_PARK.lateralM, apz + anz * NATURE_DEFS.TOBA_PARK.lateralM];
-    const halfW = NATURE_DEFS.TOBA_PARK.halfW,
-      halfD = NATURE_DEFS.TOBA_PARK.halfD; // 実測バウンディングボックス(約130m×154m)+若干の余白
-    exclusions.push({ x: cx, z: cz, r: Math.hypot(halfW, halfD) + NATURE_DEFS.TOBA_PARK.exclusionMarginM });
-    let seed = NATURE_DEFS.TOBA_PARK.seed;
+  // ---- 地域定義公園(経路コリドー内の公園のみ樹木を配置し建物除外円を返す) ----
+  for (const park of defs.PARKS ?? []) {
+    if (!park?.worldPos) continue;
+    const { x: cx, z: cz } = park.worldPos;
+    if (!isNearRouteCorridor(path, cx, cz, park.corridorRadiusM ?? 400)) continue;
+    const halfW = park.halfW ?? 60;
+    const halfD = park.halfD ?? 60;
+    exclusions.push({ x: cx, z: cz, r: Math.hypot(halfW, halfD) + (park.exclusionMarginM ?? 5) });
+    let seed = park.seed ?? 9001;
     const rndSeeded = () => {
       seed = (seed * 1103515245 + 12345) & 0x7fffffff;
       return seed / 0x7fffffff;
     };
-    for (let i = 0; i < NATURE_DEFS.TOBA_PARK.treeCount; i++) {
+    const treeCount = park.treeCount ?? 0;
+    for (let i = 0; i < treeCount; i++) {
       const x = cx + (rndSeeded() - 0.5) * 2 * halfW;
       const z = cz + (rndSeeded() - 0.5) * 2 * halfD;
       if (turnZones.some((e) => (x - e.x) ** 2 + (z - e.z) ** 2 < e.r * e.r))
         continue;
-      // 公園の矩形スキャッター範囲(anchorS±71m基準)が実際の道路帯にかかる区間があり
-      // (城南宮道停留所付近)、車道の真上に木が生えて見えていた。経路に近すぎる候補は除外する。
       if (!isValidTreePos(x, z)) continue;
       addTree(x, z);
     }
@@ -583,8 +572,8 @@ export function buildNature(scene, path, options = {}) {
     };
   };
 
-  const greenGrid = buildPolyGrid((route.osmVegetation?.greenAreas ?? []).map((a) => cleanPolygon(a.polygon)));
-  const waterGrid = buildPolyGrid((route.waterPolygons ?? []).map((w) => cleanPolygon(w.polygon)));
+  const greenGrid = buildPolyGrid((world.osmVegetation?.greenAreas ?? []).map((a) => cleanPolygon(a.polygon)));
+  const waterGrid = buildPolyGrid((world.waterPolygons ?? []).map((w) => cleanPolygon(w.polygon)));
 
   Promise.all([loadProps(), options?.roadSurfacesPromise ?? Promise.resolve(null)]).then(([lib, surfaces]) => {
     const roadGrid = buildPolyGrid(

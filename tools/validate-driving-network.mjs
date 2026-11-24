@@ -491,7 +491,10 @@ assert(nijoWestExit.s >= 8, "Nijo Station West Exit cannot place the front door 
 assert(nijoWestExit.platformDistance <= 3, "Nijo Station West Exit start lane is not beside the OSM platform");
 const nijoSection = network.sections.find((section) => section.source === "OSM Nijo Station West Exit rotary");
 assert(nijoSection?.lanesF === 2 && nijoSection?.lanesB === 0, "Nijo rotary lane topology is not compiled as one-way two lanes");
-const routeData = fs.readFileSync("src/route/routeData.js", "utf8");
+const routeData = [
+  fs.readFileSync("src/route/routeData.js", "utf8"),
+  fs.readFileSync("src/route/routeRegistry.js", "utf8"),
+].join("\n");
 const debug = fs.readFileSync("src/debug.js", "utf8");
 const scenery = fs.readFileSync("src/world/declarative/buildWorldScenery.js", "utf8");
 const landmarks = fs.readFileSync("src/world/landmarks.js", "utf8");

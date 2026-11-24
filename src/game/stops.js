@@ -1,15 +1,9 @@
 import * as THREE from "three";
-import ROUTE_SEMANTICS from "../data/definitions/route-semantics.json" with { type: "json" };
-import { elevationAt } from "../route/routeData.js";
 import { terrainHeightAtWorld } from "../world/declarative/continuousTerrain.js";
 import { loadProps } from "../util/propsLib.js";
-import {
-  terminusLotAnchor,
-  terminusStopAnchor,
-} from "../world/landmarks.js";
 
 /** 停留所名の看板テクスチャ */
-function makeSignTexture(name) {
+function makeSignTexture(name, operatorName = "京都市バス") {
   const cv = document.createElement("canvas");
   cv.width = 256;
   cv.height = 96;
@@ -22,7 +16,7 @@ function makeSignTexture(name) {
   ctx.font = "bold 16px sans-serif";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.fillText("京都市バス", 128, 13);
+  ctx.fillText(operatorName, 128, 13);
   ctx.fillStyle = "#111";
   const size = name.length > 9 ? 21 : 26;
   ctx.font = `bold ${size}px sans-serif`;
@@ -110,7 +104,12 @@ function addStopFrame(group, x, z, tx, tz, baseY) {
  * 停留所(ポール・停止線・待ち客)を生成
  * 返り値: { setWaiting(i, n), spawnAlighting(i), updateWalkers(dt) }
  */
-export function buildStops(scene, path, stops) {
+export function buildStops(scene, path, stops, options = {}) {
+  const {
+    elevationAt = () => 0,
+    operatorName = "京都市バス",
+    resolveStopOverride = null,
+  } = options;
   const group = new THREE.Group();
   scene.add(group);
   const waiting = []; // i -> [mesh...]
@@ -136,9 +135,7 @@ export function buildStops(scene, path, stops) {
   }
 
   stops.forEach((stop, i) => {
-    const terminal = stop.name === ROUTE_SEMANTICS.terminal
-      ? terminusStopAnchor(terminusLotAnchor(path))
-      : null;
+    const terminal = resolveStopOverride ? resolveStopOverride(stop) : null;
     // The stopping pose is the single source for the stop marker, pole,
     // shelter and frame. OSM platform coordinates are metadata only.
     const pose = stop.pose ?? {};
@@ -190,7 +187,7 @@ export function buildStops(scene, path, stops) {
     const sign = new THREE.Mesh(
       new THREE.PlaneGeometry(1.5, 0.56),
       new THREE.MeshBasicMaterial({
-        map: makeSignTexture(stop.name),
+        map: makeSignTexture(stop.name, operatorName),
         side: THREE.DoubleSide,
       }),
     );

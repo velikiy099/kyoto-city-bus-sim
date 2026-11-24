@@ -1,6 +1,5 @@
 import * as THREE from "three";
 import { CFG } from "../../config.js";
-import terrainGrid from "./generated/terrain-grid.json";
 import { buildRiverDips, riverDipDepthAt } from "../riverGeometry.js";
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
@@ -72,15 +71,25 @@ class RouteHeightIndex {
   }
 }
 
-const gridOrigin = terrainGrid.origin ?? [0, 0];
-const gridSpacing = Array.isArray(terrainGrid.spacing)
-  ? terrainGrid.spacing
-  : [terrainGrid.spacing ?? 1, terrainGrid.spacing ?? 1];
-const gridWidth = Number(terrainGrid.width ?? 0);
-const gridHeight = Number(terrainGrid.height ?? 0);
-const gridHeights = terrainGrid.heights ?? [];
-const gridMaxX = gridOrigin[0] + gridSpacing[0] * Math.max(0, gridWidth - 1);
-const gridMaxZ = gridOrigin[1] + gridSpacing[1] * Math.max(0, gridHeight - 1);
+let gridOrigin = [0, 0];
+let gridSpacing = [1, 1];
+let gridWidth = 0;
+let gridHeight = 0;
+let gridHeights = [];
+let gridMaxX = 0;
+let gridMaxZ = 0;
+
+export function configureTerrainGrid(terrainGrid = {}) {
+  gridOrigin = terrainGrid?.origin ?? [0, 0];
+  gridSpacing = Array.isArray(terrainGrid?.spacing)
+    ? terrainGrid.spacing
+    : [terrainGrid?.spacing ?? 1, terrainGrid?.spacing ?? 1];
+  gridWidth = Number(terrainGrid?.width ?? 0);
+  gridHeight = Number(terrainGrid?.height ?? 0);
+  gridHeights = terrainGrid?.heights ?? [];
+  gridMaxX = gridOrigin[0] + gridSpacing[0] * Math.max(0, gridWidth - 1);
+  gridMaxZ = gridOrigin[1] + gridSpacing[1] * Math.max(0, gridHeight - 1);
+}
 
 let terrainRouteIndex = null;
 let routeSurfaceIndex = null;

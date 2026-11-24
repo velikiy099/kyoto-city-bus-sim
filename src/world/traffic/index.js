@@ -12,7 +12,12 @@ import { createSpawner } from "./spawner.js";
 export function buildTraffic(scene, path, events = {}) {
   const group = new THREE.Group();
   scene.add(group);
-  const signalsApi = buildSignals(group, path);
+  const signalsApi = buildSignals(group, path, {
+    world: events.world,
+    signalDefs: events.signalDefs ?? events.world?.definitions?.signals,
+    signals: events.signals ?? events.world?.signals,
+    stops: events.stops,
+  });
   const runtime = createGraphRuntime(events.trafficGraph);
 
   if (!events.trafficGraph?.edges?.length) {

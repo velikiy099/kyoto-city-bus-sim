@@ -23,31 +23,44 @@ function captureAndSnap(scene, build, heightAtWorld) {
  * original PLATEAU transportation mesh is moved to the same height used by vehicles
  * and road furniture; no duplicate road plate is added.
  */
-export async function buildWorldScenery(scene, path, route, builders) {
-  const surfacePath = route.surfacePath ?? path;
+export async function buildWorldScenery(scene, path, world, builders) {
+  const surfacePath = world.surfacePath ?? path;
   // Railway/viaduct builders already distinguish ground height from deck height.
-  const railways = builders.buildRailways(scene, surfacePath, route.railStructures, route.osmExpressways ?? []);
+  const railways = builders.buildRailways(scene, surfacePath, world.railStructures, world.osmExpressways ?? [], {
+    world,
+    defs: world.definitions?.railways,
+  });
 
   const landmarkExclusions = asArray(
-    captureAndSnap(scene, () => builders.buildLandmarks(scene, surfacePath), builders.terrainHeightAtWorld),
+    captureAndSnap(
+      scene,
+      () => builders.buildLandmarks(scene, surfacePath, { world, defs: world.definitions?.landmarks }),
+      builders.terrainHeightAtWorld,
+    ),
   );
   let resolveRoadSurfaces;
   const roadSurfacesPromise = new Promise((resolve) => {
     resolveRoadSurfaces = resolve;
   });
-  const natureExclusions = asArray(builders.buildNature(scene, surfacePath, { roadSurfacesPromise }));
+  const natureExclusions = asArray(
+    builders.buildNature(scene, surfacePath, {
+      world,
+      defs: world.definitions?.nature,
+      roadSurfacesPromise,
+    }),
+  );
   const exclusions = [
     ...landmarkExclusions,
     ...natureExclusions,
     ...asArray(builders.turnExclusions()),
   ];
 
-  const manifest = await loadWorldManifest(WORLD_CONFIG.manifestUrl);
+  const manifest = await loadWorldManifest(world.worldManifestUrl ?? WORLD_CONFIG.manifestUrl);
   const renderer = new PlateauWorldRenderer(scene, {
     exclusions,
     enabled: WORLD_CONFIG.render,
-    routePath: route.surfacePath ?? path,
-    routeData: route,
+    routePath: world.surfacePath ?? path,
+    routeData: world,
     terrainHeightAtWorld: builders.terrainHeightAtWorld,
     roadHeightAtWorld: builders.roadHeightAtWorld,
     routeHeightAtS: builders.elevationAt,

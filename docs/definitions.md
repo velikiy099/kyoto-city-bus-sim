@@ -60,20 +60,23 @@ OSM/PLATEAUデータへの手動補正と、ハードコードから切り出し
 
 ## src/data/definitions/(ランタイム定義)
 
-| ファイル | 内容 | 主な消費者 |
-| --- | --- | --- |
-| landmarks.json | 東寺(門・塔・金堂のOSM/PLATEAU実測アンカー、参照交差点名)、久我石原町ターミナル敷地(22.5×24.7m)、水族館・京都タワー・壬生操車場の配置 | src/world/landmarks.js |
-| nature.json | 鳥羽離宮跡公園(OSM way 341709499)、橋桁スパン例外(久我橋/天神橋)、川深さ・欄干寸法・樹木密度・街路樹配置 | src/world/nature.js |
-| railways.json | JR在来線アンダーパス既定値、新幹線高架(deckY 8.2m・橋脚列)、名神高架(deckY 7.0m・名前分岐・橋脚列) | src/world/railways.js |
-| signals.json | 信号位相(周期42s/青22s/黄3s)、フォールバック信号6停留所 | src/world/traffic/signals.js |
-| npc-vehicles.json | NPC車5種(車種・塗色・寸法・最高速・物理クラス) | src/world/traffic/agents.js |
-| route-semantics.json | 系統番号、起終点、方向幕切替停留所(九条大宮)、除外停留所(上鳥羽村山町)、方向幕文言 | main.js / routeData.js / stops.js / destinationDisplay.js / minimap.js |
-| timetable.json | 固定時刻表29エントリ(9:56二条駅西口発〜10:44久我石原町着) | src/game/timetable.js |
-| announcements.json | 車内放送文言4種(`{stop}` は停留所名に置換) | src/audio/announcements.js |
+ランタイム起動時は `src/route/routeRegistry.js` と `src/world/regionRegistry.js` を起点に `src/route/loadSession.js` (`loadSessionBundle`) が **Region（地域共通カタログ）**・**World（地図・道路網・自然・交通）**・**Route（路線・停留所・ダイヤ・放送・方向幕）** の3層に分離してロードします。地域共通のランドマーク・公園定義は `src/route/corridor.js` により路線コリドー距離で自動フィルタされます。
+
+| ファイル | スコープ | 内容 | 主な消費者 |
+| --- | --- | --- | --- |
+| landmarks.json | Region | 東寺・京都水族館・京都タワー・壬生操車場・終点転回場(`TERMINUS_LOTS[]`)の地域共通ワールド座標と `corridorRadiusM` | src/world/landmarks.js |
+| nature.json | Region | 橋桁スパン例外(`BRIDGE_SPAN`)、川深さ・欄干寸法・樹木密度・街路樹配置、地域公園配列(`PARKS[]` + `worldPos`/`corridorRadiusM`) | src/world/nature.js |
+| railways.json | Region | JR在来線アンダーパス既定値、新幹線高架、高速高架既定値と `variantRules` 配列 | src/world/railways.js |
+| signals.json | Region | 信号位相(周期42s/青22s/黄3s)、フォールバック信号設定 | src/world/traffic/signals.js |
+| npc-vehicles.json | Region | NPC車5種(車種・塗色・寸法・最高速・物理クラス) | src/world/traffic/agents.js |
+| route-semantics.json | Route | 系統番号、タイトルUIメタデータ、起終点、除外停留所、汎用方向幕配列(`headsignPhases[]`)・対向車幕(`oncomingHeadsign`) | loadSession.js / destinationDisplay.js / screens.js / minimap.js |
+| timetable.json | Route | 固定時刻表29エントリ(9:56二条駅西口発〜10:44久我石原町着) | src/game/timetable.js |
+| announcements.json | Route | 車内放送文言4種(`{stop}` は停留所名に置換) | src/audio/announcements.js |
 
 ## 注意事項
 
 - 数値・座標は実測由来のため、変更時は該当する再生成+validateを必ず実行する
-- src配下でJSON定義をimportする際は `with { type: "json" }` を付ける(バリデータが素のNodeでsrcモジュールを読み込むため必須)
+- 素のNodeで動くバリデータ等が読み込む静的JSON import(`src/world/riverGeometry.js` 等)には `with { type: "json" }` を付ける。一方、`src/world/regionRegistry.js` / `src/route/routeRegistry.js` のVite動的 `import("...json")` ではVite開発サーバーのMIME判定との整合のため `{ with: { type: "json" } }` を付けない
+- 新規路線を追加する場合は `src/route/routeRegistry.js` に登録し、`?route=<id>` クエリまたはタイトル画面の路線選択UIから切り替える
 - 車両物理・交通AI・スコア等のゲームチューニングは従来どおり `src/config.js`(CFG)が担う
 - 生成データの再生成手順は [README](../README.md) の「データ生成(初回セットアップ)」を参照

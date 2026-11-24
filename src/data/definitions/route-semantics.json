@@ -1,13 +1,28 @@
 {
   "note": "路線18号系統のセマンティクス定義。停留所名はOSM/公式表記。",
+  "routeId": "18",
+  "regionId": "kyoto",
   "routeNumber": "18",
+  "operatorName": "京都市バス",
+  "routeTitle": "京都市バス 18号系統 運転シミュレーター",
+  "documentTitle": "京都市バス18系統 運転シミュレーター",
+  "lineName": "上鳥羽線",
   "origin": "二条駅西口",
   "terminal": "久我石原町",
-  "headsignPhaseSwitchStop": "九条大宮",
+  "titleHeadsign": "大宮通 久我石原町",
+  "fareSummary": "後乗り・前降り・運賃230円均一。",
   "excludedStops": ["上鳥羽村山町"],
-  "HEADSIGNS": {
-    "selfBeforeKujo": { "via": "大宮通", "japanese": "東寺・久我石原町", "english": "Koga Ishiharacho" },
-    "selfAfterKujo": { "via": null, "japanese": "久我石原町", "english": "Koga Ishiharacho" },
-    "oncoming": { "via": "大宮通", "japanese": "四条大宮・二条駅", "english": "Nijo Sta. Via Shijo Omiya" }
-  }
+  "headsignPhases": [
+    {
+      "id": "initial",
+      "switchAtStop": null,
+      "copy": { "via": "大宮通", "japanese": "東寺・久我石原町", "english": "Koga Ishiharacho" }
+    },
+    {
+      "id": "terminalApproach",
+      "switchAtStop": "九条大宮",
+      "copy": { "via": null, "japanese": "久我石原町", "english": "Koga Ishiharacho" }
+    }
+  ],
+  "oncomingHeadsign": { "via": "大宮通", "japanese": "四条大宮・二条駅", "english": "Nijo Sta. Via Shijo Omiya" }
 }

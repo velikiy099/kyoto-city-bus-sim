@@ -14,12 +14,12 @@ import { createDestinationDisplay } from "./destinationDisplay.js";
  */
 const MODEL_URL = "models/bus.glb";
 
-export function createBusModel() {
+export function createBusModel({ destinationDisplayOptions = {} } = {}) {
   const B = CFG.bus;
   const root = new THREE.Group();
   const body = new THREE.Group();
   root.add(body);
-  const destinationDisplay = createDestinationDisplay();
+  const destinationDisplay = createDestinationDisplay(destinationDisplayOptions);
   const cockpitDisplays = createCockpitDisplays();
 
   const turnLMat = new THREE.MeshLambertMaterial({
@@ -116,15 +116,11 @@ export function createBusModel() {
       dt,
       elev = 0,
       grade = 0,
-      progressS = 0,
-      kujoOmiyaS = Infinity,
       cockpitState = null,
     ) {
-      const afterKujo =
-        cockpitState?.afterKujo !== undefined
-          ? Boolean(cockpitState.afterKujo)
-          : progressS >= kujoOmiyaS;
-      destinationDisplay.setPhase(afterKujo ? "afterKujo" : "beforeKujo");
+      if (cockpitState?.headsignPhaseId) {
+        destinationDisplay.setPhase(cockpitState.headsignPhaseId);
+      }
       const tl = Boolean(cockpitState?.turnLeft);
       const tr = Boolean(cockpitState?.turnRight);
       const brk = Boolean(cockpitState?.braking);

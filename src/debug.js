@@ -1,6 +1,5 @@
 import { CFG } from "./config.js";
 import { input } from "./input.js";
-import { speedLimitAt } from "./route/routeData.js";
 
 /**
  * デバッグ/自動運転。window.game に API を公開する。
@@ -20,6 +19,7 @@ export function autoDriveInput(
   stopTargetS = null,
   targetLat = 0,
   vCap = Infinity,
+  speedLimitAt = () => 40 / 3.6,
 ) {
   const B = CFG.bus;
   const maxSteerRad = (B.maxSteerDeg * Math.PI) / 180;

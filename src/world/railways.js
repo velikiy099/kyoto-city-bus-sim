@@ -1,13 +1,12 @@
 import * as THREE from "three";
-import RAILWAY_DEFS from "../data/definitions/railways.json" with { type: "json" };
-import {
-  route,
-  elevationAt,
-  gradeAt,
-  halfWidthAt,
-} from "../route/routeData.js";
 import { terrainHeightAtWorld } from "./declarative/continuousTerrain.js";
 import { makeCar, makeTruck } from "./traffic/vehicleModels.js";
+
+const DEFAULT_RAILWAY_DEFS = {
+  CONVENTIONAL_UNDERPASS: { trackCountDefault: 6, trackSpacingM: 3.2, approachDefaultM: 52, deckHalfDefaultM: 7.2 },
+  SHINKANSEN_VIADUCT: { deckY: 8.2, pierRowsM: [-70, -35, 0, 35, 70] },
+  EXPRESSWAY_VIADUCT: { deckY: 7.0, pierRowsDefaultM: [-75, 75], variantRules: [] },
+};
 
 const mat = (color, opts = {}) =>
   new THREE.MeshLambertMaterial({ color, ...opts });
@@ -45,45 +44,45 @@ function addDeckRails(group, width, y, length) {
   }
 }
 
-const OMIYA_PARAPET_HEIGHT = 1.0;
-const OMIYA_PARAPET_WIDTH = 0.3;
-const OMIYA_PARAPET_SEGMENT = 4;
+const OVERPASS_PARAPET_HEIGHT = 1.0;
+const OVERPASS_PARAPET_WIDTH = 0.3;
+const OVERPASS_PARAPET_SEGMENT = 4;
 
-/** 大宮跨線橋の橋面端に、画像相当の約1m高コンクリート欄干だけを置く。 */
-function addOmiyaParapets(scene, path, fromS, toS, deckHalf) {
+/** 跨線橋の橋面端に、約1m高コンクリート欄干だけを置く。 */
+function addOverpassParapets(scene, path, fromS, toS, deckHalf, elevationAt, gradeAt) {
   const material = mat(0xbfc4c7);
   for (const side of [-1, 1]) {
-    for (let s = fromS; s < toS; s += OMIYA_PARAPET_SEGMENT) {
-      const nextS = Math.min(toS, s + OMIYA_PARAPET_SEGMENT);
+    for (let s = fromS; s < toS; s += OVERPASS_PARAPET_SEGMENT) {
+      const nextS = Math.min(toS, s + OVERPASS_PARAPET_SEGMENT);
       const midS = (s + nextS) / 2;
       const [x, z] = path.getPoint(midS);
       const [tx, tz] = path.getTangent(midS);
       const nx = -tz;
       const nz = tx;
-      const offset = side * (deckHalf + OMIYA_PARAPET_WIDTH / 2);
+      const offset = side * (deckHalf + OVERPASS_PARAPET_WIDTH / 2);
       const parapet = new THREE.Mesh(
         new THREE.BoxGeometry(
-          OMIYA_PARAPET_WIDTH,
-          OMIYA_PARAPET_HEIGHT,
+          OVERPASS_PARAPET_WIDTH,
+          OVERPASS_PARAPET_HEIGHT,
           Math.max(0.5, nextS - s + 0.08),
         ),
         material,
       );
       parapet.position.set(
         x + nx * offset,
-        elevationAt(midS) + OMIYA_PARAPET_HEIGHT / 2,
+        elevationAt(midS) + OVERPASS_PARAPET_HEIGHT / 2,
         z + nz * offset,
       );
       parapet.rotation.order = "YXZ";
       parapet.rotation.y = Math.atan2(tx, tz);
       parapet.rotation.x = -Math.atan(gradeAt(midS));
-      parapet.name = "omiya-overpass-parapet";
+      parapet.name = "overpass-parapet";
       scene.add(parapet);
     }
   }
 }
 
-function buildConventionalUnderpass(scene, path, spec) {
+function buildConventionalUnderpass(scene, path, spec, ctx) {
   const p = at(path, spec.s);
   const g = new THREE.Group();
   g.position.set(p.x, terrainHeightAtWorld(p.x, p.z), p.z);
@@ -108,8 +107,9 @@ function buildConventionalUnderpass(scene, path, spec) {
     g.add(wall);
   }
 
-  const trackCount = spec.trackCount ?? RAILWAY_DEFS.CONVENTIONAL_UNDERPASS.trackCountDefault;
-  const spacing = RAILWAY_DEFS.CONVENTIONAL_UNDERPASS.trackSpacingM;
+  const defs = ctx.defs.CONVENTIONAL_UNDERPASS;
+  const trackCount = spec.trackCount ?? defs.trackCountDefault;
+  const spacing = defs.trackSpacingM;
   const first = -((trackCount - 1) * spacing) / 2;
   for (let i = 0; i < trackCount; i++)
     addRailPair(g, first + i * spacing, -0.05, length - 8);
@@ -118,22 +118,15 @@ function buildConventionalUnderpass(scene, path, spec) {
 
   const railFrom = spec.fromS ?? spec.s - 30;
   const railTo = spec.toS ?? spec.s + 30;
-  // 高架桁の範囲(bridgeFromS/bridgeToS があれば八条通の先まで延伸)
   const sFrom = spec.bridgeFromS ?? railFrom;
   const sTo = spec.bridgeToS ?? railTo;
-  const aIn = spec.approachIn ?? RAILWAY_DEFS.CONVENTIONAL_UNDERPASS.approachDefaultM;
-  const aOut = spec.approachOut ?? RAILWAY_DEFS.CONVENTIONAL_UNDERPASS.approachDefaultM;
-  const deckHalf = spec.deckHalf ?? RAILWAY_DEFS.CONVENTIONAL_UNDERPASS.deckHalfDefaultM; // 車道の外縁(橋上に歩道は無い実際の大宮跨線橋に合わせる)
-  // 大宮跨線橋では路面を覆う灰色デッキ・桁・擁壁を重ねない。
-  // 橋上には、唯一の路面高さ elevationAt(s) を基準にした約1m高の欄干だけを生成する。
-  addOmiyaParapets(scene, path, sFrom - aIn, sTo + aOut, deckHalf);
-
-  // 大宮跨線橋に関する手製の道路板・側道板・高架下舗装は生成しない。
-  // 可視路面はPLATEAU transportationの橋上車線部分を直接持ち上げる。
-  // ここでは地上の鉄道設備と橋面端の欄干だけを担当する。
+  const aIn = spec.approachIn ?? defs.approachDefaultM;
+  const aOut = spec.approachOut ?? defs.approachDefaultM;
+  const deckHalf = spec.deckHalf ?? defs.deckHalfDefaultM;
+  addOverpassParapets(scene, path, sFrom - aIn, sTo + aOut, deckHalf, ctx.elevationAt, ctx.gradeAt);
 }
 
-function buildShinkansenViaduct(scene, path, spec) {
+function buildShinkansenViaduct(scene, path, spec, ctx) {
   const p = at(path, spec.s);
   const g = new THREE.Group();
   g.position.set(p.x, terrainHeightAtWorld(p.x, p.z), p.z);
@@ -141,7 +134,8 @@ function buildShinkansenViaduct(scene, path, spec) {
 
   const length = spec.length ?? 190;
   const width = spec.width ?? 16;
-  const deckY = RAILWAY_DEFS.SHINKANSEN_VIADUCT.deckY;
+  const defs = ctx.defs.SHINKANSEN_VIADUCT;
+  const deckY = defs.deckY;
   const girder = new THREE.Mesh(
     new THREE.BoxGeometry(width, 1.05, length),
     mat(0xd7d9d6),
@@ -151,8 +145,8 @@ function buildShinkansenViaduct(scene, path, spec) {
   addDeckRails(g, width, deckY + 0.85, length);
 
   // 橋脚(道路上には立てない — 高架は線路が道路と直交して跨ぐ)
-  const clearHalf = halfWidthAt(spec.s) + 4;
-  for (const z of RAILWAY_DEFS.SHINKANSEN_VIADUCT.pierRowsM) {
+  const clearHalf = ctx.halfWidthAt(spec.s) + 4;
+  for (const z of defs.pierRowsM) {
     if (Math.abs(z) < clearHalf) continue;
     const wx = p.x + Math.sin(spec.heading) * z;
     const wz = p.z + Math.cos(spec.heading) * z;
@@ -172,8 +166,8 @@ function buildShinkansenViaduct(scene, path, spec) {
   scene.add(g);
 }
 
-/** 名神高速道路の高架(片道3車線・中央分離帯)。経路と斜めに交差する一般的な立体交差。 */
-function buildExpresswayViaduct(scene, path, spec) {
+/** 高速道路の高架(片道3車線・中央分離帯)。経路と斜めに交差する一般的な立体交差。 */
+function buildExpresswayViaduct(scene, path, spec, ctx) {
   const p = at(path, spec.s);
   const g = new THREE.Group();
   g.position.set(p.x, terrainHeightAtWorld(p.x, p.z), p.z);
@@ -181,7 +175,8 @@ function buildExpresswayViaduct(scene, path, spec) {
 
   const length = spec.length ?? 210;
   const width = spec.width ?? 27;
-  const deckY = RAILWAY_DEFS.EXPRESSWAY_VIADUCT.deckY;
+  const expDefs = ctx.defs.EXPRESSWAY_VIADUCT;
+  const deckY = expDefs.deckY;
   const girder = new THREE.Mesh(
     new THREE.BoxGeometry(width, 1.2, length),
     mat(0xaeb2ae),
@@ -227,8 +222,9 @@ function buildExpresswayViaduct(scene, path, spec) {
     g.add(parapet);
   }
 
-  const isKoeda = spec.name?.includes(RAILWAY_DEFS.EXPRESSWAY_VIADUCT.nameMatchKoeda);
-  const isHishizuma = spec.name?.includes(RAILWAY_DEFS.EXPRESSWAY_VIADUCT.nameMatchHishizuma);
+  const matchedRule = (expDefs.variantRules ?? []).find(
+    (rule) => rule.nameIncludes && spec.name?.includes(rule.nameIncludes),
+  );
 
   const addFenceLine = (z, span, height = 2.2) => {
     const fenceMat = mat(0xb9bfbd, { transparent: true, opacity: 0.78 });
@@ -258,16 +254,14 @@ function buildExpresswayViaduct(scene, path, spec) {
     }
   };
 
-  // 菱妻神社側は高架下の道路両側をフェンスで覆う。道路中央は空ける。
-  if (isHishizuma) {
-    const routeClear = halfWidthAt(spec.s) + 1.2;
+  if (matchedRule?.roadsideFences) {
+    const routeClear = ctx.halfWidthAt(spec.s) + 1.2;
     const fenceZ = routeClear + 1.0;
     addFenceLine(-fenceZ, width - 2.0, 2.4);
     addFenceLine(fenceZ, width - 2.0, 2.4);
   }
 
-  // 小枝橋側は鴨川側に高架下の塀を置く。道路と河川の視界を塞ぎすぎない高さにする。
-  if (isKoeda) {
+  if (matchedRule?.riverWall) {
     const riverSide = spec.riverSide ?? -1;
     const wall = new THREE.Mesh(
       new THREE.BoxGeometry(0.45, 1.8, length - 12),
@@ -278,12 +272,12 @@ function buildExpresswayViaduct(scene, path, spec) {
   }
 
   // 橋脚は横長の板ではなく、道路・水面を避けた細い柱として配置する。
-  const clearHalf = halfWidthAt(spec.s) + 5;
-  const riverZones = (route.bridges ?? []).map((br) => {
+  const clearHalf = ctx.halfWidthAt(spec.s) + 5;
+  const riverZones = ctx.bridges.map((br) => {
     const b = at(path, br.s);
     return { x: b.x, z: b.z, r: Math.max(18, br.length * 0.85) / 2 + 24 };
   });
-  const pierRows = spec.pierRows ?? (isKoeda ? RAILWAY_DEFS.EXPRESSWAY_VIADUCT.pierRowsKoedaM : RAILWAY_DEFS.EXPRESSWAY_VIADUCT.pierRowsDefaultM);
+  const pierRows = spec.pierRows ?? matchedRule?.pierRowsM ?? expDefs.pierRowsDefaultM;
   const pierX = Math.min(
     width / 2 - 1.5,
     Math.max(clearHalf + 1, width * 0.38),
@@ -350,7 +344,7 @@ function addRibbonMesh(scene, rows, material, name) {
   return mesh;
 }
 
-function buildOsmExpressway(scene, spec, routePath) {
+function buildOsmExpressway(scene, spec, routePath, halfWidthAt) {
   const rawPts = spec.points ?? [];
   if (rawPts.length < 2) return null;
   const points = resample2d(rawPts, 6);
@@ -380,8 +374,8 @@ function buildOsmExpressway(scene, spec, routePath) {
       [f.x - f.nx * (halfWidth - 0.4), f.gy + soffitOffset, f.z - f.nz * (halfWidth - 0.4)],
       [f.x + f.nx * (halfWidth - 0.4), f.gy + soffitOffset, f.z + f.nz * (halfWidth - 0.4)],
     ]);
-    addRibbonMesh(scene, topRows, mat(0x454a50, { side: THREE.DoubleSide }), `osm-meishin:${spec.id}:top`);
-    addRibbonMesh(scene, botRows, mat(0xb5b9b6, { side: THREE.DoubleSide }), `osm-meishin:${spec.id}:soffit`);
+    addRibbonMesh(scene, topRows, mat(0x454a50, { side: THREE.DoubleSide }), `osm-expressway:${spec.id}:top`);
+    addRibbonMesh(scene, botRows, mat(0xb5b9b6, { side: THREE.DoubleSide }), `osm-expressway:${spec.id}:soffit`);
 
     const concreteMat = mat(0xc2c6c2, { side: THREE.DoubleSide });
     const blueStripeMat = mat(0x3c6b9c, { side: THREE.DoubleSide });
@@ -393,7 +387,7 @@ function buildOsmExpressway(scene, spec, routePath) {
         [f.x + f.nx * side * halfWidth, f.gy + deckTopOffset, f.z + f.nz * side * halfWidth],
         [f.x + f.nx * side * (halfWidth - 0.4), f.gy + soffitOffset, f.z + f.nz * side * (halfWidth - 0.4)],
       ]);
-      addRibbonMesh(scene, fasciaRows, concreteMat, `osm-meishin:${spec.id}:fascia:${side}`);
+      addRibbonMesh(scene, fasciaRows, concreteMat, `osm-expressway:${spec.id}:fascia:${side}`);
 
       // Plinth + blue lower stripe + cream acoustic sound barrier + coping
       const wx = (f) => f.x + f.nx * side * (halfWidth - 0.15);
@@ -402,25 +396,25 @@ function buildOsmExpressway(scene, spec, routePath) {
         scene,
         frames.map((f) => [[wx(f), f.gy + deckTopOffset, wz(f)], [wx(f), f.gy + deckTopOffset + 0.65, wz(f)]]),
         concreteMat,
-        `osm-meishin:${spec.id}:plinth:${side}`,
+        `osm-expressway:${spec.id}:plinth:${side}`,
       );
       addRibbonMesh(
         scene,
         frames.map((f) => [[wx(f), f.gy + deckTopOffset + 0.65, wz(f)], [wx(f), f.gy + deckTopOffset + 1.1, wz(f)]]),
         blueStripeMat,
-        `osm-meishin:${spec.id}:stripe:${side}`,
+        `osm-expressway:${spec.id}:stripe:${side}`,
       );
       addRibbonMesh(
         scene,
         frames.map((f) => [[wx(f), f.gy + deckTopOffset + 1.1, wz(f)], [wx(f), f.gy + deckTopOffset + 2.65, wz(f)]]),
         creamPanelMat,
-        `osm-meishin:${spec.id}:barrier:${side}`,
+        `osm-expressway:${spec.id}:barrier:${side}`,
       );
       addRibbonMesh(
         scene,
         frames.map((f) => [[wx(f), f.gy + deckTopOffset + 2.65, wz(f)], [wx(f), f.gy + deckTopOffset + 2.8, wz(f)]]),
         copingMat,
-        `osm-meishin:${spec.id}:coping:${side}`,
+        `osm-expressway:${spec.id}:coping:${side}`,
       );
     }
 
@@ -445,7 +439,7 @@ function buildOsmExpressway(scene, spec, routePath) {
         const pier = new THREE.Mesh(new THREE.BoxGeometry(1.6, pierH, 2.2), pierMat);
         pier.position.set(px, localGy + pierH / 2, pz);
         pier.rotation.y = Math.atan2(f.tx, f.tz);
-        pier.name = `osm-meishin-pier:${spec.id}`;
+        pier.name = `osm-expressway-pier:${spec.id}`;
         scene.add(pier);
         placed = true;
       }
@@ -481,7 +475,7 @@ function buildOsmExpressway(scene, spec, routePath) {
       [f.x - f.nx * halfWidth, f.gy + 0.16, f.z - f.nz * halfWidth],
     ]),
     mat(0x55595c, { side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -1 }),
-    `osm-meishin:${spec.id}`,
+    `osm-expressway:${spec.id}`,
   );
   return null;
 }
@@ -540,18 +534,31 @@ function createExpresswayTraffic(scene, trackPolylines) {
   };
 }
 
-export function buildRailways(scene, path, structures = [], osmExpressways = []) {
+export function buildRailways(scene, path, structures = [], osmExpressways = [], options = {}) {
+  const world = options?.world ?? {};
+  const defs = {
+    CONVENTIONAL_UNDERPASS: { ...DEFAULT_RAILWAY_DEFS.CONVENTIONAL_UNDERPASS, ...(options?.defs?.CONVENTIONAL_UNDERPASS ?? {}) },
+    SHINKANSEN_VIADUCT: { ...DEFAULT_RAILWAY_DEFS.SHINKANSEN_VIADUCT, ...(options?.defs?.SHINKANSEN_VIADUCT ?? {}) },
+    EXPRESSWAY_VIADUCT: { ...DEFAULT_RAILWAY_DEFS.EXPRESSWAY_VIADUCT, ...(options?.defs?.EXPRESSWAY_VIADUCT ?? {}) },
+  };
+  const ctx = {
+    defs,
+    elevationAt: world.elevationAt ?? (() => 0),
+    gradeAt: world.gradeAt ?? (() => 0),
+    halfWidthAt: world.halfWidthAt ?? (() => 4),
+    bridges: world.bridges ?? [],
+  };
   for (const spec of structures) {
     if (spec.kind === "conventional-underpass")
-      buildConventionalUnderpass(scene, path, spec);
+      buildConventionalUnderpass(scene, path, spec, ctx);
     else if (spec.kind === "shinkansen-viaduct")
-      buildShinkansenViaduct(scene, path, spec);
+      buildShinkansenViaduct(scene, path, spec, ctx);
     else if (spec.kind === "expressway-viaduct" && !osmExpressways.length)
-      buildExpresswayViaduct(scene, path, spec);
+      buildExpresswayViaduct(scene, path, spec, ctx);
   }
   const elevatedTracks = [];
   for (const spec of osmExpressways) {
-    const track = buildOsmExpressway(scene, spec, path);
+    const track = buildOsmExpressway(scene, spec, path, ctx.halfWidthAt);
     if (track?.length >= 2) elevatedTracks.push(track);
   }
   const update = createExpresswayTraffic(scene, elevatedTracks);

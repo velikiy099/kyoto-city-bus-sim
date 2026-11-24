@@ -1,26 +1,15 @@
 import * as THREE from "three";
 import "./style.css";
-import ROUTE_SEMANTICS from "./data/definitions/route-semantics.json" with { type: "json" };
 import { CFG } from "./config.js";
-import {
-  route,
-  speedLimitKmhAt,
-  speedLimitAt,
-  elevationAt,
-  surfaceElevationAt,
-  terrainElevationAt,
-  roadAttachmentHalfWidthAt,
-  gradeAt,
-  driveBoundsAt,
-  hasCenterlineAt,
-  centerlineLateralAt,
-  turnExclusions,
-} from "./route/routeData.js";
+import { loadSessionBundle } from "./route/loadSession.js";
+import { listRoutes, resolveRouteId } from "./route/routeRegistry.js";
 import { input } from "./input.js";
 import { BusPhysics } from "./bus/busPhysics.js";
 import { createBusModel } from "./bus/busModel.js";
+import { resolveHeadsignPhaseId } from "./bus/destinationDisplay.js";
 import {
   buildContinuousTerrain,
+  configureTerrainGrid,
   configureWorldHeightSamplers,
   terrainHeightAtWorld,
   roadHeightAtWorld,
@@ -33,42 +22,37 @@ import { buildStops } from "./game/stops.js";
 import { createPassengers } from "./game/passengers.js";
 import { createScoring } from "./game/scoring.js";
 import { createOps } from "./game/gameState.js";
-import {
-  schedule,
-  fmtTime,
-  delayInfo,
-  scheduledClockAt,
-  firstDepartTime,
-} from "./game/timetable.js";
-import { buildLandmarks } from "./world/landmarks.js";
+import { createTimetable, fmtTime } from "./game/timetable.js";
+import { buildLandmarks, resolveTerminusStopOverride } from "./world/landmarks.js";
 import { buildNature } from "./world/nature.js";
 import { buildRailways } from "./world/railways.js";
 import { buildTraffic } from "./world/traffic/index.js";
 import { buildWorldScenery } from "./world/declarative/buildWorldScenery.js";
 import * as sfx from "./audio/sfx.js";
-import {
-  initAnnouncements,
-  announceNext,
-  announceStopping,
-  announceTerminal,
-  announceStart,
-  announceDoorClose,
-} from "./audio/announcements.js";
+import { createAnnouncements } from "./audio/announcements.js";
 
 const STEP = 1 / 60;
 const DOOR_OFFSET = CFG.bus.wheelbase + 1.3; // 後軸→前扉
+
+const selectedRouteId = resolveRouteId(window.location.search);
+const { region, world, route } = await loadSessionBundle(selectedRouteId);
+const semantics = route.semantics ?? {};
+if (semantics.documentTitle || semantics.routeTitle) {
+  document.title = semantics.documentTitle ?? semantics.routeTitle;
+}
+
 const path = route.path;
-const kujoOmiyaIndex = route.stops.findIndex(
-  (stop) => stop.name === ROUTE_SEMANTICS.headsignPhaseSwitchStop,
-);
-const kujoOmiyaS =
-  kujoOmiyaIndex >= 0 ? route.stops[kujoOmiyaIndex].s : Infinity;
+const timetable = createTimetable(route.stops, route.definitions.timetable);
+const { schedule, firstDepartTime, scheduledClockAt, delayInfo } = timetable;
+const announcements = createAnnouncements(route.definitions.announcements);
+
+configureTerrainGrid(world.terrainGrid);
 configureWorldHeightSamplers(
   path,
-  terrainElevationAt,
-  elevationAt,
-  roadAttachmentHalfWidthAt,
-  route.surfacePath,
+  world.terrainElevationAt,
+  world.elevationAt,
+  world.roadAttachmentHalfWidthAt,
+  world.surfacePath,
 );
 
 // ---------------------------------------------------------------- renderer / scene
@@ -87,15 +71,15 @@ const sun = new THREE.DirectionalLight(0xfff2dd, 1.1);
 sun.position.set(-300, 400, -200);
 scene.add(sun);
 
-const baseTerrain = buildContinuousTerrain(path, route.bridges, route.rivers);
+const baseTerrain = buildContinuousTerrain(path, world.bridges, world.rivers);
 scene.add(baseTerrain);
 let railwaysView = null;
-void buildWorldScenery(scene, path, route, {
+void buildWorldScenery(scene, path, world, {
   buildRailways,
   buildLandmarks,
   buildNature,
-  turnExclusions,
-  elevationAt,
+  turnExclusions: world.turnExclusions,
+  elevationAt: world.elevationAt,
   terrainHeightAtWorld,
   roadHeightAtWorld,
   baseTerrain,
@@ -105,7 +89,13 @@ void buildWorldScenery(scene, path, route, {
 
 // ---------------------------------------------------------------- bus / game objects
 const bus = new BusPhysics();
-const busModel = createBusModel();
+const busModel = createBusModel({
+  destinationDisplayOptions: {
+    routeNumber: semantics.routeNumber,
+    phases: semantics.headsignPhases,
+    oncomingHeadsign: semantics.oncomingHeadsign,
+  },
+});
 scene.add(busModel.root);
 
 const state = {
@@ -113,7 +103,7 @@ const state = {
   s: 0,
   lateral: 0,
   offRoute: false,
-  clock: firstDepartTime - 45, // 始発 9:56 発の 45 秒前から乗車扱い
+  clock: firstDepartTime - 45, // 始発発車の 45 秒前から乗車扱い
   score: 0,
   fareTotal: 0,
   nextStopIndex: 0,
@@ -131,11 +121,18 @@ const state = {
 };
 
 const pax = createPassengers(route.stops.length);
-const stopsView = buildStops(scene, path, route.stops);
+const stopsView = buildStops(scene, path, route.stops, {
+  elevationAt: world.elevationAt,
+  operatorName: semantics.operatorName ?? region.defaultOperatorName,
+  resolveStopOverride: (stop) =>
+    resolveTerminusStopOverride(path, stop, world.definitions.landmarks),
+});
 const scoring = createScoring(state);
 const traffic = buildTraffic(scene, path, {
-  trafficPaths: route.trafficPaths,
-  trafficGraph: route.trafficGraph,
+  world,
+  stops: route.stops,
+  trafficPaths: world.trafficPaths,
+  trafficGraph: world.trafficGraph,
   useTrafficGraph: true,
   onCollision() {
     scoring.add(CFG.score.collision, "他車と接触!");
@@ -149,6 +146,7 @@ let completeTimer = null;
 const ops = createOps({
   bus,
   route,
+  timetable,
   state,
   scoring,
   pax,
@@ -161,17 +159,17 @@ const ops = createOps({
     onDoorClose: () => {
       sfx.doorAir();
       sfx.doorBuzzer();
-      announceDoorClose();
+      announcements.announceDoorClose();
     },
     onFare: () => sfx.coin(),
     onBoard: () => sfx.middleDoorSensorBuzzer(1.5),
     onBuzzer: () => {
       sfx.buzzer();
-      announceStopping();
+      announcements.announceStopping();
     },
     onDepart() {
       const next = route.stops[state.nextStopIndex];
-      if (next) announceNext(next.name);
+      if (next) announcements.announceNext(next.name);
     },
     onComplete() {
       state.completed = true;
@@ -193,22 +191,25 @@ const ops = createOps({
       const carried = pax.totalCarried;
       const fare = state.fareTotal;
       const d = delayInfo(arrivalClock, path.length - 1);
-      announceTerminal();
+      announcements.announceTerminal();
       if (completeTimer) clearTimeout(completeTimer);
       completeTimer = setTimeout(() => {
         completeTimer = null;
         if (!state.completed) return;
         state.phase = "RESULT";
-        showResult({
-          score: summary.score,
-          rank: summary.rank,
-          carried,
-          fare,
-          clock: arrivalClock,
-          schedArrival: schedule[schedule.length - 1].time,
-          delayText: d.text,
-          breakdown: summary.breakdown,
-        });
+        showResult(
+          {
+            score: summary.score,
+            rank: summary.rank,
+            carried,
+            fare,
+            clock: arrivalClock,
+            schedArrival: schedule[schedule.length - 1].time,
+            delayText: d.text,
+            breakdown: summary.breakdown,
+          },
+          semantics,
+        );
       }, 1200);
     },
   },
@@ -250,8 +251,8 @@ function updateCamera(dt) {
   camera.matrixAutoUpdate = true;
   const [fx, fz] = bus.forward;
   // 追従カメラも路面標高(跨線橋)に追従させる
-  const camElev = elevationAt(Math.max(0, state.s - 13));
-  const lookElev = elevationAt(state.s + 8);
+  const camElev = world.elevationAt(Math.max(0, state.s - 13));
+  const lookElev = world.elevationAt(state.s + 8);
   const targetPos = new THREE.Vector3(
     bus.x - fx * 13,
     5.2 + camElev,
@@ -393,6 +394,7 @@ function tick(dt, ePressed) {
       effTarget,
       targetLat,
       vCap,
+      route.speedLimitAt,
     );
     // ドア操作の自動化: プロンプトが出たら即 F
     if (state.promptText?.startsWith("F :")) ePressed = true;
@@ -405,7 +407,7 @@ function tick(dt, ePressed) {
   const proj = path.closestS([bus.x, bus.z], state.s, 150);
   state.s = proj.s;
   state.lateral = proj.lateral;
-  const roadBounds = driveBoundsAt(state.s);
+  const roadBounds = route.driveBoundsAt(state.s);
   const busHalfWidth = CFG.bus.width / 2;
   state.offRoute =
     state.lateral - busHalfWidth < -roadBounds.left - CFG.road.offroadMargin ||
@@ -419,15 +421,15 @@ function tick(dt, ePressed) {
   // 衝突判定・中央線判定は後軸でなく車体中心基準
   const [bfx, bfz] = bus.forward;
   const centerOffset = CFG.bus.length / 2 - CFG.bus.rearOverhang;
-  const hasCenterline = hasCenterlineAt(state.s);
+  const hasCenterline = route.hasCenterlineAt(state.s);
   const centerLateral = hasCenterline
-    ? centerlineLateralAt(
+    ? route.centerlineLateralAt(
         bus.x + bfx * centerOffset,
         bus.z + bfz * centerOffset,
         state.s,
       )
     : -Infinity;
-  scoring.tick(dt, bus, speedLimitAt(state.s), {
+  scoring.tick(dt, bus, route.speedLimitAt(state.s), {
     hasCenterline,
     centerLateral,
   });
@@ -437,7 +439,7 @@ function tick(dt, ePressed) {
     [
       bus.x + bfx * centerOffset,
       bus.z + bfz * centerOffset,
-      surfaceElevationAt(state.s, bus.x + bfx * centerOffset, bus.z + bfz * centerOffset) + 1.6,
+      route.surfaceElevationAt(state.s, bus.x + bfx * centerOffset, bus.z + bfz * centerOffset) + 1.6,
     ],
     bus.v,
     bus.heading,
@@ -462,6 +464,35 @@ function setPaused(on) {
   pendingDoorToggle = false;
   if (!pauseOverlay) pauseOverlay = createPauseOverlay();
   pauseOverlay.style.display = on ? "flex" : "none";
+}
+
+function openTitleScreen() {
+  showTitle({
+    route,
+    semantics,
+    schedule,
+    availableRoutes: listRoutes(),
+    currentRouteId: route.id,
+    onSelectRoute(nextRouteId) {
+      const params = new URLSearchParams(window.location.search);
+      params.set("route", nextRouteId);
+      window.location.search = params.toString();
+    },
+    onStart(demoMode) {
+      sfx.initAudio();
+      announcements.init();
+      if (demoMode) {
+        state.demoMode = true;
+        dbg.autoDrive = true;
+      } else {
+        state.demoMode = false;
+        dbg.autoDrive = false;
+      }
+      announcements.announceStart();
+      state.phase = "RUNNING";
+      state.clock = firstDepartTime - 45;
+    },
+  });
 }
 
 // ---------------------------------------------------------------- return to title
@@ -518,20 +549,7 @@ function returnToTitle() {
   state.clock = firstDepartTime - 45;
   ops.resetForNewRun();
   // タイトル再表示
-  showTitle((demoMode) => {
-    sfx.initAudio();
-    initAnnouncements();
-    if (demoMode) {
-      state.demoMode = true;
-      dbg.autoDrive = true;
-    } else {
-      state.demoMode = false;
-      dbg.autoDrive = false;
-    }
-    announceStart();
-    state.phase = "RUNNING";
-    state.clock = firstDepartTime - 45;
-  });
+  openTitleScreen();
 }
 
 // ---------------------------------------------------------------- frame loop
@@ -622,14 +640,15 @@ function frame(now) {
   busModel.update(
     bus,
     dt,
-    surfaceElevationAt(state.s, bus.x, bus.z),
-    gradeAt(state.s),
-    state.s,
-    kujoOmiyaS,
+    route.surfaceElevationAt(state.s, bus.x, bus.z),
+    route.gradeAt(state.s),
     {
-      afterKujo:
-        (kujoOmiyaIndex >= 0 && state.nextStopIndex > kujoOmiyaIndex) ||
-        state.s >= kujoOmiyaS,
+      headsignPhaseId: resolveHeadsignPhaseId(
+        semantics.headsignPhases,
+        route.stops,
+        state.nextStopIndex,
+        state.s,
+      ),
       buzzer: Boolean(state.buzzer && state.doorState === "CLOSED"),
       doorOpen: state.doorState !== "CLOSED",
       braking: bus.brakeLamp,
@@ -666,7 +685,7 @@ function frame(now) {
     const d = started ? delayInfo(state.clock, state.s) : null;
     updateHud({
       speedKmh: bus.speedKmh,
-      limitKmh: speedLimitKmhAt(state.s),
+      limitKmh: route.speedLimitKmhAt(state.s),
       clock: state.clock,
       score: Math.round(state.score),
       passengers: pax.onboard,
@@ -687,7 +706,10 @@ function frame(now) {
 
 // ---------------------------------------------------------------- boot
 initHud();
-minimap = createMinimap(path, route.stops);
+minimap = createMinimap(path, route.stops, {
+  origin: semantics.origin,
+  terminal: semantics.terminal,
+});
 placeBusAtS(Math.max(0.5, route.stops[0].s - DOOR_OFFSET)); // 始発: 前扉を生成済み停止姿勢に合わせて待機
 setupDebug({
   bus,
@@ -700,6 +722,8 @@ setupDebug({
     if (state.phase === "RUNNING") tick(dt, e);
   },
   getState: () => ({
+    routeId: route.id,
+    regionId: region.id,
     phase: state.phase,
     s: +state.s.toFixed(1),
     x: +bus.x.toFixed(1),
@@ -742,17 +766,7 @@ setupDebug({
   },
 });
 
-showTitle((demoMode) => {
-  sfx.initAudio();
-  initAnnouncements();
-  if (demoMode) {
-    state.demoMode = true;
-    dbg.autoDrive = true;
-  }
-  announceStart();
-  state.phase = "RUNNING";
-  state.clock = firstDepartTime - 45;
-});
+openTitleScreen();
 
 // ---------------------------------------------------------------- Shift+R: タイトルへ戻る
 window.game.debug.returnToTitle = returnToTitle;

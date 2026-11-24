@@ -1,5 +1,5 @@
 import { CFG } from "../config.js";
-import { schedule, fmtTime } from "./timetable.js";
+import { fmtTime } from "./timetable.js";
 import { setPrompt, setDoorStatus, showToast } from "../ui/hud.js";
 
 export const DOOR = {
@@ -18,6 +18,7 @@ export function createOps(ctx) {
   const {
     bus,
     route,
+    timetable,
     state,
     scoring,
     pax,
@@ -25,6 +26,7 @@ export function createOps(ctx) {
     events = {},
     isAutoDrive = () => false,
   } = ctx;
+  const schedule = timetable.schedule;
   const O = CFG.ops;
   const S = CFG.score;
 

@@ -9,15 +9,17 @@
     "exactWidthBridges": ["久我橋(桂川)", "天神橋(西高瀬川)"],
     "note": "既定は川幅+10mを橋桁スパンに使うが、exactWidthBridges は実際の川幅相当に揃える(欄干が接続道路まで伸びるのを防ぐ)"
   },
-  "TOBA_PARK": {
-    "note": "鳥羽離宮跡公園。OSM実測 way 341709499 の敷地形状(約130m×154mの矩形)。重心=城南宮道停留所の67m先・進行方向左71m",
-    "stopName": "城南宮道",
-    "sOffsetM": 67,
-    "lateralM": -71,
-    "halfW": 68,
-    "halfD": 80,
-    "exclusionMarginM": 5,
-    "treeCount": 150,
-    "seed": 9001
-  }
+  "PARKS": [
+    {
+      "id": "toba-rikyu",
+      "note": "鳥羽離宮跡公園。OSM実測 way 341709499 の敷地形状(約130m×154mの矩形)。",
+      "worldPos": { "x": 146.22, "z": 2798.84 },
+      "halfW": 68,
+      "halfD": 80,
+      "exclusionMarginM": 5,
+      "treeCount": 150,
+      "seed": 9001,
+      "corridorRadiusM": 400
+    }
+  ]
 }
