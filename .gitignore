@@ -13,9 +13,8 @@ data/work/plateau/
 *.zip
 
 # OSM/PLATEAU由来の生成データ(git管理外。再生成: npm run build-data / npm run world:build)
-/public/world/generated/
-/public/world/world-manifest.json
-/src/data/route18.json
+/public/world/routes/
+/src/data/routes/
 /src/data/generated/
 /src/world/declarative/generated/
 /data/osm/

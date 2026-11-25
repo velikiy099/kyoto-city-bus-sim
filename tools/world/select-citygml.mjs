@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 import fs from "node:fs";
 import path from "node:path";
-import { config, ensureCommand, readJson, resolveRoot, run, valueAfter, writeJson } from "./lib.mjs";
+import { ensureCommand, readJson, resolveRoot, run, valueAfter, writeJson } from "./lib.mjs";
+import { loadPipelineContext, routeIdFromArgv } from "../lib/pipeline-context.mjs";
 
-const cfg = config();
-const archive = path.resolve(valueAfter("--archive") ?? resolveRoot(`data/raw/plateau/${cfg.plateau.archiveName}`));
-const outputDir = path.resolve(valueAfter("--output") ?? resolveRoot("data/work/plateau/selected"));
-const routeFile = path.resolve(valueAfter("--route") ?? resolveRoot(cfg.osm.routeFile));
+const ctx = loadPipelineContext(routeIdFromArgv());
+const cfg = ctx.worldConfig;
+const archive = path.resolve(valueAfter("--archive") ?? resolveRoot(ctx.paths.plateauArchive));
+const outputDir = path.resolve(valueAfter("--output") ?? ctx.resolveRoot(`data/work/plateau/selected/${ctx.routeId}`));
+const routeFile = path.resolve(valueAfter("--route") ?? ctx.resolveRoot(cfg.osm.routeFile));
 
 if (!fs.existsSync(archive)) throw new Error(`PLATEAU archive not found: ${archive}\nRun npm run world:download first.`);
 if (!fs.existsSync(routeFile)) throw new Error(`OSM route data not found: ${routeFile}`);
@@ -14,7 +16,7 @@ ensureCommand("unzip");
 
 const route = readJson(routeFile);
 if (!Array.isArray(route.projOrigin) || !Array.isArray(route.path) || route.path.length < 2) {
-  throw new Error("route18.json must contain projOrigin and path");
+  throw new Error(`route data must contain projOrigin and path: ${routeFile}`);
 }
 
 function unproject([x, z], [lat0, lon0]) {

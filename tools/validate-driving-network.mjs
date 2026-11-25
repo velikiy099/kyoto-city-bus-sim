@@ -1,16 +1,17 @@
 #!/usr/bin/env node
 import fs from "node:fs";
 import { createGraphRuntime, RouteCursor } from "../src/world/traffic/graph.js";
+import { loadPipelineContext, resolveRoot, routeIdFromArgv } from "./lib/pipeline-context.mjs";
 
-const read = (file) => JSON.parse(fs.readFileSync(file, "utf8"));
+const ctx = loadPipelineContext(routeIdFromArgv());
+const isKyoto18 = ctx.routeId === "kyoto-18";
+const read = (file) => JSON.parse(fs.readFileSync(resolveRoot(file), "utf8"));
 const assert = (value, message) => { if (!value) throw new Error(message); };
-const network = read("public/world/generated/driving-network.json");
-const transport = read("public/world/generated/plateau-transportation.json");
-const omiyaOverpassSideRoadWayIds = new Set([
-  27574722, 27574729, 27574731,
-  27904454,
-  290407940, 290407941, 290407942, 290407943,
-]);
+const network = read(ctx.paths.drivingNetwork);
+const transport = read(ctx.paths.plateauTransportation);
+const overpassSideRoadWayIds = new Set(
+  (ctx.patches.structures.OVERPASSES ?? []).flatMap((ov) => ov.sideRoadWayIds ?? []).map(Number),
+);
 
 const roadPolygons = (transport.features ?? [])
   .filter((feature) => ["road", "lane", "intersection"].includes(feature.kind))
@@ -140,13 +141,15 @@ const opposingLanePairs = twoWayEdges
   .filter((pair) => pair.reverse);
 const wrongSidePairs = opposingLanePairs.filter(({ forward, reverse }) => signedPairSeparation(forward, reverse) < 0.5);
 assert(wrongSidePairs.length === 0, `Opposing graph lanes are not separated to the left by at least 0.5m (${wrongSidePairs.length}: ${wrongSidePairs.slice(0, 3).map(({ forward }) => forward.id).join(", ")})`);
-const omiyaLanePairs = opposingLanePairs.filter(({ forward }) => String(forward.name).includes("大宮"));
-assert(omiyaLanePairs.length > 0, "Omiya-dori graph lane pairs are missing");
-assert(omiyaLanePairs.every(({ forward, reverse }) => signedPairSeparation(forward, reverse) >= 0.5), "Omiya-dori graph traffic is not left-hand traffic");
-assert(
-  network.trafficGraph.edges.every((edge) => !omiyaOverpassSideRoadWayIds.has(Number(edge.wayId))),
-  "NPC traffic graph still includes Omiya overpass side-road edges",
-);
+if (isKyoto18) {
+  const omiyaLanePairs = opposingLanePairs.filter(({ forward }) => String(forward.name).includes("大宮"));
+  assert(omiyaLanePairs.length > 0, "Omiya-dori graph lane pairs are missing");
+  assert(omiyaLanePairs.every(({ forward, reverse }) => signedPairSeparation(forward, reverse) >= 0.5), "Omiya-dori graph traffic is not left-hand traffic");
+  assert(
+    network.trafficGraph.edges.every((edge) => !overpassSideRoadWayIds.has(Number(edge.wayId))),
+    "NPC traffic graph still includes Omiya overpass side-road edges",
+  );
+}
 assert(
   network.trafficGraph.connectors.every((connector) => typeof connector.turn === "boolean"),
   "Traffic graph connectors are missing explicit turn classification",
@@ -257,13 +260,6 @@ const zeroPose = zeroCursor.pose();
 const zeroAheadPose = zeroCursor.poseAt(0);
 assert(zeroCursor.current?.id === "out", "RouteCursor leaves a zero connector current for one frame");
 assert([zeroPose?.x, zeroPose?.z, zeroPose?.heading, zeroAheadPose?.heading].every(Number.isFinite), "Zero connector exposes a non-finite pose");
-const kujoEdges = network.trafficGraph.edges.filter((edge) => String(edge.name).includes("九条"));
-assert(kujoEdges.length >= 2 && kujoEdges.every((edge) => edge.oneway), "Kujo dual one-way carriageways are not preserved");
-const kujoStart = network.stops.find((stop) => stop.name === "九条大宮")?.s;
-const kujoEnd = network.stops.find((stop) => stop.name === "羅城門")?.s;
-const kujoWestboundEdges = network.trafficGraph.edges.filter((edge) =>
-  edge.direction === 1 && [968070112, 968070111].includes(edge.wayId),
-);
 const pointSegmentDistance = (x, z, a, b) => {
   const dx = b[0] - a[0], dz = b[2] - a[2];
   const t = Math.max(0, Math.min(1, ((x - a[0]) * dx + (z - a[2]) * dz) / (dx * dx + dz * dz || 1)));
@@ -272,57 +268,52 @@ const pointSegmentDistance = (x, z, a, b) => {
 const polylineDistance = (x, z, points) => Math.min(
   ...points.slice(1).map((point, index) => pointSegmentDistance(x, z, points[index], point)),
 );
-for (const name of ["御池通", "四条通", "五条通", "七条通"]) {
-  const intersection = network.intersections.find((item) => item.name === name);
-  assert(intersection, `${name} intersection is missing from the compiled route`);
-  const routeNode = network.nodes.reduce((best, node) => Math.abs(node.s - intersection.s) < Math.abs(best.s - intersection.s) ? node : best, network.nodes[0]);
-  const nearbyNodes = network.trafficGraph.nodes.filter((node) => Math.hypot(node.point[0] - routeNode.x, node.point[1] - routeNode.z) < 20);
-  const connector = network.trafficGraph.connectors.find((item) => nearbyNodes.some((node) => node.id === item.node)
-    && [item.from, item.to].some((edgeId) => String(network.trafficGraph.edges.find((edge) => edge.id === edgeId)?.name) === name));
-  assert(connector, `${name} has no OSM shared-node traffic connector`);
+let kujoWestboundDistances = [0];
+if (isKyoto18) {
+  const kujoEdges = network.trafficGraph.edges.filter((edge) => String(edge.name).includes("九条"));
+  assert(kujoEdges.length >= 2 && kujoEdges.every((edge) => edge.oneway), "Kujo dual one-way carriageways are not preserved");
+  const kujoStart = network.stops.find((stop) => stop.name === "九条大宮")?.s;
+  const kujoEnd = network.stops.find((stop) => stop.name === "羅城門")?.s;
+  const kujoWestboundEdges = network.trafficGraph.edges.filter((edge) =>
+    edge.direction === 1 && [968070112, 968070111].includes(edge.wayId),
+  );
+  for (const name of ["御池通", "四条通", "五条通", "七条通"]) {
+    const intersection = network.intersections.find((item) => item.name === name);
+    assert(intersection, `${name} intersection is missing from the compiled route`);
+    const routeNode = network.nodes.reduce((best, node) => Math.abs(node.s - intersection.s) < Math.abs(best.s - intersection.s) ? node : best, network.nodes[0]);
+    const nearbyNodes = network.trafficGraph.nodes.filter((node) => Math.hypot(node.point[0] - routeNode.x, node.point[1] - routeNode.z) < 20);
+    const connector = network.trafficGraph.connectors.find((item) => nearbyNodes.some((node) => node.id === item.node)
+      && [item.from, item.to].some((edgeId) => String(network.trafficGraph.edges.find((edge) => edge.id === edgeId)?.name) === name));
+    assert(connector, `${name} has no OSM shared-node traffic connector`);
+  }
+  const kujoWestboundEdgeIds = new Set(kujoWestboundEdges.map((edge) => edge.id));
+  const kujoWestboundPaths = [
+    ...kujoWestboundEdges.map((edge) => edge.points),
+    ...network.trafficGraph.connectors
+      .filter((item) => !item.zeroLength && kujoWestboundEdgeIds.has(item.from) && kujoWestboundEdgeIds.has(item.to))
+      .map((item) => tessellateConnector(item.points)),
+  ];
+  const kujoRouteSamples = network.nodes.filter((node) => node.s > kujoStart + 120 && node.s < kujoEnd - 50);
+  kujoWestboundDistances = kujoRouteSamples.map((node) => Math.min(
+    ...kujoWestboundPaths.map((points) => polylineDistance(node.x, node.z, points)),
+  ));
+  assert(kujoWestboundEdges.length >= 4 && new Set(kujoWestboundEdges.map((edge) => edge.lane)).has(0) && new Set(kujoWestboundEdges.map((edge) => edge.lane)).has(1), "Kujo westbound OSM carriageway lane edges are missing");
+  assert(kujoRouteSamples.length > 100 && Math.max(...kujoWestboundDistances) < 3.5, "Bus route is not on the Kujo westbound carriageway");
+  const kujoStop = network.stops.find((stop) => stop.name === "九条大宮");
+  const kujoCrossRoadEdges = network.trafficGraph.edges.filter((edge) => String(edge.name).includes("九条通"));
+  assert(kujoStop && kujoCrossRoadEdges.length > 0 && Math.min(...kujoCrossRoadEdges.map((edge) => polylineDistance(kujoStop.pose.x, kujoStop.pose.z, edge.points))) < 90, "Kujo-Omiya cross-road branch is missing");
+  const kujoSections = network.sections.filter((section) => section.to > kujoStart + 80 && section.from < kujoEnd - 30);
+  assert(kujoSections.length > 0 && kujoSections.every((section) => section.lanesF === 2 && section.lanesB === 0), "Kujo route is not compiled as a two-lane westbound one-way");
 }
-const kujoWestboundEdgeIds = new Set(kujoWestboundEdges.map((edge) => edge.id));
-const kujoWestboundPaths = [
-  ...kujoWestboundEdges.map((edge) => edge.points),
-  ...network.trafficGraph.connectors
-    .filter((item) => !item.zeroLength && kujoWestboundEdgeIds.has(item.from) && kujoWestboundEdgeIds.has(item.to))
-    .map((item) => tessellateConnector(item.points)),
-];
-const kujoRouteSamples = network.nodes.filter((node) => node.s > kujoStart + 120 && node.s < kujoEnd - 50);
-const kujoWestboundDistances = kujoRouteSamples.map((node) => Math.min(
-  ...kujoWestboundPaths.map((points) => polylineDistance(node.x, node.z, points)),
-));
-assert(kujoWestboundEdges.length >= 4 && new Set(kujoWestboundEdges.map((edge) => edge.lane)).has(0) && new Set(kujoWestboundEdges.map((edge) => edge.lane)).has(1), "Kujo westbound OSM carriageway lane edges are missing");
-assert(kujoRouteSamples.length > 100 && Math.max(...kujoWestboundDistances) < 3.5, "Bus route is not on the Kujo westbound carriageway");
-const kujoStop = network.stops.find((stop) => stop.name === "九条大宮");
-const kujoCrossRoadEdges = network.trafficGraph.edges.filter((edge) => String(edge.name).includes("九条通"));
-assert(kujoStop && kujoCrossRoadEdges.length > 0 && Math.min(...kujoCrossRoadEdges.map((edge) => polylineDistance(kujoStop.pose.x, kujoStop.pose.z, edge.points))) < 90, "Kujo-Omiya cross-road branch is missing");
-const kujoSections = network.sections.filter((section) => section.to > kujoStart + 80 && section.from < kujoEnd - 30);
-assert(kujoSections.length > 0 && kujoSections.every((section) => section.lanesF === 2 && section.lanesB === 0), "Kujo route is not compiled as a two-lane westbound one-way");
 // Right turns are not suppressed by road-name exceptions. Their legality is
 // decided by the OSM shared-node topology and signal/turn metadata; only
 // explicit U-turn connectors are prohibited for this NPC model.
 assert(network.trafficGraph.connectors.every((connector) => connector.turnDirection !== "uturn"), "Forbidden U-turn connectors remain in the traffic graph");
-assert((network.overlays?.roads?.medians ?? []).length > 0, "OSM central medians were not compiled");
 assert((network.overlays?.roads?.crosswalks ?? []).length > 0, "Explicit OSM zebra crossings were not compiled");
 const crosswalks = network.overlays?.roads?.crosswalks ?? [];
 const omiyaOverpass = network.structures?.find((item) => item.name === "大宮跨線橋");
-assert(omiyaOverpass, "Omiya overpass structure is missing for crosswalk exclusion");
-const omiyaBridgeIntersections = network.intersections.filter((item) =>
-  item.s >= omiyaOverpass.from && item.s <= omiyaOverpass.to,
-);
-assert(omiyaBridgeIntersections.length === 0, "Ground-road intersections remain inside the elevated Omiya bridge span");
-const omiyaPeakIndex = network.nodes.reduce((best, node, index) =>
-  Math.abs(node.s - omiyaOverpass.peak) < Math.abs(network.nodes[best].s - omiyaOverpass.peak) ? index : best, 0);
-const omiyaSection = sectionAt(network.nodes[omiyaPeakIndex].s);
-const omiyaForwardInner = mainTrafficPaths.find((item) => item.direction === 1 && item.lane === omiyaSection.lanesF - 1);
-const omiyaReverseInner = mainTrafficPaths.find((item) => item.direction === -1 && item.lane === 0);
-const omiyaCenter = network.surfacePath[omiyaPeakIndex];
-const omiyaLaneMidpoint = [
-  (omiyaForwardInner.points[omiyaPeakIndex][0] + omiyaReverseInner.points[omiyaPeakIndex][0]) / 2,
-  (omiyaForwardInner.points[omiyaPeakIndex][1] + omiyaReverseInner.points[omiyaPeakIndex][1]) / 2,
-];
-assert(Math.hypot(omiyaCenter[0] - omiyaLaneMidpoint[0], omiyaCenter[1] - omiyaLaneMidpoint[1]) < 0.15, "Omiya centre line is not between the opposing physical lanes");
+let omiyaBridgeIntersections = [];
+let graphBridgeCrossings = [];
 const routeProjection = (x, z) => {
   let best = { s: 0, distance: Infinity, tangent: [0, 1] };
   for (let index = 1; index < network.nodes.length; index++) {
@@ -336,19 +327,38 @@ const routeProjection = (x, z) => {
   }
   return best;
 };
-const graphBridgeCrossings = network.trafficGraph.edges.filter((edge) => {
-  for (let index = 1; index < edge.points.length; index++) {
-    const a = edge.points[index - 1], b = edge.points[index];
-    const dx = b[0] - a[0], dz = b[2] - a[2], length = Math.hypot(dx, dz) || 1;
-    for (const [x, z] of [[a[0], a[2]], [(a[0] + b[0]) / 2, (a[2] + b[2]) / 2], [b[0], b[2]]]) {
-      const projection = routeProjection(x, z);
-      const alignment = Math.abs((dx * projection.tangent[0] + dz * projection.tangent[1]) / length);
-      if (projection.s >= omiyaOverpass.from && projection.s <= omiyaOverpass.to && projection.distance < 18 && alignment < 0.82) return true;
+if (isKyoto18) {
+  assert((network.overlays?.roads?.medians ?? []).length > 0, "OSM central medians were not compiled");
+  assert(omiyaOverpass, "Omiya overpass structure is missing for crosswalk exclusion");
+  omiyaBridgeIntersections = network.intersections.filter((item) =>
+    item.s >= omiyaOverpass.from && item.s <= omiyaOverpass.to,
+  );
+  assert(omiyaBridgeIntersections.length === 0, "Ground-road intersections remain inside the elevated Omiya bridge span");
+  const omiyaPeakIndex = network.nodes.reduce((best, node, index) =>
+    Math.abs(node.s - omiyaOverpass.peak) < Math.abs(network.nodes[best].s - omiyaOverpass.peak) ? index : best, 0);
+  const omiyaSection = sectionAt(network.nodes[omiyaPeakIndex].s);
+  const omiyaForwardInner = mainTrafficPaths.find((item) => item.direction === 1 && item.lane === omiyaSection.lanesF - 1);
+  const omiyaReverseInner = mainTrafficPaths.find((item) => item.direction === -1 && item.lane === 0);
+  const omiyaCenter = network.surfacePath[omiyaPeakIndex];
+  const omiyaLaneMidpoint = [
+    (omiyaForwardInner.points[omiyaPeakIndex][0] + omiyaReverseInner.points[omiyaPeakIndex][0]) / 2,
+    (omiyaForwardInner.points[omiyaPeakIndex][1] + omiyaReverseInner.points[omiyaPeakIndex][1]) / 2,
+  ];
+  assert(Math.hypot(omiyaCenter[0] - omiyaLaneMidpoint[0], omiyaCenter[1] - omiyaLaneMidpoint[1]) < 0.15, "Omiya centre line is not between the opposing physical lanes");
+  graphBridgeCrossings = network.trafficGraph.edges.filter((edge) => {
+    for (let index = 1; index < edge.points.length; index++) {
+      const a = edge.points[index - 1], b = edge.points[index];
+      const dx = b[0] - a[0], dz = b[2] - a[2], length = Math.hypot(dx, dz) || 1;
+      for (const [x, z] of [[a[0], a[2]], [(a[0] + b[0]) / 2, (a[2] + b[2]) / 2], [b[0], b[2]]]) {
+        const projection = routeProjection(x, z);
+        const alignment = Math.abs((dx * projection.tangent[0] + dz * projection.tangent[1]) / length);
+        if (projection.s >= omiyaOverpass.from && projection.s <= omiyaOverpass.to && projection.distance < 18 && alignment < 0.82) return true;
+      }
     }
-  }
-  return false;
-});
-assert(graphBridgeCrossings.length === 0, "Transverse graph roads remain inside the elevated Omiya bridge span");
+    return false;
+  });
+  assert(graphBridgeCrossings.length === 0, "Transverse graph roads remain inside the elevated Omiya bridge span");
+}
 const elevatedDecks = network.structures ?? [];
 const nearestNodeInfo = (x, z) => {
   let bestD2 = Infinity;
@@ -410,66 +420,69 @@ for (const edge of network.trafficGraph.edges) {
 }
 assert(elevatedDeckHeightErrors === 0, `Bridge/overpass traffic graph edges leave deck elevation (${elevatedDeckHeightErrors} samples)`);
 assert(opposingCorridorOverlaps === 0, `Opposing traffic graph edges overlap the bus corridor (${opposingCorridorOverlaps} samples)`);
-assert(!crosswalks.some((item) => item.routeDistance < 30 && item.routeS >= omiyaOverpass.from && item.routeS <= omiyaOverpass.to), "Crosswalks remain in the Omiya overpass span");
-assert(crosswalks.filter((item) => item.intersection === "五条大宮").length === 4, "Gojo-Omiya intersection crosswalks were not compiled");
-assert(crosswalks.filter((item) => item.intersection === "東寺道").length === 3, "Toji-michi intersection crosswalks were not compiled");
-const footbridges = network.overlays?.roads?.footbridges ?? [];
-assert(footbridges.some((item) => item.id.includes("284620455")), "Keihan-kokudoguchi footbridge is missing");
-assert(!footbridges.some((item) => item.id === "pedestrian-621846895"), "The overlapping Koeda-east pedestrian bridge remains");
-assert(crosswalks.some((item) => item.id === "crosswalk-621846895-1"), "The Koeda-east overlapping crosswalk was removed");
-const bridgeSidewalks = network.overlays?.roads?.bridgeSidewalks ?? [];
-const bridgeSidewalkWayIds = ["621846876", "621846878", "621846879", "621846882", "621846892", "621846894"];
-assert(bridgeSidewalks.length === bridgeSidewalkWayIds.length, "The four river-bridge attached sidewalks are missing");
-assert(bridgeSidewalkWayIds.every((id) => bridgeSidewalks.some((item) => String(item.wayId) === id)), "A river-bridge sidewalk was compiled as a pedestrian bridge");
-assert(!footbridges.some((item) => bridgeSidewalkWayIds.includes(String(item.wayId))), "A river-bridge sidewalk remains a pedestrian bridge");
-const kogaBridge = network.structures?.find((item) => item.name === "久我橋(桂川)(flat deck)");
-assert(kogaBridge, "Koga Bridge flat-deck structure is missing");
-const otherRiverBridges = network.structures.filter((item) => item.profile === "flat-deck" && item.name !== "久我橋(桂川)(flat deck)");
-assert(otherRiverBridges.length === 3, "The three other river bridge profiles are missing");
-assert([...otherRiverBridges, kogaBridge].every((item) => Number(item.approachIn ?? 0) === 0 && Number(item.approachOut ?? 0) === 0), "A river bridge still changes terrain before or after its endpoints");
-assert(Number(kogaBridge.approachIn ?? 0) === 0, "Koga Bridge has an unexpected eastern approach");
-assert(Number(kogaBridge.approachOut ?? 0) === 0, "Koga Bridge still has a western ground-lifting approach");
-const kogaDeckNodes = network.nodes.filter((node) => node.s >= kogaBridge.from && node.s <= kogaBridge.to);
-assert(kogaDeckNodes.length > 10, "Koga Bridge flat-deck nodes are missing");
-const kogaStart = kogaDeckNodes[0], kogaEnd = kogaDeckNodes.at(-1);
-const kogaMid = kogaDeckNodes[Math.floor(kogaDeckNodes.length / 2)];
-const kogaLinearMid = kogaStart.y + (kogaEnd.y - kogaStart.y) * ((kogaMid.s - kogaStart.s) / Math.max(1e-6, kogaEnd.s - kogaStart.s));
-assert(kogaMid.y > kogaLinearMid + 0.2, "Koga Bridge road deck is not arched");
-const tenjinBridge = network.structures?.find((item) => item.name === "天神橋(西高瀬川)(flat deck)");
-assert(tenjinBridge, "Tenjin Bridge deck is missing");
-const tenjinDeckNodes = network.nodes.filter((node) => node.s >= tenjinBridge.from && node.s <= tenjinBridge.to);
-assert(tenjinDeckNodes.length > 2, "Tenjin Bridge deck nodes are missing");
-// 天神橋は両端の地形差(約0.7m)を傾斜デッキで吸収する。平坦でなくてよいが、
-// デッキ内・両端ともに段差があってはならない
-const tenjinRise = tenjinDeckNodes.at(-1).y - tenjinDeckNodes[0].y;
-assert(tenjinRise > 0.4 && tenjinRise < 2.5, "Tenjin Bridge deck should slope up from the north end to the south end");
-for (let i = 1; i < tenjinDeckNodes.length; i++) {
-  const ds = tenjinDeckNodes[i].s - tenjinDeckNodes[i - 1].s;
-  assert(Math.abs(tenjinDeckNodes[i].y - tenjinDeckNodes[i - 1].y) / Math.max(1e-6, ds) < 0.08, "Tenjin Bridge deck has a step");
+if (isKyoto18) {
+  assert(!crosswalks.some((item) => item.routeDistance < 30 && item.routeS >= omiyaOverpass.from && item.routeS <= omiyaOverpass.to), "Crosswalks remain in the Omiya overpass span");
+  assert(crosswalks.filter((item) => item.intersection === "五条大宮").length === 4, "Gojo-Omiya intersection crosswalks were not compiled");
+  assert(crosswalks.filter((item) => item.intersection === "東寺道").length === 3, "Toji-michi intersection crosswalks were not compiled");
+  const footbridges = network.overlays?.roads?.footbridges ?? [];
+  assert(footbridges.some((item) => item.id.includes("284620455")), "Keihan-kokudoguchi footbridge is missing");
+  assert(!footbridges.some((item) => item.id === "pedestrian-621846895"), "The overlapping Koeda-east pedestrian bridge remains");
+  assert(crosswalks.some((item) => item.id === "crosswalk-621846895-1"), "The Koeda-east overlapping crosswalk was removed");
+  const bridgeSidewalks = network.overlays?.roads?.bridgeSidewalks ?? [];
+  const bridgeSidewalkWayIds = ["621846876", "621846878", "621846879", "621846882", "621846892", "621846894"];
+  assert(bridgeSidewalks.length === bridgeSidewalkWayIds.length, "The four river-bridge attached sidewalks are missing");
+  assert(bridgeSidewalkWayIds.every((id) => bridgeSidewalks.some((item) => String(item.wayId) === id)), "A river-bridge sidewalk was compiled as a pedestrian bridge");
+  assert(!footbridges.some((item) => bridgeSidewalkWayIds.includes(String(item.wayId))), "A river-bridge sidewalk remains a pedestrian bridge");
+  const kogaBridge = network.structures?.find((item) => item.name === "久我橋(桂川)(flat deck)");
+  assert(kogaBridge, "Koga Bridge flat-deck structure is missing");
+  const otherRiverBridges = network.structures.filter((item) => item.profile === "flat-deck" && item.name !== "久我橋(桂川)(flat deck)");
+  assert(otherRiverBridges.length === 3, "The three other river bridge profiles are missing");
+  assert([...otherRiverBridges, kogaBridge].every((item) => Number(item.approachIn ?? 0) === 0 && Number(item.approachOut ?? 0) === 0), "A river bridge still changes terrain before or after its endpoints");
+  assert(Number(kogaBridge.approachIn ?? 0) === 0, "Koga Bridge has an unexpected eastern approach");
+  assert(Number(kogaBridge.approachOut ?? 0) === 0, "Koga Bridge still has a western ground-lifting approach");
+  const kogaDeckNodes = network.nodes.filter((node) => node.s >= kogaBridge.from && node.s <= kogaBridge.to);
+  assert(kogaDeckNodes.length > 10, "Koga Bridge flat-deck nodes are missing");
+  const kogaStart = kogaDeckNodes[0], kogaEnd = kogaDeckNodes.at(-1);
+  const kogaMid = kogaDeckNodes[Math.floor(kogaDeckNodes.length / 2)];
+  const kogaLinearMid = kogaStart.y + (kogaEnd.y - kogaStart.y) * ((kogaMid.s - kogaStart.s) / Math.max(1e-6, kogaEnd.s - kogaStart.s));
+  assert(kogaMid.y > kogaLinearMid + 0.2, "Koga Bridge road deck is not arched");
+  const tenjinBridge = network.structures?.find((item) => item.name === "天神橋(西高瀬川)(flat deck)");
+  assert(tenjinBridge, "Tenjin Bridge deck is missing");
+  const tenjinDeckNodes = network.nodes.filter((node) => node.s >= tenjinBridge.from && node.s <= tenjinBridge.to);
+  assert(tenjinDeckNodes.length > 2, "Tenjin Bridge deck nodes are missing");
+  // 天神橋は両端の地形差(約0.7m)を傾斜デッキで吸収する。平坦でなくてよいが、
+  // デッキ内・両端ともに段差があってはならない
+  const tenjinRise = tenjinDeckNodes.at(-1).y - tenjinDeckNodes[0].y;
+  assert(tenjinRise > 0.4 && tenjinRise < 2.5, "Tenjin Bridge deck should slope up from the north end to the south end");
+  for (let i = 1; i < tenjinDeckNodes.length; i++) {
+    const ds = tenjinDeckNodes[i].s - tenjinDeckNodes[i - 1].s;
+    assert(Math.abs(tenjinDeckNodes[i].y - tenjinDeckNodes[i - 1].y) / Math.max(1e-6, ds) < 0.08, "Tenjin Bridge deck has a step");
+  }
+  const tenjinStartIndex = network.nodes.indexOf(tenjinDeckNodes[0]);
+  const tenjinEndIndex = network.nodes.indexOf(tenjinDeckNodes.at(-1));
+  const tenjinBefore = network.nodes[tenjinStartIndex - 1];
+  const tenjinAfter = network.nodes[tenjinEndIndex + 1];
+  assert(tenjinBefore && Math.abs(tenjinBefore.y - tenjinDeckNodes[0].y) < 0.15, "Tenjin Bridge north end has a step");
+  assert(tenjinAfter && Math.abs(tenjinAfter.y - tenjinDeckNodes.at(-1).y) < 0.15, "Tenjin Bridge south end has a step");
+  const kogaSidewalks = bridgeSidewalks.filter((item) => ["621846879", "621846882"].includes(String(item.wayId)));
+  assert(kogaSidewalks.length === 2, "Both Koga Bridge attached sidewalks are missing");
+  const kogaSidewalkY = kogaSidewalks.flatMap((item) => item.rows.flatMap((row) => row.map((point) => point[1])));
+  assert(Math.max(...kogaSidewalkY) - Math.min(...kogaSidewalkY) > 0.2, "Koga Bridge attached sidewalks are not arched");
+  const nearestRoadY = (point) => network.nodes.reduce((best, node) =>
+    (node.x - point[0]) ** 2 + (node.z - point[2]) ** 2 < best.distance2
+      ? { distance2: (node.x - point[0]) ** 2 + (node.z - point[2]) ** 2, y: node.y }
+      : best,
+    { distance2: Infinity, y: 0 }).y;
+  assert(Math.max(...kogaSidewalks.flatMap((item) => item.rows.flatMap((row) => row.map((point) => Math.abs(point[1] - nearestRoadY(point)))))) < 0.15, "Koga Bridge attached sidewalks do not follow the road arch");
+  const omiyaRail = network.railStructures?.find((item) => item.kind === "conventional-underpass");
+  assert(omiyaRail?.bridgeFromS < omiyaRail?.bridgeToS, "Omiya parapet bridge limits were not compiled to driving-network distance");
+  assert(network.stops.length === 30, "OSM stop set was not compiled");
+  assert(network.overlays?.nijoRotary?.stationRoads?.length > 0, "Nijo rotary OSM overlay is missing");
+  assert(network.overlays?.nijoRotary?.oneWay === true && network.overlays?.nijoRotary?.laneCount === 2, "Nijo rotary must be a two-lane one-way road");
+  assert((network.overlays?.nijoRotary?.centerline?.length ?? 0) > 100, "Nijo rotary loop geometry was not compiled");
+  assert((network.overlays?.nijoRotary?.vegetation ?? []).filter((area) => area.polygon?.length >= 3).length >= 4, "Nijo rotary planted islands are missing");
 }
-const tenjinStartIndex = network.nodes.indexOf(tenjinDeckNodes[0]);
-const tenjinEndIndex = network.nodes.indexOf(tenjinDeckNodes.at(-1));
-const tenjinBefore = network.nodes[tenjinStartIndex - 1];
-const tenjinAfter = network.nodes[tenjinEndIndex + 1];
-assert(tenjinBefore && Math.abs(tenjinBefore.y - tenjinDeckNodes[0].y) < 0.15, "Tenjin Bridge north end has a step");
-assert(tenjinAfter && Math.abs(tenjinAfter.y - tenjinDeckNodes.at(-1).y) < 0.15, "Tenjin Bridge south end has a step");
-const kogaSidewalks = bridgeSidewalks.filter((item) => ["621846879", "621846882"].includes(String(item.wayId)));
-assert(kogaSidewalks.length === 2, "Both Koga Bridge attached sidewalks are missing");
-const kogaSidewalkY = kogaSidewalks.flatMap((item) => item.rows.flatMap((row) => row.map((point) => point[1])));
-assert(Math.max(...kogaSidewalkY) - Math.min(...kogaSidewalkY) > 0.2, "Koga Bridge attached sidewalks are not arched");
-const nearestRoadY = (point) => network.nodes.reduce((best, node) =>
-  (node.x - point[0]) ** 2 + (node.z - point[2]) ** 2 < best.distance2
-    ? { distance2: (node.x - point[0]) ** 2 + (node.z - point[2]) ** 2, y: node.y }
-    : best,
-  { distance2: Infinity, y: 0 }).y;
-assert(Math.max(...kogaSidewalks.flatMap((item) => item.rows.flatMap((row) => row.map((point) => Math.abs(point[1] - nearestRoadY(point)))))) < 0.15, "Koga Bridge attached sidewalks do not follow the road arch");
-const omiyaRail = network.railStructures?.find((item) => item.kind === "conventional-underpass");
-assert(omiyaRail?.bridgeFromS < omiyaRail?.bridgeToS, "Omiya parapet bridge limits were not compiled to driving-network distance");
-assert(network.stops.length === 30, "OSM stop set was not compiled");
-assert(network.overlays?.nijoRotary?.stationRoads?.length > 0, "Nijo rotary OSM overlay is missing");
-assert(network.overlays?.nijoRotary?.oneWay === true && network.overlays?.nijoRotary?.laneCount === 2, "Nijo rotary must be a two-lane one-way road");
-assert((network.overlays?.nijoRotary?.centerline?.length ?? 0) > 100, "Nijo rotary loop geometry was not compiled");
-assert((network.overlays?.nijoRotary?.vegetation ?? []).filter((area) => area.polygon?.length >= 3).length >= 4, "Nijo rotary planted islands are missing");
+assert(network.stops.length > 0, "OSM stop set was not compiled");
 let footprintMisses = 0;
 for (const node of network.nodes) {
   const tx = Math.sin(node.heading), tz = Math.cos(node.heading);
@@ -485,12 +498,14 @@ for (const stop of network.stops) {
   assert(stop.platformDistance <= 28, `OSM stop is not associated with the driving path: ${stop.name}`);
   assert(Number.isFinite(stop.dockLateral) && covered(stop.pose.x, stop.pose.z), `Stop docking pose leaves PLATEAU transportation: ${stop.name}`);
 }
-const nijoWestExit = network.stops.find((stop) => stop.name === "二条駅西口");
-assert(nijoWestExit, "Nijo Station West Exit start stop is missing");
-assert(nijoWestExit.s >= 8, "Nijo Station West Exit cannot place the front door at its generated stop pose");
-assert(nijoWestExit.platformDistance <= 3, "Nijo Station West Exit start lane is not beside the OSM platform");
-const nijoSection = network.sections.find((section) => section.source === "OSM Nijo Station West Exit rotary");
-assert(nijoSection?.lanesF === 2 && nijoSection?.lanesB === 0, "Nijo rotary lane topology is not compiled as one-way two lanes");
+if (isKyoto18) {
+  const nijoWestExit = network.stops.find((stop) => stop.name === "二条駅西口");
+  assert(nijoWestExit, "Nijo Station West Exit start stop is missing");
+  assert(nijoWestExit.s >= 8, "Nijo Station West Exit cannot place the front door at its generated stop pose");
+  assert(nijoWestExit.platformDistance <= 3, "Nijo Station West Exit start lane is not beside the OSM platform");
+  const nijoSection = network.sections.find((section) => section.source === "OSM Nijo Station West Exit rotary");
+  assert(nijoSection?.lanesF === 2 && nijoSection?.lanesB === 0, "Nijo rotary lane topology is not compiled as one-way two lanes");
+}
 const routeData = [
   fs.readFileSync("src/route/routeData.js", "utf8"),
   fs.readFileSync("src/route/routeRegistry.js", "utf8"),
@@ -506,7 +521,7 @@ const traffic = [
   fs.readFileSync("src/world/traffic/npcDriver.js", "utf8"),
 ].join("\n");
 const plateauRenderer = fs.readFileSync("src/world/declarative/PlateauWorldRenderer.js", "utf8");
-assert(routeData.includes("world/generated/driving-network.json"), "Runtime does not load the compiled network");
+assert(routeData.includes("driving-network.json"), "Runtime does not load the compiled network");
 assert(!routeData.includes("KOEDA_"), "Bridge-specific runtime coordinates remain");
 assert(routeData.includes("export function laneCenterAt() { return 0; }"), "Runtime still computes the auto-driving lane offset");
 assert(!debug.includes("laneCenterAt"), "Autopilot still imports a runtime lane model");

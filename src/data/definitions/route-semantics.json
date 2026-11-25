@@ -1,6 +1,6 @@
 {
   "note": "路線18号系統のセマンティクス定義。停留所名はOSM/公式表記。",
-  "routeId": "18",
+  "routeId": "kyoto-18",
   "regionId": "kyoto",
   "routeNumber": "18",
   "operatorName": "京都市バス",

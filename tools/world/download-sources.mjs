@@ -1,9 +1,13 @@
 #!/usr/bin/env node
 import fs from "node:fs";
 import path from "node:path";
-import { config, ensureCommand, flag, resolveRoot, run } from "./lib.mjs";
+import { ensureCommand, flag, resolveRoot, run, valueAfter } from "./lib.mjs";
+import { loadPipelineContext, loadRegionContext, routeIdFromArgv } from "../lib/pipeline-context.mjs";
 
-const cfg = config();
+const regionArg = valueAfter("--region-id");
+const cfg = regionArg
+  ? loadRegionContext(regionArg).region
+  : loadPipelineContext(routeIdFromArgv()).worldConfig;
 const archive = resolveRoot(`data/raw/plateau/${cfg.plateau.archiveName}`);
 const force = flag("--force");
 

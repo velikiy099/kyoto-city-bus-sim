@@ -1,60 +1,48 @@
 # 定義ファイル一覧
 
-OSM/PLATEAUデータへの手動補正と、ハードコードから切り出した設定値は、git管理のJSON定義ファイルに集約しています。生成データ(`src/data/route18.json`、`src/data/generated/`、`public/world/generated/` 等)はgit管理外で、これらの定義ファイルとパイプラインから再生成します。
+OSM/PLATEAUデータへの手動補正と、ハードコードから切り出した設定値は、git管理のJSON定義ファイルに集約しています。生成データ(`src/data/routes/<routeId>/route.json`、`public/world/routes/<routeId>/`、`src/world/declarative/generated/<routeId>/`、`data/osm/<routeId>-corridor.json` 等)はgit管理外で、これらの定義ファイルとパイプラインから再生成します。
 
 配置ルール:
 
-- `data/definitions/` — データ生成パイプライン(tools/)が使う定義。`rivers.json` のみランタイム(src/)と共用
-- `src/data/definitions/` — ランタイム(ゲーム本体)専用の定義。Viteの静的import(`with { type: "json" }` 付き)で読み込む
-- `tools/world/world.config.json` — PLATEAUパイプラインの設定(取得URL・コリドー幅・地形グリッド・出力パス)
+- `data/regions/<regionId>/` — 地域共通のデータ生成定義(`region.json`: PLATEAU設定・`projOrigin`・パイプライン既定値、`osm-patches/`: コリドー自動フィルタで路線に適用されるOSM補正カタログ)
+- `data/routes/<routeId>/route.json` — 路線固有の生成入力(OSMリレーションID、区間差し替え、停留所順/位置補正、制限速度ゾーン、車線誘導)
+- `data/definitions/rivers.json` — 河川幅フォールバック定義(パイプラインとランタイム共用)
+- `src/data/definitions/` — ランタイム専用の定義(`regionRegistry.js` / `routeRegistry.js` 経由でロード)
+
+ルートID規約:
+
+- 正規IDは `<regionId>-<routeNumber>` 形式(例: `"kyoto-18"`)
+- 短縮別名(`"18"` 等)もランタイムクエリ(`?route=18`)およびCLI引数(`--route-id 18`)の両方で受理
 
 編集後の反映コマンド:
 
 | 編集した定義 | 反映コマンド | 検証 |
 | --- | --- | --- |
-| route18-osm-patches / route18-intersections / route18-pipeline-tuning | `npm run build-data` → `npm run world:build -- --skip-extract` | `npm run world:validate` ほか全validate |
-| driving-network-patches | `node tools/world/build-driving-network.mjs` | `npm run validate:driving-network`, `validate:traffic-continuity` |
-| world.config.json(plateau/terrainRebuild) | `npm run world:build -- --skip-extract` | `npm run validate:terrain-fix`, `validate:world-alignment` |
-| rivers / src/data/definitions/*.json | 再生成不要(`npm run dev` で即反映) | `npm run build` + 全validate |
+| `data/regions/<regionId>/osm-patches/{roads,intersections,structures}.json` / `data/routes/<routeId>/route.json` | `node tools/build-route-data.mjs --route-id kyoto-18` → `node tools/world/build-world.mjs --route-id kyoto-18 --skip-extract` | `npm run world:validate` ほか全validate |
+| `data/regions/<regionId>/osm-patches/{roads,structures,terminus-turnarounds}.json`(driving-network系) | `node tools/world/build-driving-network.mjs --route-id kyoto-18` | `npm run validate:driving-network`, `validate:traffic-continuity` |
+| `data/regions/<regionId>/region.json`(plateau/terrainRebuild) | `node tools/world/build-world.mjs --route-id kyoto-18 --skip-extract` | `npm run validate:terrain-fix`, `validate:world-alignment` |
+| `rivers.json` / `src/data/definitions/*.json` | 再生成不要(`npm run dev` で即反映) | `npm run build` + 全validate |
 
-## data/definitions/(パイプライン補正)
+## data/regions/<regionId>/ & data/routes/<routeId>/(パイプライン定義)
 
-### route18-osm-patches.json
+### data/regions/kyoto/region.json
 
-`tools/build-route-data.mjs` が使うOSMデータへの手動補正。© OpenStreetMap contributors (ODbL) の実測に基づく。
+京都市エリア共通の座標原点(`projOrigin`)、PLATEAU CityGML取得URL・コリドー幅・地形グリッド再構築設定(`terrainRebuild`)、およびOSMクエリの既定チューニング(`pipelineDefaults`)。
 
-| キー | 内容 |
-| --- | --- |
-| RELATION_ID / SOUTHBOUND_RELATION_ID | 18号系統の北行き(13027168)・南行き(13027169)リレーション |
-| KATSURA_RIVER_RELATION_ID | 桂川のwaterwayリレーション(9459116) |
-| TERMINUS_INTERNAL_WAY_IDS | 久我石原町終点構内の非公道way(除外) |
-| EXTRA_ROAD_WAY_IDS / EXTRA_ROADS_FALLBACK / EXTRA_ROAD_TAG_OVERRIDES / EXTRA_ROAD_WIDTH_M | 本線外の一方通行路(地蔵前対向・小枝橋西行き)の way と名称・車線の補完 |
-| STOP_ORDER | 南行き公式停留所順(30停、京都市交通局時刻表準拠) |
-| NAME_ALIAS | OSM表記→公式表記のゆれ吸収(城ヶ前町→城ケ前町) |
-| EXTRA_STOPS / SOUTHBOUND_STOP_OVERRIDES | 南行き専用停留所と停車位置上書き(OSM node実測座標) |
-| JUJO_* / KUJO_WESTBOUND_* / DETOUR_* | 南行きと北行きで走る道が異なる3区間のway差し替え(十条・九条通西行き・小枝橋〜塔ノ森の27頂点ポリライン) |
-| BRIDGES | 河川橋4橋(アンカー実座標・実橋長・河川名・川ポリライン切り出し窓) |
-| HIGHWAY_CROSSINGS / EXPRESSWAY_VIADUCT_DEFAULTS | 名神高速の高架交差2箇所と高架の既定寸法 |
-| SPEED_ZONES | 制限速度ゾーン(停留所名アンカー) |
-| FORCE_PLAIN_CURVE_ANCHORS | 誤検出された右左折交差点を道なりカーブへ降格するアンカー |
-| FALLBACK_STOP_COORDS | `--fallback` モード用の停留所実座標(ネット不通時) |
-| OMIYA_OVERPASS | 大宮跨線橋の縦断構造(木津屋橋+30m〜東寺道-100m、高さ4m、勾配3.5%等)と東寺東門前停留所の+20m補正 |
-| RAILWAY_CLASSIFICATION | 新幹線/在来線の分類条件(軌間・名称)と表示名・構造既定値 |
-| WATER_SURFACE_NAMING | 無名水面ポリゴンを最寄り橋の河川名で命名する半径 |
+### data/regions/kyoto/osm-patches/
 
-### route18-intersections.json
+京都市全域で共有可能なOSM補正カタログ。`tools/lib/corridor-filter.mjs` により生成対象路線のコリドー内(または構成交差道路/終点名一致)の項目だけが自動適用されます。
 
-交差点の実勢オーバーライド。`INTERSECTION_OVERRIDES`(四条通・五条大宮・七条通・三条通・壬生通の車線数・幅・中央分離帯・歩行者専用腕)と `TURN_OVERRIDES`(右左折交差点5箇所の交差道路名・スタブ方位・車線)。`arms[].length` を省略した場合は `CROSS_STREET_ARM_LEN`(route18-pipeline-tuning.json)が適用される。
+- `roads.json`: 構内除外way、本線外一方通行(`EXTRA_ROADS[]`)、一方通行コリドー補正(`ONEWAY_CORRIDOR_PATCHES[]`)、way車線オーバーライド(`WAY_LANE_OVERRIDES`)、区間範囲オーバーライド(`SECTION_RANGE_OVERRIDES`)、橋一体歩道way・重複歩道橋除外・追加横断歩道(`EXTRA_CROSSWALKS[]`)
+- `intersections.json`: 交差道路実勢オーバーライド(`INTERSECTION_OVERRIDES`)、右左折アンカー補正(`TURN_OVERRIDES`)、道なりカーブ降格アンカー(`FORCE_PLAIN_CURVE_ANCHORS`)
+- `structures.json`: 交通網コンパイル既定値(`DRIVING_NETWORK_DEFAULTS`)、河川リレーション(`RIVER_RELATIONS[]`)、橋梁(`BRIDGES[]`)、跨線橋(`OVERPASSES[]`)、高速高架交差(`HIGHWAY_CROSSINGS[]`)、鉄道分類・無名水面命名設定
+- `terminus-turnarounds.json`: 終点転回場(`TERMINUS_TURNAROUNDS[]`)。終点名および経路コリドー一致時のみコンパイル
 
-### route18-pipeline-tuning.json
+### data/routes/<routeId>/route.json
 
-`tools/build-route-data.mjs` のチューニング定数。Overpass APIエンドポイント、取得BBOX(鉄道・二条駅・迂回区間・河川)、コリドー半径、フィレット/右左折判定角、リサンプル間隔、車線幅、経路端の延長距離など。
+路線ごとの固有定義(`id`, `aliases`, `regionId`, `routeName`, `osm.relationId` / `southboundRelationId` / `segmentReplacements` / `extraQueryBboxes`, `stops`, `speedZones`, `autoLaneGuides`)。
 
-### driving-network-patches.json
-
-`tools/world/build-driving-network.mjs` がOSM路面をPLATEAU路面へコンパイルする際の補正。久我橋のway ID/名称、フラットデッキ橋の構造名、天神橋のアーチ高(`TENJIN_ARCH_HEIGHT`、0=両端の地形を結ぶ傾斜デッキ)、大宮跨線橋の側道8way除外と回廊しきい値(18m/整列0.82)、橋一体の歩道way、重複歩道橋の除去、歩道橋クリアランス5.2m、車線幅・セル寸法。
-
-### rivers.json
+### data/definitions/rivers.json
 
 河川の描画幅フォールバック(桂川48m・鴨川22m・西高瀬川8m、既定12m)。OSMのwaterway中心線にwidthタグ・riverbankポリゴンが無い場合に使う。`src/world/riverGeometry.js`(ランタイム)と `tools/render-map.mjs`(QA地図)で共用。
 

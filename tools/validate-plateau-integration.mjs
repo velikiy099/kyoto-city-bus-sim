@@ -1,23 +1,27 @@
 #!/usr/bin/env node
 import fs from "node:fs";
 import path from "node:path";
+import { loadPipelineContext, resolveRoot, routeIdFromArgv } from "./lib/pipeline-context.mjs";
 
+const ctx = loadPipelineContext(routeIdFromArgv());
 const root = process.cwd();
 const required = [
   "src/main.js",
   "src/route/routeData.js",
+  "src/route/routeRegistry.js",
   "src/world/declarative/buildWorldScenery.js",
   "src/world/declarative/PlateauWorldRenderer.js",
-  "src/world/declarative/generated/route-elevation.json",
-  "tools/world/world.config.json",
+  ctx.paths.routeElevation,
+  path.relative(root, ctx.regionPath),
+  path.relative(root, ctx.routeDefPath),
   "tools/world/download-sources.mjs",
   "tools/world/select-citygml.mjs",
   "tools/world/build-world.mjs",
   "tools/world/convert_citygml.py",
-  "public/world/world-manifest.json",
+  ctx.paths.worldManifest,
 ];
 for (const relative of required) {
-  if (!fs.existsSync(path.join(root, relative))) throw new Error(`Missing integration file: ${relative}`);
+  if (!fs.existsSync(resolveRoot(relative))) throw new Error(`Missing integration file: ${relative}`);
 }
 const main = fs.readFileSync(path.join(root, "src/main.js"), "utf8");
 if (!main.includes('import { buildWorldScenery } from "./world/declarative/buildWorldScenery.js";')) throw new Error("main.js does not import buildWorldScenery");
@@ -34,7 +38,7 @@ if (!routeData.includes("export function terrainElevationAt(s) { return networkN
 if (!routeData.includes("export function elevationAt(s) { return networkNodeAt(s).y; }")) throw new Error("Road height is not read from the compiled driving-network profile");
 if (!routeData.includes("elevations: drivingNetwork.structures")) throw new Error("Compiled bridge/overpass structures are not exposed to the runtime");
 if (routeData.includes("road-elevation.json")) throw new Error("Obsolete second road elevation profile is still imported");
-const config = JSON.parse(fs.readFileSync(path.join(root, "tools/world/world.config.json"), "utf8"));
+const config = ctx.worldConfig;
 if (!config.plateau.downloadUrl.includes("26100_kyoto-shi_city_2025_citygml_1_op.zip")) throw new Error("Unexpected PLATEAU source URL");
 const expectedTypes = ["bldg", "tran", "dem", "brid", "frn", "wtr", "veg"];
 for (const type of expectedTypes) if (!config.plateau.featureTypes.includes(type)) throw new Error(`Missing PLATEAU feature type: ${type}`);

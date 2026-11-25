@@ -1,26 +1,63 @@
 {
-  "note": "OSM由来データを PLATEAU 路面へコンパイルする際の手動補正。way ID は OpenStreetMap の実測に基づく。",
-  "CELL": 40,
-  "SNAP_LIMIT": 12,
-  "BUS_HALF_WIDTH": 1.28,
-  "LANE_WIDTH": 3.2,
-  "KOGA_BRIDGE_WAY_ID": 27829715,
-  "KOGA_BRIDGE_NAME_FALLBACK": "伏見向日線",
-  "KOGA_FLAT_DECK_STRUCTURE_NAME": "久我橋(桂川)(flat deck)",
-  "TENJIN_FLAT_DECK_STRUCTURE_NAME": "天神橋(西高瀬川)(flat deck)",
-  "TENJIN_ARCH_HEIGHT": 0,
-  "OMIYA_OVERPASS_NAME": "大宮跨線橋",
-  "OMIYA_OVERPASS_SIDE_ROAD_WAY_IDS": [27574722, 27574729, 27574731, 27904454, 290407940, 290407941, 290407942, 290407943],
-  "OMIYA_CORRIDOR": { "maxDistanceM": 18, "minAlignment": 0.82 },
-  "BRIDGE_SIDEWALK_WAY_IDS": [621846876, 621846878, 621846879, 621846882, 621846892, 621846894],
-  "REMOVED_OVERLAPPING_FOOTBRIDGE_WAY_IDS": [621846895],
-  "KOGA_SIDEWALK_WAY_IDS": ["621846879", "621846882"],
-  "PEDESTRIAN_BRIDGE_CLEARANCE_M": 5.2,
-  "OIKE_EASTBOUND_PATCH": {
-    "connectorWayId": 157229578,
-    "eastboundWayId": 968042876,
-    "replacedWestboundWayId": 968070115
-  },
+  "note": "京都市共通のOSM道路・車線・横断歩道・歩道橋補正カタログ(way ID・座標キー)。対象路線コリドーに該当するものだけ自動適用される。",
+  "TERMINUS_INTERNAL_WAY_IDS": [1454593592],
+  "EXTRA_ROADS": [
+    {
+      "id": 63124509,
+      "tags": {
+        "highway": "unclassified",
+        "oneway": "yes",
+        "lanes": "1",
+        "name": "地蔵前南側北行き一方通行"
+      },
+      "tagOverride": {
+        "name": "地蔵前南側北行き一方通行",
+        "lanes": 1,
+        "direction": "northbound"
+      },
+      "geometry": [
+        [34.9555805, 135.7418361],
+        [34.9561599, 135.7420066],
+        [34.9562131, 135.7420189],
+        [34.9567324, 135.7421385],
+        [34.9573175, 135.7423033],
+        [34.9576014, 135.74238],
+        [34.9577568, 135.7424219],
+        [34.9579234, 135.7424666],
+        [34.9580917, 135.7425123],
+        [34.95865, 135.7426639]
+      ]
+    },
+    {
+      "id": 621847402,
+      "tags": {
+        "highway": "tertiary",
+        "bridge": "yes",
+        "oneway": "yes",
+        "lanes": "2",
+        "name": "小枝橋西行き車線橋"
+      },
+      "tagOverride": {
+        "name": "小枝橋西行き車線橋",
+        "lanes": 2,
+        "direction": "westbound"
+      },
+      "geometry": [
+        [34.9512626, 135.7428803],
+        [34.951226, 135.7425805],
+        [34.9510626, 135.7414334]
+      ]
+    }
+  ],
+  "EXTRA_ROAD_WIDTH_M": 3.2,
+  "ONEWAY_CORRIDOR_PATCHES": [
+    {
+      "id": "oike-eastbound",
+      "connectorWayId": 157229578,
+      "eastboundWayId": 968042876,
+      "replacedWestboundWayId": 968070115
+    }
+  ],
   "WAY_LANE_OVERRIDES": {
     "157229578": { "lanesF": 2, "lanesB": 0, "oneWay": true, "center": "none", "wL": 3.6, "wR": 3.6 },
     "968042876": { "lanesF": 3, "lanesB": 0, "oneWay": true, "center": "none", "wL": 6.6, "wR": 3.0 },
@@ -50,37 +87,9 @@
       "wR": 9.6
     }
   ],
-  "AUTO_LANE_GUIDES": [
-    {
-      "label": "千本御池右折",
-      "fromStop": "二条駅西口",
-      "fromOffsetM": 215,
-      "holdFromOffsetM": 265,
-      "holdToOffsetM": 438,
-      "toOffsetM": 482,
-      "target": "rightmost"
-    },
-    {
-      "label": "九条大宮右折",
-      "fromStop": "九条大宮",
-      "fromOffsetM": 2,
-      "holdFromOffsetM": 24,
-      "holdToOffsetM": 54,
-      "toOffsetM": 88,
-      "laneIndex": 1
-    }
-  ],
-  "TERMINUS_TURNAROUND": {
-    "stopName": "久我石原町",
-    "entryXOffsetM": 23.0,
-    "approachZOffsetM": -4.5,
-    "entryRadiusM": 7.5,
-    "southTurnZOffsetM": 9.0,
-    "loopRadiusM": 6.9,
-    "stopXOffsetM": 1.7,
-    "stopEndZOffsetM": -1.5,
-    "note": "Offsets [dx, dz] relative to route.terminalStop [stopX, stopZ] (-1594.23, 3005.94): sweeps off westbound Route 202 via left turn (r1=7.5 -> dx=+15.5) then clockwise U-turn (r2=6.9 -> dz=+15.9 -> dx=+1.7) ending due north (-Z) beside the bus stop shelter/pole."
-  },
+  "BRIDGE_SIDEWALK_WAY_IDS": [621846876, 621846878, 621846879, 621846882, 621846892, 621846894],
+  "REMOVED_OVERLAPPING_FOOTBRIDGE_WAY_IDS": [621846895],
+  "PEDESTRIAN_BRIDGE_CLEARANCE_M": 5.2,
   "EXTRA_CROSSWALKS": [
     {
       "id": "crosswalk-nakayama-inari-north",

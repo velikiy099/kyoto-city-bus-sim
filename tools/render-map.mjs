@@ -13,20 +13,20 @@
  *   npm run map-check
  */
 import { readFileSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { resolve } from "node:path";
+import { loadPipelineContext, resolveRoot, ROOT, routeIdFromArgv } from "./lib/pipeline-context.mjs";
 
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-const readJson = (relative) => JSON.parse(readFileSync(join(ROOT, relative), "utf8"));
-const raw = readJson("src/data/route18.json");
-const network = readJson("public/world/generated/driving-network.json");
-const transportation = readJson("public/world/generated/plateau-transportation.json");
-const roadOverlays = readJson("public/world/generated/osm-road-overlays.json");
-const osmCorridor = readJson("data/osm/route18-corridor.json");
-const buildings = readJson("public/world/generated/plateau-buildings.json");
-const water = readJson("public/world/generated/plateau-water.json");
+const ctx = loadPipelineContext(routeIdFromArgv());
+const readJson = (relative) => JSON.parse(readFileSync(resolveRoot(relative), "utf8"));
+const raw = readJson(ctx.paths.routeFile);
+const network = readJson(ctx.paths.drivingNetwork);
+const transportation = readJson(ctx.paths.plateauTransportation);
+const roadOverlays = readJson(ctx.paths.osmOverlays);
+const osmCorridor = readJson(ctx.paths.osmVisualSource);
+const buildings = readJson(ctx.paths.plateauBuildings);
+const water = readJson(ctx.paths.plateauWater);
 const RIVER_DEFS = readJson("data/definitions/rivers.json");
-const terrain = readJson("src/world/declarative/generated/terrain-grid.json");
+const terrain = readJson(ctx.paths.terrainGrid);
 
 const args = process.argv.slice(2);
 const argValue = (name, fallback = null) => {

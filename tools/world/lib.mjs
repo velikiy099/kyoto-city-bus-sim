@@ -2,10 +2,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { loadPipelineContext, routeIdFromArgv } from "../lib/pipeline-context.mjs";
 
 export const TOOLS_DIR = path.dirname(fileURLToPath(import.meta.url));
 export const ROOT = path.resolve(TOOLS_DIR, "../..");
-export const CONFIG_PATH = path.join(TOOLS_DIR, "world.config.json");
 
 export function readJson(file) {
   return JSON.parse(fs.readFileSync(file, "utf8"));
@@ -17,8 +17,8 @@ export function writeJson(file, value, { compact = false } = {}) {
   fs.writeFileSync(file, `${text}\n`);
 }
 
-export function config() {
-  return readJson(CONFIG_PATH);
+export function config(routeIdInput = routeIdFromArgv()) {
+  return loadPipelineContext(routeIdInput).worldConfig;
 }
 
 export function resolveRoot(relativePath) {

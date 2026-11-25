@@ -1,4 +1,5 @@
 {
+  "note": "京都市共通の交差点・右左折・カーブ補正カタログ。",
   "INTERSECTION_OVERRIDES": [
     {
       "name": "四条通",
@@ -15,6 +16,7 @@
       "lanes": 9,
       "width": 30.8,
       "median": 1,
+      "openMedian": true,
       "arms": [
         { "side": 1, "exists": true, "lanesF": 4, "lanesB": 4 },
         { "side": -1, "exists": true, "lanesF": 4, "lanesB": 4 }
@@ -80,5 +82,8 @@
       "crossName": "千本通",
       "stubInLen": 100
     }
+  ],
+  "FORCE_PLAIN_CURVE_ANCHORS": [
+    [34.95066, 135.74276]
   ]
 }

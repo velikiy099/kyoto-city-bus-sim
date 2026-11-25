@@ -14,17 +14,25 @@ import {
   riverDipDepthAt,
 } from "../src/world/riverGeometry.js";
 import { archedDeckElevation, RIVER_BRIDGE_ARCH_HEIGHT } from "../src/route/structureProfiles.js";
+import { loadPipelineContext, resolveRoot, routeIdFromArgv } from "./lib/pipeline-context.mjs";
 
-const read = (file) => JSON.parse(fs.readFileSync(file, "utf8"));
+const read = (file) => JSON.parse(fs.readFileSync(resolveRoot(file), "utf8"));
 const assert = (condition, message) => {
   if (!condition) throw new Error(message);
 };
 
-const route = read("src/data/route18.json");
-const routeProfile = read("src/world/declarative/generated/route-elevation.json");
-const terrainGrid = read("src/world/declarative/generated/terrain-grid.json");
-const transportation = read("public/world/generated/plateau-transportation.json");
-const drivingNetworkPatches = read("data/definitions/driving-network-patches.json");
+const ctx = loadPipelineContext(routeIdFromArgv());
+const isKyoto18 = ctx.routeId === "kyoto-18";
+const route = read(ctx.paths.routeFile);
+const routeProfile = read(ctx.paths.routeElevation);
+const terrainGrid = read(ctx.paths.terrainGrid);
+const transportation = read(ctx.paths.plateauTransportation);
+const bridgeConfigs = ctx.patches.structures.BRIDGES ?? [];
+const bridgeConfigByName = new Map();
+for (const cfg of bridgeConfigs) {
+  if (cfg.name) bridgeConfigByName.set(cfg.name, cfg);
+  if (cfg.flatDeckStructureName) bridgeConfigByName.set(cfg.flatDeckStructureName, cfg);
+}
 const path = new RoutePath(route.path);
 
 function profileValue(profile, s, fallback = 0) {
@@ -55,9 +63,9 @@ const verticalProfiles = (route.elevations ?? []).map((item) => {
   if (item.profile === "flat-deck") {
     const a1 = Number(item.from);
     const b0 = Number(item.to);
-    // 天神橋は両端の地形差を傾斜デッキ(アーチ高0)で吸収する
-    const archHeight = item.name === drivingNetworkPatches.TENJIN_FLAT_DECK_STRUCTURE_NAME
-      ? Number(drivingNetworkPatches.TENJIN_ARCH_HEIGHT ?? 0)
+    const bridgeCfg = bridgeConfigByName.get(item.name);
+    const archHeight = bridgeCfg?.archHeight != null
+      ? Number(bridgeCfg.archHeight)
       : RIVER_BRIDGE_ARCH_HEIGHT;
     return {
       kind: "arched-deck",
@@ -170,7 +178,9 @@ for (const profile of verticalProfiles.filter((item) => ["arched-deck", "flat-de
     deckVariationMeters: +(maximum - minimum).toFixed(3),
   });
 }
-assert(archReports.length === 4 && flatReports.length === 0, "Expected four arched river bridges");
+if (isKyoto18) {
+  assert(archReports.length === 4 && flatReports.length === 0, "Expected four arched river bridges");
+}
 
 const [gridOriginX, gridOriginZ] = terrainGrid.origin;
 const [gridStepX, gridStepZ] = terrainGrid.spacing;
@@ -220,9 +230,9 @@ for (const bridge of route.bridges) {
   for (let i = 1; i < points.length; i++) {
     length += Math.hypot(points[i][0] - points[i - 1][0], points[i][1] - points[i - 1][1]);
   }
-  const minimumExpected = bridge.name.includes("久我橋")
-    ? 1500
-    : bridge.name.includes("天神橋") ? 350 : 400;
+  const minimumExpected = isKyoto18
+    ? (bridge.name.includes("久我橋") ? 1500 : bridge.name.includes("天神橋") ? 350 : 400)
+    : 100;
   assert(length > minimumExpected, `${bridge.name}: river line is truncated (${length.toFixed(1)}m)`);
   const midpoint = points[Math.floor(points.length / 2)];
   const dip = riverDipDepthAt(midpoint[0], midpoint[1], dips);
@@ -232,7 +242,9 @@ for (const bridge of route.bridges) {
 const kamoLines = route.bridges
   .filter((bridge) => bridge.river === "鴨川")
   .map((bridge) => clippedRiverPoints(path, bridge, route.rivers));
-assert(kamoLines.length === 2, "Expected two Kamo River bridge lines");
+if (isKyoto18) {
+  assert(kamoLines.length === 2, "Expected two Kamo River bridge lines");
+}
 let kamoGap = Infinity;
 for (const point of kamoLines[0]) {
   kamoGap = Math.min(kamoGap, distToPolyline(point[0], point[1], kamoLines[1]));

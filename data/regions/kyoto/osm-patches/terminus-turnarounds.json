@@ -1,0 +1,18 @@
+{
+  "note": "京都市共通の終点転回場(オフ公道構内ループ)コンパイル定義。終点名および経路コリドーに一致する場合のみ適用する。",
+  "TERMINUS_TURNAROUNDS": [
+    {
+      "id": "kuga-ishiharacho",
+      "stopName": "久我石原町",
+      "corridorRadiusM": 250,
+      "entryXOffsetM": 23.0,
+      "approachZOffsetM": -4.5,
+      "entryRadiusM": 7.5,
+      "southTurnZOffsetM": 9.0,
+      "loopRadiusM": 6.9,
+      "stopXOffsetM": 1.7,
+      "stopEndZOffsetM": -1.5,
+      "note": "Offsets [dx, dz] relative to route.terminalStop [stopX, stopZ] (-1594.23, 3005.94): sweeps off westbound Route 202 via left turn (r1=7.5 -> dx=+15.5) then clockwise U-turn (r2=6.9 -> dz=+15.9 -> dx=+1.7) ending due north (-Z) beside the bus stop shelter/pole."
+    }
+  ]
+}

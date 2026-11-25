@@ -3,9 +3,11 @@ import fs from "node:fs";
 import { CFG } from "../src/config.js";
 import { createGraphRuntime, RouteCursor } from "../src/world/traffic/graph.js";
 import { createSpawner } from "../src/world/traffic/spawner.js";
+import { loadPipelineContext, resolveRoot, routeIdFromArgv } from "./lib/pipeline-context.mjs";
 
 const assert = (value, message) => { if (!value) throw new Error(message); };
-const network = JSON.parse(fs.readFileSync("public/world/generated/driving-network.json", "utf8"));
+const ctx = loadPipelineContext(routeIdFromArgv());
+const network = JSON.parse(fs.readFileSync(resolveRoot(ctx.paths.drivingNetwork), "utf8"));
 const runtime = createGraphRuntime(network.trafficGraph);
 const spawner = createSpawner(runtime);
 const midpoint = network.nodes[Math.floor(network.nodes.length / 2)];

@@ -1,15 +1,12 @@
 #!/usr/bin/env node
 import { readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { RoutePath } from "../src/route/path.js";
+import { loadPipelineContext, resolveRoot, routeIdFromArgv } from "./lib/pipeline-context.mjs";
 
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-const route = JSON.parse(readFileSync(join(ROOT, "src/data/route18.json"), "utf8"));
-const grid = JSON.parse(
-  readFileSync(join(ROOT, "src/world/declarative/generated/terrain-grid.json"), "utf8"),
-);
-const output = join(ROOT, "src/world/declarative/generated/route-elevation.json");
+const ctx = loadPipelineContext(routeIdFromArgv());
+const route = JSON.parse(readFileSync(resolveRoot(ctx.paths.routeFile), "utf8"));
+const grid = JSON.parse(readFileSync(resolveRoot(ctx.paths.terrainGrid), "utf8"));
+const output = resolveRoot(ctx.paths.routeElevation);
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 const [originX, originZ] = grid.origin;
@@ -56,7 +53,7 @@ writeFileSync(
       sampleStepMeters,
       verticalDatum: 0,
       generatedAt: new Date().toISOString(),
-      source: "PLATEAU connected terrain grid sampled along current route18 path",
+      source: `PLATEAU connected terrain grid sampled along current ${ctx.routeId} path`,
       samples,
     },
     null,

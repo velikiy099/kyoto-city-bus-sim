@@ -1,31 +1,35 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
 import json
 import math
 from collections import defaultdict
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-_CONFIG = json.loads((ROOT / "tools/world/world.config.json").read_text(encoding="utf-8"))
-_PLATEAU = _CONFIG["plateau"]
-_REBUILD = _CONFIG["terrainRebuild"]
-PUBLIC = ROOT / "public/world/generated"
-ROUTE_FILE = ROOT / "src/data/route18.json"
-PROFILE_FILE = ROOT / "src/world/declarative/generated/route-elevation.json"
-SOURCE_TERRAIN = PUBLIC / "plateau-terrain.json"
-BUILDINGS = PUBLIC / "plateau-buildings.json"
-TRANSPORT = PUBLIC / "plateau-transportation.json"
-OUTPUT_PUBLIC = SOURCE_TERRAIN
-OUTPUT_RUNTIME = ROOT / "src/world/declarative/generated/terrain-grid.json"
-MANIFEST = ROOT / "public/world/world-manifest.json"
+_CONFIG: dict = {}
+_PLATEAU: dict = {}
+_REBUILD: dict = {}
+GRID_SPACING = 6.0
+PADDING = 900.0
+SOURCE_CELL = 16.0
+INDEX_CELL = 32.0
+ROUTE_INDEX_CELL = 24.0
+MAX_NEIGHBORS = 16
 
-GRID_SPACING = float(_PLATEAU["terrainGridSpacingMeters"])
-PADDING = float(_PLATEAU["terrainGridPaddingMeters"])
-SOURCE_CELL = float(_REBUILD["sourceCellMeters"])
-INDEX_CELL = float(_REBUILD["indexCellMeters"])
-ROUTE_INDEX_CELL = float(_REBUILD["routeIndexCellMeters"])
-MAX_NEIGHBORS = int(_REBUILD["maxNeighbors"])
+
+def configure(config_path: Path):
+    global _CONFIG, _PLATEAU, _REBUILD, GRID_SPACING, PADDING, SOURCE_CELL, INDEX_CELL, ROUTE_INDEX_CELL, MAX_NEIGHBORS
+    _CONFIG = json.loads(config_path.read_text(encoding="utf-8"))
+    _PLATEAU = _CONFIG["plateau"]
+    _REBUILD = _CONFIG["terrainRebuild"]
+    GRID_SPACING = float(_PLATEAU["terrainGridSpacingMeters"])
+    PADDING = float(_PLATEAU["terrainGridPaddingMeters"])
+    SOURCE_CELL = float(_REBUILD["sourceCellMeters"])
+    INDEX_CELL = float(_REBUILD["indexCellMeters"])
+    ROUTE_INDEX_CELL = float(_REBUILD["routeIndexCellMeters"])
+    MAX_NEIGHBORS = int(_REBUILD["maxNeighbors"])
 
 
 def load(path: Path):
@@ -269,18 +273,37 @@ def build_grid(route, profile, sources):
     return grid
 
 
+def parse_args():
+    default_public = ROOT / "public/world/routes/kyoto-18/generated"
+    default_runtime_dir = ROOT / "src/world/declarative/generated/kyoto-18"
+    parser = argparse.ArgumentParser(description="Rebuild connected terrain grid from PLATEAU terrain/buildings/transport")
+    parser.add_argument("--config", type=Path, default=ROOT / "data/regions/kyoto/region.json")
+    parser.add_argument("--route", type=Path, default=ROOT / "src/data/routes/kyoto-18/route.json")
+    parser.add_argument("--profile", type=Path, default=default_runtime_dir / "route-elevation.json")
+    parser.add_argument("--terrain", type=Path, default=default_public / "plateau-terrain.json")
+    parser.add_argument("--buildings", type=Path, default=default_public / "plateau-buildings.json")
+    parser.add_argument("--transportation", type=Path, default=default_public / "plateau-transportation.json")
+    parser.add_argument("--output-public", type=Path, default=None)
+    parser.add_argument("--output-runtime", type=Path, default=default_runtime_dir / "terrain-grid.json")
+    parser.add_argument("--manifest", type=Path, default=ROOT / "public/world/routes/kyoto-18/world-manifest.json")
+    return parser.parse_args()
+
+
 def main():
-    route = load(ROUTE_FILE)
-    profile = load(PROFILE_FILE)
-    terrain_doc = load(SOURCE_TERRAIN)
+    args = parse_args()
+    configure(args.config)
+    output_public = args.output_public or args.terrain
+    route = load(args.route)
+    profile = load(args.profile)
+    terrain_doc = load(args.terrain)
     if not terrain_doc.get("triangles") and terrain_doc.get("grid"):
         grid = terrain_doc["grid"]
-        OUTPUT_RUNTIME.parent.mkdir(parents=True, exist_ok=True)
-        OUTPUT_RUNTIME.write_text(json.dumps(grid, ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8")
+        args.output_runtime.parent.mkdir(parents=True, exist_ok=True)
+        args.output_runtime.write_text(json.dumps(grid, ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8")
         print(json.dumps({"status": "already-connected", "vertices": len(grid.get("heights", []))}, ensure_ascii=False))
         return
-    buildings_doc = load(BUILDINGS)
-    transport_doc = load(TRANSPORT)
+    buildings_doc = load(args.buildings)
+    transport_doc = load(args.transportation)
     sources = aggregate_sources(terrain_doc, buildings_doc, transport_doc)
     grid = build_grid(route, profile, sources)
 
@@ -291,11 +314,11 @@ def main():
         "source": source,
         "grid": grid,
     }
-    OUTPUT_PUBLIC.write_text(json.dumps(output, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
-    OUTPUT_RUNTIME.parent.mkdir(parents=True, exist_ok=True)
-    OUTPUT_RUNTIME.write_text(json.dumps(grid, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    output_public.write_text(json.dumps(output, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    args.output_runtime.parent.mkdir(parents=True, exist_ok=True)
+    args.output_runtime.write_text(json.dumps(grid, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
 
-    manifest = load(MANIFEST)
+    manifest = load(args.manifest)
     for layer in manifest.get("layers", []):
         if layer.get("id") == "terrain":
             layer["geometry"] = "connected-grid"
@@ -304,7 +327,7 @@ def main():
     policies["terrainPolicy"] = "plateau-connected-grid-route-constrained-420m-with-decaying-extrapolation"
     policies["roadVisualPolicy"] = "osm-route-network-projected-on-plateau-terrain"
     policies["buildingPolicy"] = "plateau-footprint-and-height-ground-snapped"
-    MANIFEST.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    args.manifest.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(json.dumps({"width": grid["width"], "height": grid["height"], "vertices": len(grid["heights"]), "sources": len(sources)}, ensure_ascii=False))
 
 

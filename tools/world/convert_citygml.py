@@ -33,6 +33,15 @@ from shapely.ops import split as split_geometry, unary_union
 from tqdm import tqdm
 
 GML_ID = "{http://www.opengis.net/gml}id"
+PUBLIC_ROOT = Path(__file__).resolve().parents[2] / "public"
+
+
+def public_url(target: Path) -> str:
+    try:
+        rel = target.resolve().relative_to(PUBLIC_ROOT.resolve())
+        return "/" + rel.as_posix()
+    except ValueError:
+        return f"/world/generated/{target.name}"
 
 
 def local_name(tag: str) -> str:
@@ -1303,14 +1312,14 @@ def convert(args) -> dict:
         "sources": {"osm": osm_source, "plateau": source_common},
         "policies": cfg["integration"],
         "layers": [
-            {"id": "terrain", "provider": "plateau", "url": "/world/generated/plateau-terrain.json", "geometry": "connected-grid", "featureCount": counts["terrain"]},
-            {"id": "transportation", "provider": "plateau", "url": "/world/generated/plateau-transportation.json", "featureCount": counts["transportation"]},
-            {"id": "water", "provider": "plateau", "url": "/world/generated/plateau-water.json", "featureCount": counts["water"]},
-            {"id": "vegetation", "provider": "plateau", "url": "/world/generated/plateau-vegetation.json", "featureCount": counts["vegetation"]},
-            {"id": "bridges", "provider": "plateau", "url": "/world/generated/plateau-bridges.json", "featureCount": counts["bridges"]},
-            {"id": "buildings", "provider": "plateau", "url": "/world/generated/plateau-buildings.json", "featureCount": counts["buildings"]},
-            {"id": "furniture", "provider": "plateau", "url": "/world/generated/plateau-furniture.json", "featureCount": counts["furniture"], "semanticFallback": "OSM route/network signals"},
-            {"id": "osm-road-overlays", "provider": "osm-derived-clipped-to-plateau", "url": "/world/generated/osm-road-overlays.json", "featureCount": osm_overlay_stats["overlayFeatures"]},
+            {"id": "terrain", "provider": "plateau", "url": public_url(args.terrain), "geometry": "connected-grid", "featureCount": counts["terrain"]},
+            {"id": "transportation", "provider": "plateau", "url": public_url(args.transportation), "featureCount": counts["transportation"]},
+            {"id": "water", "provider": "plateau", "url": public_url(args.water), "featureCount": counts["water"]},
+            {"id": "vegetation", "provider": "plateau", "url": public_url(args.vegetation), "featureCount": counts["vegetation"]},
+            {"id": "bridges", "provider": "plateau", "url": public_url(args.bridges), "featureCount": counts["bridges"]},
+            {"id": "buildings", "provider": "plateau", "url": public_url(args.buildings), "featureCount": counts["buildings"]},
+            {"id": "furniture", "provider": "plateau", "url": public_url(args.furniture), "featureCount": counts["furniture"], "semanticFallback": "OSM route/network signals"},
+            {"id": "osm-road-overlays", "provider": "osm-derived-clipped-to-plateau", "url": public_url(args.osm_overlays), "featureCount": osm_overlay_stats["overlayFeatures"]},
         ],
     }
     write_json(args.manifest, manifest)
@@ -1347,7 +1356,7 @@ def convert_overlays_only(args) -> dict:
     write_json(args.osm_overlays, osm_overlay_document, compact=True)
     if args.manifest and args.manifest.exists():
         manifest = read_json(args.manifest)
-        public_root = args.manifest.resolve().parent.parent
+        public_root = PUBLIC_ROOT.resolve()
         for layer in manifest.get("layers", []):
             if layer.get("id") == "osm-road-overlays":
                 layer["featureCount"] = osm_overlay_stats["overlayFeatures"]

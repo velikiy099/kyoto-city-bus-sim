@@ -6,16 +6,21 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { config, resolveRoot, valueAfter, writeJson } from "./lib.mjs";
+import { valueAfter, writeJson } from "./lib.mjs";
+import { loadPipelineContext, routeIdFromArgv } from "../lib/pipeline-context.mjs";
+import { filterExtraCrosswalksForRoute } from "../lib/corridor-filter.mjs";
 import { archedDeckElevation } from "../../src/route/structureProfiles.js";
 
-const cfg = config();
-const PATCHES = JSON.parse(fs.readFileSync(resolveRoot("data/definitions/driving-network-patches.json"), "utf8"));
-const routeFile = path.resolve(valueAfter("--route") ?? resolveRoot(cfg.osm.routeFile));
-const transportFile = path.resolve(valueAfter("--transportation") ?? resolveRoot(cfg.output.plateauTransportation));
-const terrainFile = path.resolve(valueAfter("--terrain") ?? resolveRoot(cfg.output.plateauTerrain));
-const outputFile = path.resolve(valueAfter("--output") ?? resolveRoot(cfg.output.drivingNetwork));
-const osmSourceFile = path.resolve(valueAfter("--osm-source") ?? resolveRoot(cfg.output.osmVisualSource));
+const ctx = loadPipelineContext(routeIdFromArgv());
+const cfg = ctx.worldConfig;
+const PATCHES_ROADS = ctx.patches.roads;
+const PATCHES_STRUCTURES = ctx.patches.structures;
+const PATCHES_TURNAROUNDS = ctx.patches.terminusTurnarounds;
+const routeFile = path.resolve(valueAfter("--route") ?? ctx.resolveRoot(cfg.osm.routeFile));
+const transportFile = path.resolve(valueAfter("--transportation") ?? ctx.resolveRoot(cfg.output.plateauTransportation));
+const terrainFile = path.resolve(valueAfter("--terrain") ?? ctx.resolveRoot(cfg.output.plateauTerrain));
+const outputFile = path.resolve(valueAfter("--output") ?? ctx.resolveRoot(cfg.output.drivingNetwork));
+const osmSourceFile = path.resolve(valueAfter("--osm-source") ?? ctx.resolveRoot(cfg.output.osmVisualSource));
 const read = (file) => JSON.parse(fs.readFileSync(file, "utf8"));
 const route = read(routeFile);
 const transport = read(transportFile);
@@ -23,10 +28,11 @@ const terrain = read(terrainFile).grid;
 const osmSource = read(osmSourceFile);
 const TRAFFIC_BRANCH_METERS = Number(cfg.osm.trafficBranchMeters ?? 250);
 
-const CELL = PATCHES.CELL;
-const SNAP_LIMIT = PATCHES.SNAP_LIMIT;
-const BUS_HALF_WIDTH = PATCHES.BUS_HALF_WIDTH;
-const LANE_WIDTH = PATCHES.LANE_WIDTH;
+const DN_DEFAULTS = PATCHES_STRUCTURES.DRIVING_NETWORK_DEFAULTS ?? {};
+const CELL = DN_DEFAULTS.CELL ?? 40;
+const SNAP_LIMIT = DN_DEFAULTS.SNAP_LIMIT ?? 12;
+const BUS_HALF_WIDTH = DN_DEFAULTS.BUS_HALF_WIDTH ?? 1.28;
+const LANE_WIDTH = DN_DEFAULTS.LANE_WIDTH ?? 3.2;
 const key = (x, z) => `${Math.floor(x / CELL)}:${Math.floor(z / CELL)}`;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 
@@ -186,7 +192,7 @@ function resample(points, spacing = 2) {
 }
 
 function effectiveLaneOverride(wayId) {
-  return PATCHES.WAY_LANE_OVERRIDES?.[String(wayId)] ?? null;
+  return PATCHES_ROADS.WAY_LANE_OVERRIDES?.[String(wayId)] ?? null;
 }
 function filletCorner(prev, corner, next, radius = 6, steps = 4) {
   const dx1 = prev[0] - corner[0], dz1 = prev[1] - corner[1];
@@ -238,9 +244,18 @@ function nijoRotarySource() {
     point,
     rawS: (rejoin.index + 1 + index) * 2,
   }));
-  const oikePatch = PATCHES.OIKE_EASTBOUND_PATCH;
-  if (oikePatch) {
-    const eastbound = (osmSource.roads ?? []).find((road) => Number(road.id) === Number(oikePatch.eastboundWayId));
+  const onewayPatches = PATCHES_ROADS.ONEWAY_CORRIDOR_PATCHES ?? [];
+  let onewayMatch = null;
+  for (const patch of onewayPatches) {
+    const candidateRoad = (osmSource.roads ?? []).find((road) => Number(road.id) === Number(patch.eastboundWayId));
+    if (candidateRoad?.points?.length >= 2 && distance(candidateRoad.points[0], outbound.points.at(-1)) <= 60) {
+      onewayMatch = { patch, eastbound: candidateRoad };
+      break;
+    }
+  }
+  if (onewayMatch) {
+    const oikePatch = onewayMatch.patch;
+    const eastbound = onewayMatch.eastbound;
     if (eastbound?.points?.length >= 2) {
       const ebPts = eastbound.points;
       const junctionEnd = ebPts.at(-1);
@@ -348,11 +363,19 @@ function nijoRotarySource() {
 }
 
 function applyTerminusTurnaround(baseSource) {
-  const cfgTurn = PATCHES.TERMINUS_TURNAROUND;
+  const turnarounds = PATCHES_TURNAROUNDS.TERMINUS_TURNAROUNDS ?? [];
   const ts = route.terminalStop;
   const stopX = Array.isArray(ts) ? Number(ts[0]) : Number(ts?.x);
   const stopZ = Array.isArray(ts) ? Number(ts[1]) : Number(ts?.z);
-  if (!cfgTurn || !Number.isFinite(stopX) || !Number.isFinite(stopZ)) return baseSource;
+  if (!Number.isFinite(stopX) || !Number.isFinite(stopZ)) return baseSource;
+  const terminalStopName = route.stops?.at(-1)?.name ?? null;
+  const tailPt = baseSource.at(-1)?.point;
+  const cfgTurn = turnarounds.find((item) => {
+    if (item.stopName && terminalStopName && item.stopName !== terminalStopName) return false;
+    const radius = Number(item.corridorRadiusM ?? 250);
+    return !tailPt || Math.hypot(tailPt[0] - stopX, tailPt[1] - stopZ) <= radius;
+  }) ?? null;
+  if (!cfgTurn) return baseSource;
 
   const entryX = stopX + Number(cfgTurn.entryXOffsetM ?? 22.5);
   const approachZ = stopZ + Number(cfgTurn.approachZOffsetM ?? -4.5);
@@ -459,13 +482,13 @@ for (let index = 0; index < center.length; index++) {
 
 // Precompute matched OSM way + section per sample, applying WAY_LANE_OVERRIDES cleanly
 const osmWayIndex = (osmSource.roads ?? [])
-  .filter((road) => road.points?.length >= 2 && PATCHES.WAY_LANE_OVERRIDES?.[String(road.id)])
+  .filter((road) => road.points?.length >= 2 && PATCHES_ROADS.WAY_LANE_OVERRIDES?.[String(road.id)])
   .map((road) => {
     const xs = road.points.map((p) => p[0]);
     const zs = road.points.map((p) => p[1]);
     return {
       road,
-      override: PATCHES.WAY_LANE_OVERRIDES[String(road.id)],
+      override: PATCHES_ROADS.WAY_LANE_OVERRIDES[String(road.id)],
       minX: Math.min(...xs) - 20,
       maxX: Math.max(...xs) + 20,
       minZ: Math.min(...zs) - 20,
@@ -495,7 +518,7 @@ function matchedOverrideAt(x, z, tx, tz) {
   }
   return best;
 }
-const resolvedSectionRanges = (PATCHES.SECTION_RANGE_OVERRIDES ?? []).map((ov) => {
+const resolvedSectionRanges = (PATCHES_ROADS.SECTION_RANGE_OVERRIDES ?? []).map((ov) => {
   const afterStruct = (route.elevations ?? []).find((st) => st.name === ov.afterStructure);
   const untilWay = (osmSource.roads ?? []).find((r) => Number(r.id) === Number(ov.untilWayId));
   const afterRawS = afterStruct ? Number(afterStruct.to) : Number(ov.fromRawS ?? 0);
@@ -561,11 +584,11 @@ const sampleSections = center.map((point, index) => {
 });
 const maxForwardLaneCount = Math.max(
   ...(route.roadSections ?? []).map((section) => Number(section.lanesF) || 1),
-  ...Object.values(PATCHES.WAY_LANE_OVERRIDES ?? {}).map((ov) => Number(ov.lanesF) || 1),
+  ...Object.values(PATCHES_ROADS.WAY_LANE_OVERRIDES ?? {}).map((ov) => Number(ov.lanesF) || 1),
 );
 const maxBackwardLaneCount = Math.max(
   ...(route.roadSections ?? []).map((section) => Number(section.lanesB) || 0),
-  ...Object.values(PATCHES.WAY_LANE_OVERRIDES ?? {}).map((ov) => Number(ov.lanesB) || 0),
+  ...Object.values(PATCHES_ROADS.WAY_LANE_OVERRIDES ?? {}).map((ov) => Number(ov.lanesB) || 0),
 );
 const CROSS_SECTION_STEP = 0.1;
 const CROSS_SECTION_LIMIT = 24;
@@ -829,11 +852,19 @@ function baseTerrainAtRaw(rawS) {
   return baseTerrainY[index] + (baseTerrainY[index + 1] - baseTerrainY[index]) * t;
 }
 
-const KOGA_BRIDGE_WAY_ID = PATCHES.KOGA_BRIDGE_WAY_ID;
-const kogaBridgeRoad = (osmSource.roads ?? []).find((road) =>
-  Number(road.id) === KOGA_BRIDGE_WAY_ID
-  || (road.tags?.bridge === "yes" && road.tags?.name === PATCHES.KOGA_BRIDGE_NAME_FALLBACK)
-);
+const BRIDGE_CONFIGS = PATCHES_STRUCTURES.BRIDGES ?? [];
+const bridgeConfigByName = new Map();
+for (const bridgeCfg of BRIDGE_CONFIGS) {
+  if (bridgeCfg.name) bridgeConfigByName.set(bridgeCfg.name, bridgeCfg);
+  if (bridgeCfg.flatDeckStructureName) bridgeConfigByName.set(bridgeCfg.flatDeckStructureName, bridgeCfg);
+}
+function bridgeExplicitRoad(bridgeCfg) {
+  if (!bridgeCfg) return null;
+  return (osmSource.roads ?? []).find((road) =>
+    (bridgeCfg.wayId != null && Number(road.id) === Number(bridgeCfg.wayId))
+    || (bridgeCfg.nameFallback && road.tags?.bridge === "yes" && road.tags?.name === bridgeCfg.nameFallback),
+  ) ?? null;
+}
 
 function rawHitAtPoint(point) {
   let best = { distance2: Infinity, rawS: null, tangent: [0, 1] };
@@ -852,9 +883,17 @@ function rawHitAtPoint(point) {
 
 const rawSAtPoint = (point) => rawHitAtPoint(point).rawS;
 
-const kogaBridgeRawRange = kogaBridgeRoad?.points?.length >= 2
-  ? [rawSAtPoint(kogaBridgeRoad.points[0]), rawSAtPoint(kogaBridgeRoad.points.at(-1))].sort((a, b) => a - b)
-  : null;
+const explicitBridgeRanges = new Map();
+const activeExplicitBridgeSidewalkIds = new Set();
+for (const bridgeCfg of BRIDGE_CONFIGS) {
+  const road = bridgeExplicitRoad(bridgeCfg);
+  if (road?.points?.length >= 2) {
+    const range = [rawSAtPoint(road.points[0]), rawSAtPoint(road.points.at(-1))].sort((a, b) => a - b);
+    if (bridgeCfg.name) explicitBridgeRanges.set(bridgeCfg.name, range);
+    if (bridgeCfg.flatDeckStructureName) explicitBridgeRanges.set(bridgeCfg.flatDeckStructureName, range);
+    for (const id of bridgeCfg.sidewalkWayIds ?? []) activeExplicitBridgeSidewalkIds.add(String(id));
+  }
+}
 
 function osmBridgeRawRangeFor(rawFrom, rawTo) {
   const from = Number(rawFrom), to = Number(rawTo);
@@ -885,11 +924,10 @@ function osmBridgeRawRangeFor(rawFrom, rawTo) {
 
 function resolvedStructure(structure) {
   const isFlatDeck = structure.profile === "flat-deck";
+  const explicitRange = explicitBridgeRanges.get(structure.name) ?? null;
   const osmRange = isFlatDeck ? osmBridgeRawRangeFor(structure.from, structure.to) : null;
-  const range = structure.name === PATCHES.KOGA_FLAT_DECK_STRUCTURE_NAME && kogaBridgeRawRange
-    ? kogaBridgeRawRange
-    : (osmRange ?? [Number(structure.from), Number(structure.to)]);
-  const hasOsmSpan = isFlatDeck && (Boolean(osmRange) || (structure.name === PATCHES.KOGA_FLAT_DECK_STRUCTURE_NAME && Boolean(kogaBridgeRawRange)));
+  const range = explicitRange ?? osmRange ?? [Number(structure.from), Number(structure.to)];
+  const hasOsmSpan = isFlatDeck && Boolean(explicitRange || osmRange);
   return {
     ...structure,
     from: range[0],
@@ -904,12 +942,11 @@ for (const structure of route.elevations ?? []) {
   const from = Number(resolved.from), to = Number(resolved.to);
   if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from) continue;
   if (structure.profile === "flat-deck") {
-    const isTenjinFlatDeck = resolved.name === PATCHES.TENJIN_FLAT_DECK_STRUCTURE_NAME;
+    const bridgeCfg = bridgeConfigByName.get(resolved.name) ?? bridgeConfigByName.get(structure.name);
+    const archHeight = bridgeCfg?.archHeight;
     // Keep the roadway on PLATEAU at both bridge ends. The elevation change
     // is absorbed inside the bridge by a shallow parabolic arch; no approach
-    // terrain is modified before or after the bridge. 天神橋は両端の地形差が
-    // 0.7mありアーチの盛り上がりが不自然なため、高さ0(=両端を結ぶ直線の
-    // 傾斜デッキ)で繋ぐ(PATCHES.TENJIN_ARCH_HEIGHT)。
+    // terrain is modified before or after the bridge.
     const startIndex = Math.max(0, nodes.findIndex((node) => node.rawS >= from));
     const firstAfter = nodes.findIndex((node) => node.rawS > to);
     const endIndex = firstAfter < 0 ? nodes.length - 1 : firstAfter - 1;
@@ -920,8 +957,8 @@ for (const structure of route.elevations ?? []) {
     });
     for (let nodeIndex = startIndex; nodeIndex <= endIndex; nodeIndex++) {
       const node = nodes[nodeIndex];
-      const deckY = isTenjinFlatDeck
-        ? archedDeckElevation(baseTerrainAtRaw, from, to, node.rawS, Number(PATCHES.TENJIN_ARCH_HEIGHT ?? 0))
+      const deckY = archHeight != null
+        ? archedDeckElevation(baseTerrainAtRaw, from, to, node.rawS, Number(archHeight))
         : archedDeckElevation(baseTerrainAtRaw, from, to, node.rawS);
       node.y = +deckY.toFixed(3);
       node.structure = structure.name;
@@ -1208,19 +1245,23 @@ const GRAPH_ROAD_TYPES = new Set([
   "secondary", "secondary_link", "tertiary", "tertiary_link", "unclassified",
   "residential", "living_street", "service",
 ]);
-// 大宮跨線橋の左右に並行する側道。橋上の大宮通は交通グラフへ残し、
-// この8 wayだけを除外してNPCが側道へ流入・側道上を走行しないようにする。
-// OSMのwayは南北2本の一方通行側道を分割して記録している。
-const OMIYA_OVERPASS_SIDE_ROAD_WAY_IDS = new Set(PATCHES.OMIYA_OVERPASS_SIDE_ROAD_WAY_IDS);
-const OMIYA_BRIDGE = route.elevations?.find((item) => item.name === PATCHES.OMIYA_OVERPASS_NAME) ?? null;
-const OMIYA_CORRIDOR_MAX_DISTANCE = PATCHES.OMIYA_CORRIDOR.maxDistanceM;
-const OMIYA_CORRIDOR_MIN_ALIGNMENT = PATCHES.OMIYA_CORRIDOR.minAlignment;
-// `route18.json` stores these values in the precompiled route distance. Map
-// them onto the current lane-centred distance before applying the bridge
-// exclusion, otherwise a lane/path rebuild can move the exclusion window.
-const OMIYA_BRIDGE_NETWORK_RANGE = OMIYA_BRIDGE
-  ? { from: compiledS(OMIYA_BRIDGE.from), to: compiledS(OMIYA_BRIDGE.to) }
-  : null;
+// 跨線橋の左右に並行する側道と高架コリドー交差道路を除外するための設定。
+// 対象路線に該当跨線橋の elevation が含まれる場合のみ適用される。
+const OVERPASS_CONFIGS = PATCHES_STRUCTURES.OVERPASSES ?? [];
+const ACTIVE_OVERPASSES = OVERPASS_CONFIGS.map((ov) => {
+  const elevation = (route.elevations ?? []).find((item) => item.name === ov.name) ?? null;
+  return {
+    ...ov,
+    elevation,
+    sideRoadWayIds: new Set((ov.sideRoadWayIds ?? []).map(Number)),
+    maxDistance: Number(ov.corridor?.maxDistanceM ?? 18),
+    minAlignment: Number(ov.corridor?.minAlignment ?? 0.82),
+    networkRange: elevation ? { from: compiledS(elevation.from), to: compiledS(elevation.to) } : null,
+  };
+}).filter((ov) => ov.networkRange !== null);
+const ACTIVE_OVERPASS_SIDE_ROAD_WAY_IDS = new Set(
+  ACTIVE_OVERPASSES.flatMap((ov) => [...ov.sideRoadWayIds]),
+);
 const numberTag = (value, fallback = null) => {
   const hit = String(value ?? "").match(/\d+(?:\.\d+)?/);
   return hit ? Number(hit[0]) : fallback;
@@ -1244,8 +1285,8 @@ function graphRouteProjection(point) {
   }
   return best;
 }
-function graphRoadCrossesOmiyaBridge(road) {
-  if (!OMIYA_BRIDGE_NETWORK_RANGE) return false;
+function graphRoadCrossesOverpass(road) {
+  if (!ACTIVE_OVERPASSES.length) return false;
   const points = (road.points ?? []).map(([x, z]) => [Number(x), Number(z)]);
   for (let index = 1; index < points.length; index++) {
     const a = points[index - 1], b = points[index];
@@ -1257,22 +1298,26 @@ function graphRoadCrossesOmiyaBridge(road) {
     );
     for (const sample of samples) {
       const projection = graphRouteProjection(sample);
-      if (
-        projection.s >= OMIYA_BRIDGE_NETWORK_RANGE.from
-        && projection.s <= OMIYA_BRIDGE_NETWORK_RANGE.to
-        && projection.distance < OMIYA_CORRIDOR_MAX_DISTANCE
-        && alignment(projection) < OMIYA_CORRIDOR_MIN_ALIGNMENT
-      ) return true;
+      for (const ov of ACTIVE_OVERPASSES) {
+        if (
+          projection.s >= ov.networkRange.from
+          && projection.s <= ov.networkRange.to
+          && projection.distance < ov.maxDistance
+          && alignment(projection) < ov.minAlignment
+        ) return true;
+      }
     }
   }
   return false;
 }
-function graphNodeOnOmiyaBridge(point) {
-  if (!OMIYA_BRIDGE_NETWORK_RANGE) return false;
+function graphNodeOnOverpass(point) {
+  if (!ACTIVE_OVERPASSES.length) return false;
   const projection = graphRouteProjection(point);
-  return projection.distance < OMIYA_CORRIDOR_MAX_DISTANCE
-    && projection.s >= OMIYA_BRIDGE_NETWORK_RANGE.from
-    && projection.s <= OMIYA_BRIDGE_NETWORK_RANGE.to;
+  return ACTIVE_OVERPASSES.some((ov) =>
+    projection.distance < ov.maxDistance
+    && projection.s >= ov.networkRange.from
+    && projection.s <= ov.networkRange.to,
+  );
 }
 function graphCum(points) {
   const out = [0];
@@ -1311,13 +1356,13 @@ function graphMaxHeadingJump(points) {
 }
 function graphRoadAllowed(road) {
   const tags = road.tags ?? {};
-  if (OMIYA_OVERPASS_SIDE_ROAD_WAY_IDS.has(Number(road.id))) return false;
+  if (ACTIVE_OVERPASS_SIDE_ROAD_WAY_IDS.has(Number(road.id))) return false;
   // Expressways are grade-separated from the city street network.
   if (["motorway", "motorway_link"].includes(tags.highway)) return false;
   // Roads crossing the bridge corridor are ground-level roads below the
-  // elevated Omiya carriageway. They must not become graph edges or junction
+  // elevated overpass carriageway. They must not become graph edges or junction
   // openings for the bridge route.
-  if (graphRoadCrossesOmiyaBridge(road)) return false;
+  if (graphRoadCrossesOverpass(road)) return false;
   if (!GRAPH_ROAD_TYPES.has(tags.highway) || tags.area === "yes") return false;
   if (["no", "private"].includes(tags.access) || ["no", "private"].includes(tags.motor_vehicle)) return false;
   if (["no", "private"].includes(tags.vehicle)) return false;
@@ -1593,11 +1638,11 @@ function surfaceYAt(x, z) {
   }
   return best && best.d2 < 16 * 16 ? best.y : gridHeight(x, z);
 }
-const BRIDGE_SIDEWALK_WAY_IDS = new Set(PATCHES.BRIDGE_SIDEWALK_WAY_IDS);
+const BRIDGE_SIDEWALK_WAY_IDS = new Set(PATCHES_ROADS.BRIDGE_SIDEWALK_WAY_IDS ?? []);
 // This short footway on the east side of Koeda Bridge duplicates the OSM
 // zebra crossing with the same source way and should not be rendered as an
 // elevated pedestrian bridge.
-const REMOVED_OVERLAPPING_FOOTBRIDGE_WAY_IDS = new Set(PATCHES.REMOVED_OVERLAPPING_FOOTBRIDGE_WAY_IDS);
+const REMOVED_OVERLAPPING_FOOTBRIDGE_WAY_IDS = new Set(PATCHES_ROADS.REMOVED_OVERLAPPING_FOOTBRIDGE_WAY_IDS ?? []);
 function sidewalkRows(points, width, yAt) {
   return points.map((point, index) => {
     const previous = points[Math.max(0, index - 1)];
@@ -1882,7 +1927,7 @@ function buildTrafficGraph() {
     const info = nodeTopology.get(nodeKey);
     if (!info) return 0;
     if (info.dirs.length >= 3) {
-      if (graphNodeOnOmiyaBridge(point) && info.wayIds.size === 1) return 0;
+      if (graphNodeOnOverpass(point) && info.wayIds.size === 1) return 0;
       const baseTrim = clamp(info.maxLanes * 2.2, 4.0, 7.5);
       return projectToRouteCenter(point[0], point[1]).isSharpTurn ? clamp(baseTrim + 2.5, 6.5, 9.5) : baseTrim;
     }
@@ -2173,9 +2218,9 @@ function buildTrafficGraph() {
       let delta = outHeading - inHeading;
       while (delta > Math.PI) delta -= Math.PI * 2;
       while (delta < -Math.PI) delta += Math.PI * 2;
-      // The elevated Omiya carriageway may continue collinearly through its split
+      // The elevated overpass carriageway may continue collinearly through its split
       // way nodes, but turns onto/from other ways on the overpass span are forbidden.
-      if (graphNodeOnOmiyaBridge(node.point) && incoming.wayId !== outgoing.wayId && Math.abs(delta) > Math.PI / 6) continue;
+      if (graphNodeOnOverpass(node.point) && incoming.wayId !== outgoing.wayId && Math.abs(delta) > Math.PI / 6) continue;
       // A U-turn is not a legal lane connector for this traffic model. It
       // was previously falling through as a "straight" connector and could
       // send an NPC back along its incoming lane.
@@ -2615,7 +2660,11 @@ function buildRoadOverlays(graph, bridgeRanges = []) {
       );
     }
   }
-  for (const patch of PATCHES.EXTRA_CROSSWALKS ?? []) {
+  const activeExtraCrosswalks = filterExtraCrosswalksForRoute(
+    PATCHES_ROADS.EXTRA_CROSSWALKS ?? [],
+    nodes.map((n) => [n.x, n.z]),
+  );
+  for (const patch of activeExtraCrosswalks) {
     addCrosswalk(
       patch.id,
       patch.a,
@@ -2689,9 +2738,8 @@ function buildRoadOverlays(graph, bridgeRanges = []) {
       // Sidewalks beside a river bridge are part of the same deck.  Use the
       // compiled PLATEAU road surface directly instead of floating them above
       // it with an independent pedestrian-bridge clearance.
-      const isKogaSidewalk = kogaBridgeRawRange
-        && PATCHES.KOGA_SIDEWALK_WAY_IDS.includes(String(way.id));
-      const deckY = isKogaSidewalk ? null : Math.max(...points.map(([x, z]) => surfaceYAt(x, z))) + PATCHES.PEDESTRIAN_BRIDGE_CLEARANCE_M;
+      const isBridgeDeckSidewalk = activeExplicitBridgeSidewalkIds.has(String(way.id));
+      const deckY = isBridgeDeckSidewalk ? null : Math.max(...points.map(([x, z]) => surfaceYAt(x, z))) + Number(PATCHES_ROADS.PEDESTRIAN_BRIDGE_CLEARANCE_M ?? 5.2);
       const steps = way.tags?.highway === "steps";
       const aHigh = deckEnds.has(graphPointKey(points[0]));
       const bHigh = deckEnds.has(graphPointKey(points.at(-1)));
@@ -2702,7 +2750,7 @@ function buildRoadOverlays(graph, bridgeRanges = []) {
         points: points.map(([x, z], index) => {
           const ground = surfaceYAt(x, z);
           const t = points.length <= 1 ? 0 : index / (points.length - 1);
-          const pointDeckY = isKogaSidewalk ? ground : deckY;
+          const pointDeckY = isBridgeDeckSidewalk ? ground : deckY;
           const y = steps ? ((aHigh ? pointDeckY : ground) * (1 - t) + (bHigh ? pointDeckY : ground) * t) : pointDeckY;
           return [x, y, z];
         }),
@@ -2802,8 +2850,9 @@ const stops = (route.stops ?? []).map((stop, stopIdx, stopArr) => {
 const sectionsList = compiledSections();
 const trafficPaths = compiledTrafficPaths();
 const trafficGraph = buildTrafficGraph();
+const overpassNames = new Set(OVERPASS_CONFIGS.map((ov) => ov.name));
 const crosswalkExclusions = (route.elevations ?? [])
-  .filter((structure) => structure.name === PATCHES.OMIYA_OVERPASS_NAME)
+  .filter((structure) => overpassNames.has(structure.name))
   .map((structure) => ({ from: compiledS(structure.from), to: compiledS(structure.to) }));
 const roadOverlays = buildRoadOverlays(trafficGraph, crosswalkExclusions);
 
@@ -2811,9 +2860,8 @@ function compiledBridge(bridge) {
   const result = { ...compiledRouteObject(bridge) };
   const rawFrom = Number(bridge.s) - Number(bridge.length ?? 0) / 2;
   const rawTo = Number(bridge.s) + Number(bridge.length ?? 0) / 2;
-  const osmRange = bridge.name === "久我橋(桂川)" && kogaBridgeRawRange
-    ? kogaBridgeRawRange
-    : osmBridgeRawRangeFor(rawFrom, rawTo);
+  const explicitRange = explicitBridgeRanges.get(bridge.name) ?? null;
+  const osmRange = explicitRange ?? osmBridgeRawRangeFor(rawFrom, rawTo);
   if (osmRange) {
     const from = compiledS(osmRange[0]);
     const to = compiledS(osmRange[1]);
@@ -2879,21 +2927,23 @@ function railEdgesForBridge(bridge) {
   return { ...center, railEdges: { left, right } };
 }
 
-const withinOmiyaBridge = (s) => OMIYA_BRIDGE_NETWORK_RANGE
-  && Number.isFinite(Number(s))
-  && Number(s) >= OMIYA_BRIDGE_NETWORK_RANGE.from - 1e-6
-  && Number(s) <= OMIYA_BRIDGE_NETWORK_RANGE.to + 1e-6;
-const crossesOmiyaBridge = (item) => withinOmiyaBridge(item.s)
-  || withinOmiyaBridge(item.sIn)
-  || withinOmiyaBridge(item.sOut)
-  || (Number(item.sIn) < OMIYA_BRIDGE_NETWORK_RANGE?.to
-    && Number(item.sOut) > OMIYA_BRIDGE_NETWORK_RANGE?.from);
+const withinAnyOverpass = (s) => Number.isFinite(Number(s)) && ACTIVE_OVERPASSES.some((ov) =>
+  Number(s) >= ov.networkRange.from - 1e-6
+  && Number(s) <= ov.networkRange.to + 1e-6,
+);
+const crossesAnyOverpass = (item) => withinAnyOverpass(item.s)
+  || withinAnyOverpass(item.sIn)
+  || withinAnyOverpass(item.sOut)
+  || ACTIVE_OVERPASSES.some((ov) =>
+    Number(item.sIn) < ov.networkRange.to
+    && Number(item.sOut) > ov.networkRange.from,
+  );
 const compiledIntersections = (route.intersections ?? [])
   .map(compiledRouteObject)
-  .filter((item) => !withinOmiyaBridge(item.s));
+  .filter((item) => !withinAnyOverpass(item.s));
 const compiledTurnIntersections = (route.turnIntersections ?? [])
   .map(compiledRouteObject)
-  .filter((item) => !crossesOmiyaBridge(item));
+  .filter((item) => !crossesAnyOverpass(item));
 
 function routeStateAt(s) {
   const maxS = nodes.at(-1)?.s ?? 0;
@@ -3225,7 +3275,7 @@ function compileSignalHeads(sig) {
 
 const compiledSignals = (route.signals ?? [])
   .map(compiledRouteObject)
-  .filter((item) => !withinOmiyaBridge(item.s))
+  .filter((item) => !withinAnyOverpass(item.s))
   .map(compileSignalHeads);
 
 // Build generic painted white stop lines (main route, opposing lanes, and
@@ -3498,7 +3548,7 @@ function compiledAutoLaneGuides() {
     .filter((item) => item.role === "main" && item.direction === 1)
     .sort((a, b) => a.lane - b.lane);
   const guides = [];
-  for (const cfgGuide of PATCHES.AUTO_LANE_GUIDES ?? []) {
+  for (const cfgGuide of route.autoLaneGuides ?? ctx.route.autoLaneGuides ?? []) {
     const anchorStop = cfgGuide.fromStop ? stops.find((st) => st.name === cfgGuide.fromStop) : null;
     if (cfgGuide.fromStop && !anchorStop) continue;
     const baseS = anchorStop ? anchorStop.s : 0;

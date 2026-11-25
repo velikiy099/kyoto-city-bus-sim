@@ -1,5 +1,5 @@
 export const WORLD_CONFIG = Object.freeze({
-  manifestUrl: "/world/world-manifest.json",
+  manifestUrl: "/world/routes/kyoto-18/world-manifest.json",
   render: {
     // main.js creates the connected PLATEAU grid synchronously so all systems can
     // sample it before asynchronous scenery loading. The renderer replaces that

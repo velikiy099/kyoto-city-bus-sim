@@ -7,10 +7,30 @@ import {
   terrainGridMesh,
   transportationSurfaceMesh,
 } from "../src/world/declarative/PlateauWorldRenderer.js";
+import { loadPipelineContext, resolveRoot, routeIdFromArgv } from "./lib/pipeline-context.mjs";
 
-const read = (file) => JSON.parse(fs.readFileSync(file, "utf8"));
+const ctx = loadPipelineContext(routeIdFromArgv());
+const isKyoto18 = ctx.routeId === "kyoto-18";
+const read = (file) => JSON.parse(fs.readFileSync(resolveRoot(file), "utf8"));
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
-const route = read("src/data/route18.json");
+const route = read(ctx.paths.routeFile);
+const routeTerrain = read(ctx.paths.routeElevation);
+const transportation = read(ctx.paths.plateauTransportation);
+const terrainGrid = read(ctx.paths.terrainGrid);
+
+if (!isKyoto18) {
+  const nature = fs.readFileSync("src/world/nature.js", "utf8");
+  assert(nature.includes("br.railEdges?.left"), "Bridge rails are not attached to compiled road edges");
+  const renderer = fs.readFileSync("src/world/declarative/PlateauWorldRenderer.js", "utf8");
+  assert(!renderer.includes("structuralPlateauSurfaceMesh"), "Old duplicate elevated-fragment builder still exists");
+  assert(!renderer.includes("plateau-structural-road-fragments"), "Old duplicate elevated road object is still added");
+  assert(renderer.includes("partitionPolygonByConvex"), "PLATEAU source polygons are not partitioned for replacement");
+  assert(renderer.includes("transportationSurfaceMesh"), "Edited PLATEAU transportation mesh is not used");
+  const routeDataSource = fs.readFileSync("src/route/routeData.js", "utf8");
+  assert(routeDataSource.includes("drivingNetwork"), "Runtime does not use the compiled bridge profile");
+  console.log(JSON.stringify({ status: "structural-road-runtime-ok", routeId: ctx.routeId, skippedRoute18Fixtures: true }, null, 2));
+  process.exit(0);
+}
 const runtimeRoute = {
   ...route,
   elevations: route.elevations.map((item) =>
@@ -33,7 +53,6 @@ const runtimeRoute = {
   ),
   terrainCutRefinements: [{ from: 7276.7, to: 8319.6, maxEdge: 1.5 }],
 };
-const routeTerrain = read("src/world/declarative/generated/route-elevation.json");
 const path = new RoutePath(route.path);
 const profileValue = (profile, s, fallback = 0) => {
   const samples = profile?.samples ?? [];
@@ -205,8 +224,6 @@ assert(Math.abs(projectedArea - originalArea) < 0.25, `PLATEAU polygon area was 
 
 // Check the generated PLATEAU data itself on the north approach, where the
 // elevated central carriageway and the outer ground-level service road coexist.
-const transportation = read("public/world/generated/plateau-transportation.json");
-const terrainGrid = read("src/world/declarative/generated/terrain-grid.json");
 const [gridOriginX, gridOriginZ] = terrainGrid.origin;
 const [gridStepX, gridStepZ] = terrainGrid.spacing;
 const gridValue = (ix, iz) => terrainGrid.heights[

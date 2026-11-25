@@ -1,0 +1,124 @@
+{
+  "note": "京都市共通の橋梁・跨線橋・高速高架・鉄道・河川リレーション補正カタログ。",
+  "DRIVING_NETWORK_DEFAULTS": {
+    "CELL": 40,
+    "SNAP_LIMIT": 12,
+    "BUS_HALF_WIDTH": 1.28,
+    "LANE_WIDTH": 3.2
+  },
+  "RIVER_RELATIONS": [
+    {
+      "name": "桂川",
+      "relationId": 9459116,
+      "bbox": [34.93, 135.715, 34.965, 135.755]
+    }
+  ],
+  "BRIDGES": [
+    {
+      "name": "小枝橋(鴨川)",
+      "anchor": [34.9512, 135.74216],
+      "realLength": 60,
+      "river": "鴨川",
+      "riverHalfWindowM": 560,
+      "flatDeckStructureName": "小枝橋(鴨川)(flat deck)",
+      "archHeight": 0.4
+    },
+    {
+      "name": "京川橋(鴨川)",
+      "anchor": [34.94664, 135.74047],
+      "realLength": 46,
+      "river": "鴨川",
+      "riverHalfWindowM": 560,
+      "flatDeckStructureName": "京川橋(鴨川)(flat deck)",
+      "archHeight": 0.4
+    },
+    {
+      "name": "天神橋(西高瀬川)",
+      "anchor": [34.94668, 135.73948],
+      "realLength": 18,
+      "river": "西高瀬川",
+      "flatDeckStructureName": "天神橋(西高瀬川)(flat deck)",
+      "archHeight": 0
+    },
+    {
+      "name": "久我橋(桂川)",
+      "anchor": [34.9457, 135.73607],
+      "realLength": 340,
+      "river": "桂川",
+      "riverHalfWindowM": 900,
+      "wayId": 27829715,
+      "nameFallback": "伏見向日線",
+      "flatDeckStructureName": "久我橋(桂川)(flat deck)",
+      "archHeight": 0.4,
+      "sidewalkWayIds": ["621846879", "621846882"]
+    }
+  ],
+  "OVERPASSES": [
+    {
+      "note": "大宮跨線橋: 木津屋橋交差点+30mから上り、JR交点を頂点に東寺道-100mまで下る単峰。東寺東門前停留所は東寺道+20m。",
+      "name": "大宮跨線橋",
+      "startIntersection": "木津屋橋通",
+      "endIntersection": "東寺道",
+      "fromOffsetM": 30,
+      "toOffsetM": -100,
+      "fallbackToOffsetM": 262.2,
+      "height": 4,
+      "riseStartGrade": 0.035,
+      "fallPower": 3,
+      "laneOverride": 1,
+      "deckHalf": 7.2,
+      "underMarginM": 20,
+      "stopAdjustments": [
+        { "stopName": "東寺東門前", "anchorIntersection": "endIntersection", "offsetM": 20 }
+      ],
+      "sideRoadWayIds": [27574722, 27574729, 27574731, 27904454, 290407940, 290407941, 290407942, 290407943],
+      "corridor": { "maxDistanceM": 18, "minAlignment": 0.82 },
+      "railwayBbox": [34.982, 135.744, 34.9895, 135.752]
+    }
+  ],
+  "HIGHWAY_CROSSINGS": [
+    {
+      "name": "名神高速道路(鴨川・小枝橋付近)",
+      "anchor": [34.95228, 135.74118],
+      "length": 340
+    },
+    {
+      "name": "名神高速道路(桂川・菱妻神社付近)",
+      "anchor": [34.94773, 135.72919]
+    }
+  ],
+  "RAILWAY_CLASSIFICATION": {
+    "shinkansen": {
+      "gauges": ["1435"],
+      "nameIncludes": ["新幹線"],
+      "displayName": "東海道新幹線",
+      "length": 190,
+      "width": 16,
+      "trackCount": 2,
+      "layer": 3
+    },
+    "conventional": {
+      "gauges": ["1067"],
+      "nameIncludes": ["東海道本線", "山陰本線"],
+      "displayName": "JR在来線(東海道本線・山陰本線)",
+      "length": 185,
+      "trackWidthPerTrack": 3.2,
+      "widthPadding": 8,
+      "trackCountMin": 4,
+      "trackCountMax": 8,
+      "endMarginM": 18,
+      "layer": 0,
+      "roadLayer": 1
+    }
+  },
+  "WATER_SURFACE_NAMING": {
+    "maxAnchorDistanceM": 1800
+  },
+  "EXPRESSWAY_VIADUCT_DEFAULTS": {
+    "maxProjectionErrorM": 60,
+    "length": 210,
+    "width": 27,
+    "lanesEachWay": 3,
+    "layer": 2
+  }
+}

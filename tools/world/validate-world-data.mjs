@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 import fs from "node:fs";
-import { config, readJson, resolveRoot } from "./lib.mjs";
+import { readJson } from "./lib.mjs";
+import { loadPipelineContext, resolveRoot, routeIdFromArgv } from "../lib/pipeline-context.mjs";
 
-const cfg = config();
+const ctx = loadPipelineContext(routeIdFromArgv());
+const cfg = ctx.worldConfig;
 const files = {
   manifest: cfg.output.worldManifest,
   buildings: cfg.output.plateauBuildings,
@@ -15,7 +17,7 @@ const files = {
   osmOverlays: cfg.output.osmOverlays,
   routeElevation: cfg.output.routeElevation,
   drivingNetwork: cfg.output.drivingNetwork,
-  runtimeTerrain: "src/world/declarative/generated/terrain-grid.json",
+  runtimeTerrain: cfg.output.terrainGrid,
 };
 for (const [name, relative] of Object.entries(files)) {
   const file = resolveRoot(relative);
